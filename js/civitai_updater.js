@@ -801,14 +801,8 @@ async function loadResultPage(force) {
       thenBy: state.thenBy || "none",
       mature: state.matureMode || "show",
     });
-    // Listing every option would still drop cards that have no value for it
-    // (a version without a base model), so a full selection sends no filter.
-    if (!selectsAll(state.filterTypes, state.facets.modelTypes)) {
-      for (const modelType of state.filterTypes || []) query.append("modelType", modelType);
-    }
-    if (!selectsAll(state.filterBases, state.facets.baseModels)) {
-      for (const baseModel of state.filterBases || []) query.append("baseModel", baseModel);
-    }
+    const filters = filterParams();
+    for (const [key, value] of filters) query.append(key, value);
     for (const key of state.collapsed) query.append("collapsed", key);
     const data = await getJson(`/civitai-updater/jobs/${state.checkJobId}/items?${query.toString()}`);
     if (requestSeq !== state.resultRequestSeq) return;
@@ -824,6 +818,15 @@ async function loadResultPage(force) {
     if (data.facets) {
       applyFacets(data.facets);
       renderFilters();
+    }
+    // When every selected type or base drops out of the options (say, the
+    // last model with it was hidden), the selection falls back to all of
+    // them. This page was fetched under the old filter and comes back empty,
+    // so fetch it again under the one the menus now show.
+    if (JSON.stringify(filterParams()) !== JSON.stringify(filters)) {
+      state.pageOffset = 0;
+      await loadResultPage(true);
+      return;
     }
     if (state.resultTotal > 0 && state.resultOffset >= state.resultTotal) {
       state.pageOffset = Math.max(0, Math.floor((state.resultTotal - 1) / state.pageSize) * state.pageSize);
@@ -1445,6 +1448,19 @@ function filterSummary(options, selected, capitalizeValues) {
   if (active.length === options.length) return "all";
   if (active.length === 1) return capitalizeValues ? capitalize(active[0]) : active[0];
   return `${active.length} selected`;
+}
+
+function filterParams() {
+  // Listing every option would still drop cards that have no value for it
+  // (a version without a base model), so a full selection sends no filter.
+  const params = [];
+  if (!selectsAll(state.filterTypes, state.facets.modelTypes)) {
+    for (const modelType of state.filterTypes || []) params.push(["modelType", modelType]);
+  }
+  if (!selectsAll(state.filterBases, state.facets.baseModels)) {
+    for (const baseModel of state.filterBases || []) params.push(["baseModel", baseModel]);
+  }
+  return params;
 }
 
 function selectsAll(selection, options) {
