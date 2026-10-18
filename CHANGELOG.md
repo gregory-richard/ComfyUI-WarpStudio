@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.9.1] - 2026-10-18
+
+### Fixed
+- **Hide** could empty the whole results list. With the **Types** or **Bases**
+  filter narrowed, hiding the last model that matched it dropped that option
+  and the filter went back to `all`, but the list kept the answer to the old
+  filter: `No updates found`, with 0 on both view tabs. The list now reloads
+  under the filter the menus show. Turning off **Show hidden** when the only
+  selected base belonged to hidden releases did the same and is fixed too.
+
 ## [1.9.0] - 2026-10-04
 
 ### Added
