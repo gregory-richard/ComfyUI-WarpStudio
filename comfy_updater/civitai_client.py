@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -104,7 +104,8 @@ class CivitaiClient:
         tmp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
         try:
             with self.session.get(
-                url, timeout=self.timeout_seconds, headers=self._media_headers(url), stream=True
+                url, timeout=self.timeout_seconds, headers=self._media_headers(url), stream=True,
+                hooks={"response": _refuse_foreign_redirect},
             ) as response:
                 if not response.ok:
                     return False
@@ -133,6 +134,8 @@ class CivitaiClient:
 
     def download_image_as_png(self, url: str, target_path: Path, max_bytes: int = 10_000_000) -> bool:
         """Download an image URL and save it as a PNG file."""
+        if not _is_civitai_https_url(url):
+            return False
         data = self._download_bytes(url, max_bytes=max_bytes)
         if not data:
             return False
@@ -172,6 +175,8 @@ class CivitaiClient:
         ``head_bytes`` are tried first — enough to decode frame one of a
         web-optimized MP4 — before falling back to the full download.
         """
+        if not _is_civitai_https_url(url):
+            return False
         ffmpeg_path = _resolve_ffmpeg()
         if not ffmpeg_path:
             return False
@@ -262,6 +267,7 @@ class CivitaiClient:
                 timeout=self.timeout_seconds,
                 headers=self._media_headers(url),
                 stream=True,
+                hooks={"response": _refuse_foreign_redirect},
             ) as response:
                 if not response.ok:
                     return None
@@ -284,9 +290,17 @@ def _extract_first_frame(ffmpeg_path: str, video_path: Path, tmp_png: Path, targ
         process = subprocess.run(  # noqa: S603
             [
                 ffmpeg_path,
+                "-nostdin",
                 "-y",
                 "-loglevel",
                 "error",
+                # The download is untrusted: a playlist or concat file named
+                # .mp4 would otherwise make ffmpeg open other local files or
+                # URLs. Only plain local reads of real video containers.
+                "-protocol_whitelist",
+                "file",
+                "-format_whitelist",
+                _FFMPEG_INPUT_FORMATS,
                 "-i",
                 str(video_path),
                 "-frames:v",
@@ -307,6 +321,8 @@ def _extract_first_frame(ffmpeg_path: str, video_path: Path, tmp_png: Path, targ
         tmp_png.unlink(missing_ok=True)
         return False
 
+
+_FFMPEG_INPUT_FORMATS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm"
 
 _ffmpeg_cache: dict = {}
 
@@ -344,6 +360,21 @@ def _is_civitai_https_url(url: str) -> bool:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     return parts.scheme == "https" and any(host == domain or host.endswith(f".{domain}") for domain in _CIVITAI_DOMAINS)
+
+
+def _refuse_foreign_redirect(response, *args, **kwargs):
+    """Stop a preview download that redirects anywhere but Civitai over https.
+
+    Civitai's image host redirects to its own blob storage; anything else
+    (another site, a local address) is refused so a preview URL cannot be
+    used to reach other servers.
+    """
+    if response.is_redirect:
+        target = urljoin(response.url, response.headers.get("Location", ""))
+        if not _is_civitai_https_url(target):
+            response.close()
+            raise requests.TooManyRedirects(f"Refused redirect to {target}")
+    return response
 
 
 def _retry_delay_seconds(attempt: int) -> float:

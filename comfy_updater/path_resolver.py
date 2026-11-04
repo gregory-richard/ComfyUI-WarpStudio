@@ -35,6 +35,30 @@ except ModuleNotFoundError:  # pragma: no cover - only happens outside ComfyUI
     comfy_args = None
 
 
+def custom_path_problem(path) -> str | None:
+    """Return why ``path`` may not be a custom scan root, or None if it may.
+
+    A scan writes .civitai.info and .preview.png files next to the model files
+    it finds, so a root must be a real, absolute folder, and never a whole
+    drive or the filesystem root.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return "the path is empty."
+    candidate = Path(path.strip()).expanduser()
+    if not candidate.is_absolute():
+        return "use an absolute folder path."
+    try:
+        resolved = candidate.resolve()
+        is_dir = resolved.is_dir()
+    except (OSError, RuntimeError):
+        return "the folder cannot be read."
+    if not is_dir:
+        return "the folder does not exist."
+    if resolved == Path(resolved.anchor):
+        return "a whole drive or the filesystem root cannot be a model folder."
+    return None
+
+
 def resolve_model_roots(config: dict, model_types: list[str], include_custom_paths: bool) -> dict[str, list[Path]]:
     roots: dict[str, list[Path]] = {}
     use_comfy_paths = bool(config.get("useComfyPaths", True))
@@ -58,6 +82,8 @@ def resolve_model_roots(config: dict, model_types: list[str], include_custom_pat
         if include_custom_paths and use_custom_paths:
             custom = config.get("customPaths", {}).get(model_type, [])
             for path in custom:
+                if custom_path_problem(path):
+                    continue
                 root = Path(path).expanduser().resolve()
                 if root not in roots[model_type]:
                     roots[model_type].append(root)

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from datetime import datetime, timezone
 
 from aiohttp import web
 
 from .constants import CACHE_SCHEMA_VERSION, SUPPORTED_MODEL_TYPES
 from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
-from .path_resolver import normalize_model_types
+from .path_resolver import custom_path_problem, normalize_model_types
+from .request_guard import request_rejection
 from .sidecar import read_data_file, write_json
 from .updater_service import sidecar_seed_item
 
@@ -18,6 +20,19 @@ except ModuleNotFoundError:  # pragma: no cover - only outside ComfyUI
 
 
 _ROUTES_REGISTERED = False
+
+
+def _guarded(handler):
+    """Refuse requests that did not come from the updater panel (see request_guard)."""
+
+    @functools.wraps(handler)
+    async def wrapper(request):
+        reason = request_rejection(request.method, request.headers, request.host)
+        if reason:
+            return web.json_response({"error": reason}, status=403)
+        return await handler(request)
+
+    return wrapper
 
 
 def register_routes(config_store, updater_service, job_manager, archive_store) -> None:
@@ -31,6 +46,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
     routes = PromptServer.instance.routes
 
     @routes.get("/civitai-updater/config")
+    @_guarded
     async def get_config(request):  # noqa: ARG001
         config = config_store.get_public()
         return web.json_response(
@@ -42,9 +58,15 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         )
 
     @routes.post("/civitai-updater/config")
+    @_guarded
     async def save_config(request):
         payload = await _read_json(request)
         incoming = _normalize_config_payload(payload)
+        # Refused folders are left out and reported; the rest of the
+        # settings (API key, other paths) are still saved.
+        path_warnings = _drop_refused_custom_paths(
+            incoming, config_store.get().get("customPaths")
+        )
         updated = config_store.update(incoming)
         public = dict(updated)
         public["apiKey"] = ""
@@ -53,10 +75,12 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
             {
                 "config": public,
                 "effectiveRoots": updater_service.get_effective_roots(),
+                "pathWarnings": path_warnings,
             }
         )
 
     @routes.post("/civitai-updater/jobs/scan")
+    @_guarded
     async def start_scan_job(request):
         payload = await _read_json(request)
         payload = _normalize_job_payload(payload)
@@ -69,6 +93,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response({"jobId": job.id})
 
     @routes.post("/civitai-updater/jobs/check-updates")
+    @_guarded
     async def start_check_updates_job(request):
         payload = await _read_json(request)
         payload = _normalize_job_payload(payload)
@@ -140,6 +165,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response({"jobId": job_ref.id})
 
     @routes.get("/civitai-updater/last-check")
+    @_guarded
     async def get_last_check(request):  # noqa: ARG001
         progress_path = config_store.data_dir / "progress.json"
         progress_data = read_data_file(progress_path)
@@ -194,6 +220,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         })
 
     @routes.get("/civitai-updater/jobs/active")
+    @_guarded
     async def get_active_job(request):  # noqa: ARG001
         active = job_manager.get_active()
         if not active:
@@ -201,6 +228,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response({"job": active.as_dict(include_items=False)})
 
     @routes.get("/civitai-updater/jobs/{job_id}")
+    @_guarded
     async def get_job(request):
         job_id = request.match_info.get("job_id", "")
         job = job_manager.get(job_id)
@@ -210,6 +238,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response(job.as_dict(include_items=include_items))
 
     @routes.get("/civitai-updater/jobs/{job_id}/items")
+    @_guarded
     async def get_job_items(request):
         job_id = request.match_info.get("job_id", "")
         offset = _read_int_query(request, "offset", default=0, minimum=0, maximum=10_000_000)
@@ -256,6 +285,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         )
 
     @routes.post("/civitai-updater/archived-updates")
+    @_guarded
     async def archive_updates(request):
         payload = await _read_json(request)
         model_id, version_ids = _normalize_archive_payload(payload)
@@ -265,6 +295,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response({"modelId": model_id, "archivedVersionIds": archived})
 
     @routes.post("/civitai-updater/archived-updates/restore")
+    @_guarded
     async def restore_updates(request):
         payload = await _read_json(request)
         model_id, version_ids = _normalize_archive_payload(payload)
@@ -274,6 +305,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response({"modelId": model_id, "archivedVersionIds": archived})
 
     @routes.post("/civitai-updater/jobs/{job_id}/pause")
+    @_guarded
     async def pause_job(request):
         job_id = request.match_info.get("job_id", "")
         job = job_manager.pause(job_id)
@@ -282,6 +314,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response(job.as_dict(include_items=False))
 
     @routes.post("/civitai-updater/jobs/{job_id}/resume")
+    @_guarded
     async def resume_job(request):
         job_id = request.match_info.get("job_id", "")
         job = job_manager.resume(job_id)
@@ -290,6 +323,7 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         return web.json_response(job.as_dict(include_items=False))
 
     @routes.post("/civitai-updater/jobs/{job_id}/stop")
+    @_guarded
     async def stop_job(request):
         job_id = request.match_info.get("job_id", "")
         job = job_manager.cancel(job_id)
@@ -370,6 +404,35 @@ def _normalize_paths_value(entries) -> list[str]:
     if isinstance(entries, list):
         return [item.strip() for item in entries if isinstance(item, str) and item.strip()]
     return []
+
+
+def _drop_refused_custom_paths(incoming: dict, stored_paths=None) -> list[str]:
+    """Remove newly added custom paths that may not become scan roots.
+
+    Paths already in the stored config are kept as they are: the panel sends
+    the whole list on every settings sync, and a folder that went missing (an
+    unplugged drive) must not be dropped from it. Scans skip those anyway.
+    Returns a message for each removed path.
+    """
+    custom_paths = incoming.get("customPaths")
+    if not isinstance(custom_paths, dict):
+        return []
+    known = set()
+    if isinstance(stored_paths, dict):
+        for entries in stored_paths.values():
+            if isinstance(entries, list):
+                known.update(str(entry).strip().lower() for entry in entries)
+    warnings = []
+    for model_type, entries in custom_paths.items():
+        kept = []
+        for entry in entries:
+            problem = None if entry.strip().lower() in known else custom_path_problem(entry)
+            if problem:
+                warnings.append(f"Custom {model_type} folder {entry} was not saved: {problem}")
+            else:
+                kept.append(entry)
+        custom_paths[model_type] = kept
+    return warnings
 
 
 def _cached_check_items(cache_data) -> list[dict]:

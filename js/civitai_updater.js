@@ -1705,6 +1705,11 @@ async function syncSettingsToBackend() {
       state.cacheFilesChanged = true;
     }
     state.roots = data.effectiveRoots || state.roots;
+    const pathWarnings = Array.isArray(data.pathWarnings) ? data.pathWarnings : [];
+    if (pathWarnings.length) {
+      console.warn("Civitai updater:", pathWarnings.join(" "));
+      setStatus(pathWarnings.join(" "));
+    }
     if (state.rootEl) {
       renderRoots();
       renderCacheInfo();
@@ -1859,8 +1864,12 @@ function closeLightbox() {
   }
 }
 
+// The server refuses requests without this header (see request_guard.py):
+// a browser sends it cross-origin only after a CORS preflight ComfyUI denies.
+const GUARD_HEADERS = { "X-Civitai-Updater": "1" };
+
 async function getJson(path) {
-  const response = await api.fetchApi(path);
+  const response = await api.fetchApi(path, { headers: GUARD_HEADERS });
   if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
@@ -1868,7 +1877,7 @@ async function getJson(path) {
 async function postJson(path, payload) {
   const response = await api.fetchApi(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...GUARD_HEADERS, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!response.ok) throw new Error(await errorMessage(response));

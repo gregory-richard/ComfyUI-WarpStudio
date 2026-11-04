@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.9.2] - 2026-11-04
+
+### Security
+- The panel's HTTP routes accept only requests from the panel itself. Every
+  request needs the `X-Civitai-Updater: 1` header, a request whose `Origin`
+  is another site (or that the browser marks cross-site) is refused, and POST
+  bodies must be `application/json`. Before, any web page open in the same
+  browser could change the settings, add scan folders and start scans through
+  ComfyUI's unauthenticated server (CSRF).
+- A new custom model folder must be an existing, absolute folder and not a
+  whole drive or the filesystem root. A refused folder is not saved and the
+  panel's status line says why; the other settings are saved as usual.
+  Folders already saved are kept, and scans skip any that do not qualify.
+- Preview images and videos are downloaded only from Civitai over https, and
+  a redirect away from Civitai is refused. Preview URLs come from
+  `.civitai.info` files that other tools also write, so a sidecar could point
+  the server at any address, including the local network.
+- ffmpeg reads the downloaded preview video only as a local file in a known
+  video container (`-protocol_whitelist file`, `-format_whitelist`), so a
+  playlist disguised as `.mp4` cannot make it open other files or URLs.
+
 ## [1.9.1] - 2026-10-18
 
 ### Fixed

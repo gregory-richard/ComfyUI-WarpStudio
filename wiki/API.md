@@ -2,6 +2,17 @@
 
 All routes are registered on Comfy's `PromptServer` and return JSON.
 
+Every request must send the header `X-Civitai-Updater: 1`, and a POST body must
+be sent as `Content-Type: application/json`. A request whose `Origin` is not the
+ComfyUI page itself, or that the browser marks `Sec-Fetch-Site: cross-site`, is
+refused. Refused requests get `403` with `{"error": "..."}`. This keeps other web
+pages from using ComfyUI's unauthenticated server to change the settings or start
+scans. Example:
+
+```bash
+curl -H "X-Civitai-Updater: 1" http://127.0.0.1:8188/civitai-updater/config
+```
+
 ## `GET /civitai-updater/config`
 
 Returns:
@@ -24,7 +35,12 @@ Every field is optional; only the fields present in the request are updated.
 - `matureMode`: `show` | `blur` | `hide` (defaults to `show`)
 - `customPaths`: object keyed by model type (`checkpoint|lora|vae|unet|embedding`); a value is a list of paths or a string separated by `;` or new lines. Only the keys present in the request are updated.
 
-Response: `config` (public) and `effectiveRoots`, as for `GET`.
+A newly added custom path must be an existing absolute folder and not a whole
+drive or the filesystem root. Paths that fail this are left out of the saved
+config; paths already saved are kept as they are.
+
+Response: `config` (public) and `effectiveRoots`, as for `GET`, plus
+`pathWarnings`: one message per custom path that was not saved.
 
 ## `POST /civitai-updater/jobs/scan`
 
