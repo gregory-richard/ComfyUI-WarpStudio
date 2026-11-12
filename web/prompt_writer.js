@@ -2896,6 +2896,18 @@ function buildView(promptNode) {
       closePopover();
     }
   });
+  // A click on the shade closes the pop-up. Only a press that starts and ends
+  // there counts: one that starts inside, selecting text say, may end out here.
+  let pressedShade = false;
+  backdrop.addEventListener("pointerdown", (event) => {
+    pressedShade = event.target === backdrop;
+  });
+  backdrop.addEventListener("pointerup", (event) => {
+    pressedShade &&= event.target === backdrop;
+  });
+  backdrop.addEventListener("click", (event) => {
+    if (pressedShade && event.target === backdrop) closeView();
+  });
 
   // ComfyUI loads a dropped file as a workflow. Text dragged between fields is left alone.
   const dragOver = (event) => {

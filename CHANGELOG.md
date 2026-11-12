@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **A click outside the Prompt Writer closes it**, like Esc and ×. Only a press that starts and ends outside counts, so selecting text and letting go past the edge leaves it open. Writing goes on, and what you typed is still there when you open it again
+
 ## [5.0.0] - 2026-11-12
 
 This release also brings everything listed under 4.2.0, which was not released on its own.
