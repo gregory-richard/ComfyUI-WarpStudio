@@ -111,8 +111,9 @@ const PLACEHOLDER_WRITE = "Describe the prompt, or the change you want. Ctrl+Ent
 const PLACEHOLDER_ANSWER = "Answer the question. Ctrl+Enter sends.";
 const ATTACH_TITLE = "Add images (or drop or paste them here)";
 const REWIND_TITLE = "Take this request back into the input";
-const AGAIN_TITLE =
-  "Write this request again: it goes into the input with its images and what it edited. Nothing is deleted.";
+const BUILD_TITLE = "Your next request edits this version";
+const RETRY_TITLE =
+  "Put this request back into the input with its images, editing the same version, to write it again. Nothing is sent until you press ↑.";
 
 const STYLE = `
 .wpw-open {
@@ -371,8 +372,7 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
   border: 0; border-radius: 6px; background: transparent; color: var(--wpw-muted);
   font-size: 12px; cursor: pointer; opacity: 0; pointer-events: none;
 }
-.wpw-rewind.is-inline { position: static; flex: none; }
-.wpw-ask:hover .wpw-rewind, .wpw-card-head:hover .wpw-rewind, .wpw-rewind:focus-visible { opacity: 1; pointer-events: auto; }
+.wpw-ask:hover .wpw-rewind, .wpw-rewind:focus-visible { opacity: 1; pointer-events: auto; }
 .wpw-rewind:hover { background: var(--wpw-raised-hover); color: var(--wpw-ink); }
 .wpw-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 36px; }
 .wpw-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; display: block; }
@@ -439,6 +439,7 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-text { margin-top: 12px; padding: 0 2px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .wpw-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex: none; }
 .wpw-actions.is-block { margin-top: 12px; }
+.wpw-btn.is-gap { visibility: hidden; }
 .wpw-error-text { margin-top: 10px; color: var(--wpw-red); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .wpw-suggest { margin-top: 12px; }
@@ -1519,7 +1520,7 @@ function railRow(chat) {
  * What a step asked for: where it started, the request and its images, and the
  * questions on the way. `question` is one still waiting for its answer.
  */
-function stepAsk(step, { onRewind = null, question = null, again = false } = {}) {
+function stepAsk(step, { onRewind = null, question = null } = {}) {
   const said = (who, text, extra = "") =>
     el(
       "div",
@@ -1544,13 +1545,7 @@ function stepAsk(step, { onRewind = null, question = null, again = false } = {})
       said("You", turn.answer),
     ]),
     question && said("AI", question, " is-question"),
-    onRewind &&
-      iconButton(
-        again ? "pi-replay" : "pi-undo",
-        onRewind,
-        "wpw-rewind",
-        again ? AGAIN_TITLE : REWIND_TITLE
-      )
+    onRewind && iconButton("pi-undo", onRewind, "wpw-rewind", REWIND_TITLE)
   );
 }
 
@@ -1986,13 +1981,31 @@ function rowLine(chat, version) {
   return `${text} · +${stats.added} −${stats.removed}`;
 }
 
+/** Build on this, Retry (on versions the AI wrote) and Send to prompt. */
+function versionActions(chat, version, retry, primary) {
+  return [
+    labelledButton(
+      "pi-pencil",
+      "Build on this",
+      () => continueFrom(chat, version),
+      "wpw-btn",
+      BUILD_TITLE
+    ),
+    retry
+      ? labelledButton("pi-replay", "Retry", retry, "wpw-btn", RETRY_TITLE)
+      : // Keeps the buttons of a list in line where a version has nothing to retry.
+        el("span", { class: "wpw-btn is-gap", "aria-hidden": "true" }, icon("pi-replay"), "Retry"),
+    sendButton(version, primary),
+  ];
+}
+
 function versionCard(chat, version, newest, busy, keep) {
   const label = `v${version.n}`;
   const written = version.kind === KIND_WRITTEN;
   const title = version.model ? `${version.model} · ${version.systemPrompt ?? ""}` : undefined;
-  // Only a written version has a request to write again. An answer to a question is typed in
+  // Only a written version has a request to retry. An answer to a question is typed in
   // the same box, so a request cannot go there meanwhile.
-  const again = !written || busy || chat.pending ? null : () => writeAgain(chat, version);
+  const retry = !written || busy || chat.pending ? null : () => writeAgain(chat, version);
   const showing = view.changes.has(version.id) && versionBase(chat, version);
   const from = originLabel(chat, version);
   const status = written ? statusEl(version, title) : null;
@@ -2017,12 +2030,12 @@ function versionCard(chat, version, newest, busy, keep) {
       "div",
       { class: "wpw-card is-newest" },
       cardHead(label, from, status, folded),
-      written && stepAsk(version, { onRewind: again, again: true }),
+      written && stepAsk(version),
       version.reasoning && thinkingBlock(version.reasoning, version.id).block,
       changesLine(chat, version),
       body,
       ...loraRows(chat, version),
-      el("div", { class: "wpw-actions is-block" }, sendButton(version, true))
+      el("div", { class: "wpw-actions is-block" }, ...versionActions(chat, version, retry, true))
     );
   }
 
@@ -2036,14 +2049,7 @@ function versionCard(chat, version, newest, busy, keep) {
   const actions = el(
     "div",
     { class: `wpw-actions${open ? " is-block" : ""}`, onClick: stop },
-    !open && again && iconButton("pi-replay", again, "wpw-rewind is-inline", AGAIN_TITLE),
-    iconButton(
-      "pi-pencil",
-      () => continueFrom(chat, version),
-      "wpw-icon",
-      "Edit this version next"
-    ),
-    sendButton(version, false)
+    ...versionActions(chat, version, retry, false)
   );
   const head = open
     ? cardHead(label, from, status, folded)
@@ -2063,7 +2069,7 @@ function versionCard(chat, version, newest, busy, keep) {
     "div",
     { class: "wpw-card" },
     head,
-    open && written && stepAsk(version, { onRewind: again, again: true }),
+    open && written && stepAsk(version),
     open && version.reasoning && thinkingBlock(version.reasoning, version.id).block,
     open && changesLine(chat, version),
     open &&
@@ -2573,7 +2579,9 @@ function removeChat(chat) {
 }
 
 function continueFrom(chat, version) {
-  draftOf(chat.id).base = version.id;
+  flushEdits();
+  // The hand edit typing just made, if it made one.
+  draftOf(chat.id).base = current(chat, version).id;
   renderConvo(false);
   renderChips();
   view.input.focus();

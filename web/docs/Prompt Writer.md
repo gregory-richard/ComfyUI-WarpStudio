@@ -45,8 +45,8 @@ The newest version is open and editable. When you click away, what the AI wrote 
 Above the prompt a line says what changed from the version it was made from, counted in words (`Changes from v2 +38 −12 words`), or that it is the same. **Show changes** switches the prompt for its changes: the new text reads as it is, with a margin line by each line that changed; what is new is lightly green, and right above each changed piece is, small and red, what it replaced (or, where something was only taken out, what went, over a thin red mark); a line that was taken out stays, small and red; when most of it is new (`Mostly rewritten from v2`), the two versions stand side by side instead. **Show prompt** switches back.
 
 - **→ Send to prompt** — Writes the version's text, exactly as it is, into the Prompt + LoRAs chosen under **For**, as one undo step. That node flashes and the pop-up closes. It writes only the prompt and never touches the LoRA lists.
-- **Pencil** — On older versions: the next request edits this version.
-- **Again arrow** (appears on hover, on versions the AI wrote) — Puts that request back into the input with its images and what it edited, above anything you had typed there. Nothing is deleted: what you send becomes the next version. It is not there while the AI waits for an answer, since the answer goes in the same box.
+- **Build on this** — Your next request edits this version: it is chosen under **What the next request does**, and what you have typed stays in the input.
+- **Retry** (on versions the AI wrote) — Puts that request back into the input with its images, editing the same version it edited, above anything you had typed there. Nothing is sent until you press **↑**, so you can change the request first, and nothing is deleted: what you send becomes a new version beside this one. It is not there while the AI waits for an answer, since the answer goes in the same box.
 - **Chat titles** — While the first version the AI writes is being written, a cheap model names the chat from your message (**Title model** in the settings, about 0.002 ¢ per title). A title you typed always stays; an empty field or a failure keeps the first words of your message.
 - **⋮ on a chat** — **Rename** or **Delete** it.
 
@@ -58,7 +58,7 @@ The box at the bottom grows with your text. Images you add show above the text, 
 
 - **Image** — Add images; drag and drop and Ctrl+V work too. Up to 8 per request, uploaded to `input/`. They are sent only when the model has vision; otherwise they are left out and the Prompt Writer says so.
 - **What the next request does** — Sent to the LLM with your request, so a change request returns the complete updated prompt:
-  - **Edit v3 (newest)** (or an older version) — The newest is chosen until you pick another; the pencil on an older version picks it too.
+  - **Edit v3 (newest)** (or an older version) — The newest is chosen until you pick another; **Build on this** on a version picks it too.
   - **Edit current prompt** — The text in the prompt box of the **For** node, read when you press **↑**. It becomes a version of the chat first, so you can go back to it even after **Send to prompt** has replaced it in the node: a version that holds exactly that text is simply edited; a tweak of a version (at most 60% of its words changed) is added as a hand edit of it, `in the node`; anything else is added as a new start `from` that node.
   - **New prompt** — A new prompt from your request alone.
   - Editing with an empty box asks the LLM to optimise the prompt.

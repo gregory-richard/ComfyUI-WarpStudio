@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- **Only versions the AI wrote have the Again arrow**: hand edits and prompts from the node have no request to write again
+- **Build on this and Retry** replace the pencil and the Again arrow, as buttons on every version beside **Send to prompt**. **Build on this** makes your next request edit that version; **Retry** puts its request back into the input, editing the same version again, and sends nothing until you press **↑**. Only versions the AI wrote have **Retry**: hand edits and prompts from the node have no request
 - **Older chats are converted once when opened**: the node prompt each **Edit current prompt** started from, kept until now only as "The current prompt it edited", becomes a version (or points to the one it equals), so their numbers may shift once. A file converted this way still opens in 5.0.0, which shows the new versions without a request
 - **A click outside the Prompt Writer closes it**, like Esc and ×. Only a press that starts and ends outside counts, so selecting text and letting go past the edge leaves it open. Writing goes on, and what you typed is still there when you open it again
 - **A version's cost, time and tokens are small tags** at the top of its card, instead of a line of text
