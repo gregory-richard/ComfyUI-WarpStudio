@@ -4,8 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The Prompt Writer shows a chat's history as a graph**: the versions stay in the order they were made, numbered v1, v2, v3, with a line graph on their left like git history that shows which version came from which. The version the next request edits and its path back to the start are lit. Each card says where it came from (`edit of v3`, `hand edit of v4`, `from 🌀 Prompt + LoRAs`)
+- **Branches fold**: the arrow on a version hides everything made from it and shows how many (`+6`). Folds are saved with the chat; a new version, or picking a hidden one under **What the next request does**, opens the way to it
+- **Hand edits are versions**: typing in the newest version and clicking away keeps what the AI wrote and adds your text as a new version under it (a hollow dot). Until it is sent or written from, more typing changes that hand edit itself
+- **Edit current prompt makes the node's prompt a version**: if it is a version of the chat, that version is edited; if it is a tweak of one (at most 60% of the words changed), it becomes a hand edit of it, "in the node"; anything else starts a new line "from" the node (a square dot). So the prompt you edited can be chosen again after **Send to prompt** has replaced it
+
 ### Changed
 
+- **Only versions the AI wrote have the Again arrow**: hand edits and prompts from the node have no request to write again
+- **Older chats are converted once when opened**: the node prompt each **Edit current prompt** started from, kept until now only as "The current prompt it edited", becomes a version (or points to the one it equals), so their numbers may shift once. A file converted this way still opens in 5.0.0, which shows the new versions without a request
 - **A click outside the Prompt Writer closes it**, like Esc and ×. Only a press that starts and ends outside counts, so selecting text and letting go past the edge leaves it open. Writing goes on, and what you typed is still there when you open it again
 - **A version's cost, time and tokens are small tags** at the top of its card, instead of a line of text
 - **Thinking stays folded** while the model writes too; open it to watch. Once opened, it stays open while the card updates
