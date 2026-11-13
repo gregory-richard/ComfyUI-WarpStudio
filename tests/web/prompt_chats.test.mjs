@@ -13,10 +13,11 @@ import {
   addVersion,
   adoptText,
   editVersion,
+  canFold,
   foldedCount,
-  hasFollowUps,
   historyLayout,
   isUsed,
+  keptPaths,
   markSent,
   matchText,
   originLabel,
@@ -1161,13 +1162,13 @@ function treeChat() {
   return chat;
 }
 
-test("visibleVersions hides what came from a folded version, foldedCount counts all of it", () => {
+test("visibleVersions hides what came from a folded version, foldedCount counts it", () => {
   const chat = treeChat();
-  assert.equal(hasFollowUps(chat, "v2"), true);
-  assert.equal(hasFollowUps(chat, "v6"), false);
-  assert.equal(foldedCount(chat, "v2"), 4);
-  assert.equal(foldedCount(chat, "v5"), 1);
+  assert.equal(canFold(chat, "v2"), true);
+  assert.equal(canFold(chat, "v6"), false);
+  assert.equal(foldedCount(chat, "v2"), 0);
   toggleFold(chat, "v5");
+  assert.equal(foldedCount(chat, "v5"), 1);
   assert.deepEqual(
     visibleVersions(chat).map((v) => v.id),
     ["v1", "v2", "v3", "v4", "v5"]
@@ -1177,8 +1178,26 @@ test("visibleVersions hides what came from a folded version, foldedCount counts 
     visibleVersions(chat).map((v) => v.id),
     ["v1", "v2"]
   );
+  assert.equal(foldedCount(chat, "v2"), 4);
   toggleFold(chat, "v2");
   assert.deepEqual(chat.folded, ["v5"]);
+});
+
+test("folding never hides the kept versions or their path, only what leads elsewhere", () => {
+  const chat = treeChat();
+  const keep = keptPaths(chat, ["v4", "gone"]);
+  assert.deepEqual([...keep].sort(), ["v1", "v2", "v3", "v4"]);
+  assert.equal(canFold(chat, "v2", keep), true);
+  assert.equal(canFold(chat, "v3", keep), false);
+  toggleFold(chat, "v2");
+  assert.deepEqual(
+    visibleVersions(chat, keep).map((v) => v.id),
+    ["v1", "v2", "v3", "v4"]
+  );
+  assert.equal(foldedCount(chat, "v2", keep), 2);
+  const both = keptPaths(chat, ["v4", "v6"]);
+  assert.equal(visibleVersions(chat, both).length, 6);
+  assert.equal(foldedCount(chat, "v2", both), 0);
 });
 
 test("folding may hide the composer's choice; unfoldTo shows it again", () => {

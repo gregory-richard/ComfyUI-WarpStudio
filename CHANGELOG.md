@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **The Prompt Writer shows a chat's history as a graph**: the versions stay in the order they were made, numbered v1, v2, v3, with a line graph on their left like git history that shows which version came from which. The version the next request edits and its path back to the start are lit. Each card says where it came from (`edit of v3`, `hand edit of v4`, `from 🌀 Prompt + LoRAs`)
-- **Branches fold**: the arrow on a version hides everything made from it and shows how many (`+6`). Folds are saved with the chat; a new version, or picking a hidden one under **What the next request does**, opens the way to it
+- **Branches fold**: the − beside a version's dot in the graph folds the versions made from it that lead away from where you are working, and its card shows how many (`+2`); + shows them again. The newest version, the one the next request edits and their paths never fold away. Folds are saved with the chat; picking a folded version under **What the next request does** shows it again
 - **Hand edits are versions**: typing in the newest version and clicking away keeps what the AI wrote and adds your text as a new version under it (a hollow dot). Until it is sent or written from, more typing changes that hand edit itself
 - **Edit current prompt makes the node's prompt a version**: if it is a version of the chat, that version is edited; if it is a tweak of one (at most 60% of the words changed), it becomes a hand edit of it, "in the node"; anything else starts a new line "from" the node (a square dot). So the prompt you edited can be chosen again after **Send to prompt** has replaced it
 

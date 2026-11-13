@@ -519,16 +519,22 @@ function childrenMap(chat) {
   return kids;
 }
 
-/** How many versions were made from this one, directly or further down. */
-export function foldedCount(chat, id) {
-  const kids = childrenMap(chat);
-  const count = (key) => (kids.get(key) ?? []).reduce((sum, v) => sum + 1 + count(v.id), 0);
-  return count(id);
+/**
+ * Would folding this version hide anything? Versions in `keep` never fold away,
+ * so a fold hides only the follow-ups that lead elsewhere.
+ */
+export function canFold(chat, id, keep = new Set()) {
+  return chat.versions.some((v) => v.baseId === id && !keep.has(v.id));
 }
 
-/** Does anything start from this version, so that it can be folded? */
-export function hasFollowUps(chat, id) {
-  return chat.versions.some((v) => v.baseId === id);
+/** How many versions the fold of this one hides now. */
+export function foldedCount(chat, id, keep = new Set()) {
+  if (!chat.folded.includes(id)) return 0;
+  const shown = new Set(visibleVersions(chat, keep).map((v) => v.id));
+  const kids = childrenMap(chat);
+  const count = (key) =>
+    (kids.get(key) ?? []).reduce((sum, v) => sum + (shown.has(v.id) ? 0 : 1) + count(v.id), 0);
+  return count(id);
 }
 
 export function toggleFold(chat, id) {
@@ -552,11 +558,22 @@ export function unfoldTo(chat, id) {
   chat.folded = chat.folded.filter((f) => !path.has(f));
 }
 
-/** The versions in order, without those under a folded one. */
-export function visibleVersions(chat) {
+/** These versions and everything they came from: what folding never hides. */
+export function keptPaths(chat, ids) {
+  const keep = new Set();
+  for (const id of ids) for (const kept of pathTo(chat, id)) keep.add(kept);
+  return keep;
+}
+
+/**
+ * The versions in order, without those under a folded one. `keep` (closed
+ * under what each came from, see keptPaths) always shows.
+ */
+export function visibleVersions(chat, keep = new Set()) {
   const folded = new Set(chat.folded);
   const hidden = new Set();
   for (const v of chat.versions) {
+    if (keep.has(v.id)) continue;
     if (folded.has(v.baseId) || hidden.has(v.baseId)) hidden.add(v.id);
   }
   return chat.versions.filter((v) => !hidden.has(v.id));

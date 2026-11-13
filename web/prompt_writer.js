@@ -46,6 +46,7 @@ import {
   NEW_PROMPT,
   addVersion,
   adoptText,
+  canFold,
   clearFailure,
   createChat,
   deleteChat,
@@ -53,9 +54,9 @@ import {
   editVersion,
   emptyStore,
   foldedCount,
-  hasFollowUps,
   historyLayout,
   isStore,
+  keptPaths,
   latestChatFor,
   markSent,
   mergedDraft,
@@ -321,12 +322,14 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-node.is-path { fill: var(--wpw-warp); stroke: var(--wpw-warp); }
 .wpw-node.is-hand { fill: var(--wpw-ground); stroke-width: 2; }
 .wpw-node.is-next { fill: var(--wpw-ground); stroke: var(--wpw-yellow); stroke-dasharray: 2 2; }
+/* Fold controls sit in the graph's margin, beside the dot of the version they fold. */
 .wpw-fold {
-  flex: none; width: 20px; height: 20px; margin: 0 -4px 0 -6px; padding: 0; border: 0; border-radius: 4px;
-  background: none; color: var(--wpw-muted); cursor: pointer; font-size: 10px;
-  display: inline-flex; align-items: center; justify-content: center;
+  position: absolute; left: 0; top: 0; z-index: 1; width: 16px; height: 16px; padding: 0;
+  border: 1px solid var(--wpw-rule); border-radius: 4px; background: var(--wpw-ground);
+  color: var(--wpw-muted); cursor: pointer; font-size: 8px;
+  display: flex; align-items: center; justify-content: center;
 }
-.wpw-fold:hover { background: var(--wpw-raised-hover); color: var(--wpw-ink); }
+.wpw-fold:hover { color: var(--wpw-ink); border-color: var(--wpw-muted); }
 
 .wpw-card { background: var(--wpw-panel); border: 1px solid var(--wpw-line); border-radius: 10px; padding: 12px 14px; }
 .wpw-card.is-newest { border-color: color-mix(in srgb, var(--wpw-warp) 45%, var(--wpw-rule)); }
@@ -1645,12 +1648,11 @@ function paintLive() {
   if (following) convo.scrollTop = convo.scrollHeight;
 }
 
-/** A card's first line: its fold arrow, its name, where it came from, and how it stands. */
-function cardHead(label, from, status, fold = null, folded = null) {
+/** A card's first line: its name, what its fold hides, where it came from, and how it stands. */
+function cardHead(label, from, status, folded = null) {
   return el(
     "div",
     { class: "wpw-card-head" },
-    fold,
     el("span", { class: "wpw-ver", text: label }),
     folded,
     el("span", { class: "wpw-from", text: from }),
@@ -1659,31 +1661,39 @@ function cardHead(label, from, status, fold = null, folded = null) {
   );
 }
 
-/** The arrow that folds what was made from a version, or null when nothing was. */
-function foldButton(chat, version) {
-  if (!hasFollowUps(chat, version.id)) return null;
+const versionsWord = (count) => `${count} ${count === 1 ? "version" : "versions"}`;
+
+/**
+ * The fold control in the graph's margin, beside a version's dot: − folds the
+ * versions made from it that lead away from the kept ones, + shows them again.
+ * Null when folding would hide nothing.
+ */
+function foldToggle(chat, version, keep) {
+  if (!canFold(chat, version.id, keep)) return null;
   const folded = chat.folded.includes(version.id);
+  const count = foldedCount(chat, version.id, keep);
   return iconButton(
-    folded ? "pi-chevron-right" : "pi-chevron-down",
-    (event) => {
-      event.stopPropagation();
+    folded ? "pi-plus" : "pi-minus",
+    () => {
       toggleFold(chat, version.id);
       save();
       renderConvo(false);
     },
     "wpw-fold",
-    folded ? "Show the versions made from this one" : "Fold the versions made from this one"
+    folded
+      ? `Show the ${versionsWord(count)} folded under v${version.n}`
+      : `Fold the other versions made from v${version.n}`
   );
 }
 
-/** How many versions a fold hides. */
-function foldedTag(chat, version) {
-  if (!chat.folded.includes(version.id)) return null;
-  const count = foldedCount(chat, version.id);
+/** How many versions a fold hides now. */
+function foldedTag(chat, version, keep) {
+  const count = foldedCount(chat, version.id, keep);
+  if (!count) return null;
   return el("span", {
     class: "wpw-tag",
     text: `+${count}`,
-    title: `${count} folded ${count === 1 ? "version" : "versions"}`,
+    title: `${versionsWord(count)} folded`,
   });
 }
 
@@ -1976,7 +1986,7 @@ function rowLine(chat, version) {
   return `${text} · +${stats.added} −${stats.removed}`;
 }
 
-function versionCard(chat, version, newest, busy) {
+function versionCard(chat, version, newest, busy, keep) {
   const label = `v${version.n}`;
   const written = version.kind === KIND_WRITTEN;
   const title = version.model ? `${version.model} · ${version.systemPrompt ?? ""}` : undefined;
@@ -1986,8 +1996,7 @@ function versionCard(chat, version, newest, busy) {
   const showing = view.changes.has(version.id) && versionBase(chat, version);
   const from = originLabel(chat, version);
   const status = written ? statusEl(version, title) : null;
-  const fold = foldButton(chat, version);
-  const folded = foldedTag(chat, version);
+  const folded = foldedTag(chat, version, keep);
   if (newest) {
     let body;
     if (showing) {
@@ -2007,7 +2016,7 @@ function versionCard(chat, version, newest, busy) {
     return el(
       "div",
       { class: "wpw-card is-newest" },
-      cardHead(label, from, status, fold, folded),
+      cardHead(label, from, status, folded),
       written && stepAsk(version, { onRewind: again, again: true }),
       version.reasoning && thinkingBlock(version.reasoning, version.id).block,
       changesLine(chat, version),
@@ -2037,11 +2046,10 @@ function versionCard(chat, version, newest, busy) {
     sendButton(version, false)
   );
   const head = open
-    ? cardHead(label, from, status, fold, folded)
+    ? cardHead(label, from, status, folded)
     : el(
         "div",
         { class: "wpw-card-head" },
-        fold,
         el("span", { class: "wpw-ver", text: label }),
         folded,
         el("span", { class: "wpw-preview", text: rowLine(chat, version) }),
@@ -2068,8 +2076,10 @@ function versionCard(chat, version, newest, busy) {
 // The card of what is not a version yet: a write in progress, a question or a failure.
 const NEXT = "next";
 const LANE = 14;
-// The first lane's centre, from the left edge of the graph.
+// The first lane's centre, from the left edge of the lanes.
 const GRAPH_EDGE = 8;
+// The column of fold controls, left of the lanes.
+const FOLD_COLUMN = 20;
 const CONVO_WIDTH = 780;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -2094,11 +2104,21 @@ function renderConvo(stick) {
   const job = jobs.get(chat.id);
   const failure = chat.failure;
   const newest = chat.versions.at(-1);
-  const entries = visibleVersions(chat).map((version) => ({
+  // Folding never hides where you are working: the newest version, the one the next
+  // request edits, what a write, question or failure starts from, and their paths.
+  const keep = keptPaths(chat, [
+    newest?.id,
+    startValue(chat, draftOf(chat.id).base),
+    job?.baseId,
+    chat.pending?.baseId,
+    failure?.baseId,
+  ]);
+  const entries = visibleVersions(chat, keep).map((version) => ({
     id: version.id,
     baseId: version.baseId,
     kind: version.kind,
-    card: versionCard(chat, version, version === newest, !!job),
+    card: versionCard(chat, version, version === newest, !!job, keep),
+    toggle: foldToggle(chat, version, keep),
   }));
   const coming = (baseId, card) => entries.push({ id: NEXT, baseId, kind: NEXT, card });
   const next = `v${chat.versions.length + 1}`;
@@ -2150,7 +2170,13 @@ function renderConvo(stick) {
   const top = view.convo.scrollTop;
   if (entries.length) {
     const svg = svgEl("svg", { class: "wpw-graph", "aria-hidden": "true" });
-    const history = el("div", { class: "wpw-history" }, svg, ...entries.map((e) => e.card));
+    const history = el(
+      "div",
+      { class: "wpw-history" },
+      svg,
+      ...entries.map((e) => e.toggle),
+      ...entries.map((e) => e.card)
+    );
     view.graph = { chat, entries, history, svg };
     view.convo.replaceChildren(history);
     view.graphWatch.observe(history);
@@ -2188,7 +2214,9 @@ function drawGraph() {
   if (!graph?.history.isConnected) return;
   const { chat, entries, history, svg } = graph;
   const layout = historyLayout(entries);
-  const width = GRAPH_EDGE * 2 + Math.max(0, layout.lanes - 1) * LANE;
+  // The fold controls get a column of their own, left of the lanes.
+  const folds = entries.some((e) => e.toggle) ? FOLD_COLUMN : 0;
+  const width = folds + GRAPH_EDGE * 2 + Math.max(0, layout.lanes - 1) * LANE;
   history.style.paddingLeft = `${width + 6}px`;
   history.style.maxWidth = `${CONVO_WIDTH + width + 6}px`;
   const box = history.getBoundingClientRect();
@@ -2196,7 +2224,10 @@ function drawGraph() {
     const rect = (card.querySelector(".wpw-card-head") ?? card).getBoundingClientRect();
     return rect.top - box.top + rect.height / 2;
   });
-  const x = (lane) => GRAPH_EDGE + lane * LANE;
+  entries.forEach(({ toggle }, i) => {
+    if (toggle) toggle.style.top = `${ys[i] - 8}px`;
+  });
+  const x = (lane) => folds + GRAPH_EDGE + lane * LANE;
   const path = pathTo(chat, startValue(chat, draftOf(chat.id).base));
   svg.setAttribute("width", String(width));
   svg.setAttribute("height", String(box.height));
@@ -2281,13 +2312,15 @@ function chooseStart() {
   if (!chat) return;
   const value = view.start.value;
   draftOf(chat.id).base = value;
-  const hidden =
+  // A version picked from under a fold stays shown after the next pick too.
+  const folded =
     chat.versions.some((v) => v.id === value) && !visibleVersions(chat).some((v) => v.id === value);
-  if (hidden) {
+  if (folded) {
     unfoldTo(chat, value);
     save();
-    renderConvo(false);
   }
+  // What folding keeps shown follows the choice.
+  renderConvo(false);
   renderStart(chat, draftOf(chat.id));
 }
 
@@ -2541,6 +2574,7 @@ function removeChat(chat) {
 
 function continueFrom(chat, version) {
   draftOf(chat.id).base = version.id;
+  renderConvo(false);
   renderChips();
   view.input.focus();
 }
