@@ -4,8 +4,27 @@ import { test } from "node:test";
 import {
   CHATS_FILE,
   CURRENT_PROMPT,
+  KIND_HAND,
+  KIND_NODE,
+  KIND_WRITTEN,
   NEW_PROMPT,
+  addHandVersion,
+  addNodeVersion,
   addVersion,
+  adoptText,
+  editVersion,
+  foldedCount,
+  hasFollowUps,
+  historyLayout,
+  isUsed,
+  markSent,
+  matchText,
+  originLabel,
+  pathTo,
+  rowText,
+  toggleFold,
+  unfoldTo,
+  visibleVersions,
   clearFailure,
   recordFailure,
   dropQuestion,
@@ -67,6 +86,7 @@ test("createChat adds a fresh chat to the store", () => {
     versions: [],
     pending: null,
     failure: null,
+    folded: [],
   });
   assert.equal(store.chats[0], chat);
   assert.equal(createChat(store, { id: "b", now: 6, seedPrompt: "seed" }).seedPrompt, "seed");
@@ -160,7 +180,10 @@ test("normalizeStore keeps well-formed suggestions", () => {
 });
 
 test("normalizeStore tolerates versions without suggestions", () => {
-  const out = normalizeStore({ version: 1, chats: [{ id: "c", versions: [{ id: "v", text: "t" }] }] });
+  const out = normalizeStore({
+    version: 1,
+    chats: [{ id: "c", versions: [{ id: "v", text: "t" }] }],
+  });
   assert.deepEqual(out.chats[0].versions[0].suggestions, []);
   const odd = normalizeStore(storeWithSuggestions("nope"));
   assert.deepEqual(odd.chats[0].versions[0].suggestions, []);
@@ -198,7 +221,6 @@ test("addVersion fills every field and numbers from 1", () => {
     now: 7,
     request: "a red fox",
     images: ["fox.png [input]"],
-    baseId: "seed",
     text: "PROMPT",
     model: "m",
     systemPrompt: "s.txt",
@@ -210,9 +232,10 @@ test("addVersion fills every field and numbers from 1", () => {
     id: "v1",
     n: 1,
     created: 7,
+    kind: "written",
     request: "a red fox",
     images: ["fox.png [input]"],
-    baseId: "seed",
+    baseId: null,
     text: "PROMPT",
     model: "m",
     systemPrompt: "s.txt",
@@ -222,8 +245,10 @@ test("addVersion fills every field and numbers from 1", () => {
     suggestions: [],
     activeLoras: [],
     questions: [],
-    basePrompt: null,
     reasoning: "",
+    editedIn: null,
+    source: null,
+    sentAt: null,
   });
   assert.equal(chat.versions[0], v);
   assert.equal(chat.updated, 7);
@@ -392,8 +417,14 @@ test("mergedDraft: a request put back joins what was already typed", () => {
     mergedDraft({ text: "typed", images: ["b", "a"] }, { text: "back", images: ["a"] }, 8),
     { text: "back\n\ntyped", images: ["a", "b"], overflow: false }
   );
-  assert.equal(mergedDraft({ text: "  ", images: [] }, { text: "back", images: [] }, 8).text, "back");
-  assert.equal(mergedDraft({ text: "typed", images: [] }, { text: "", images: [] }, 8).text, "typed");
+  assert.equal(
+    mergedDraft({ text: "  ", images: [] }, { text: "back", images: [] }, 8).text,
+    "back"
+  );
+  assert.equal(
+    mergedDraft({ text: "typed", images: [] }, { text: "", images: [] }, 8).text,
+    "typed"
+  );
 });
 
 test("mergedDraft says when the images no longer fit", () => {
@@ -493,6 +524,7 @@ test("normalizeStore: repairs the fields it can", () => {
     id: "v",
     n: 1,
     created: 0,
+    kind: "written",
     request: "",
     images: [],
     baseId: null,
@@ -505,8 +537,10 @@ test("normalizeStore: repairs the fields it can", () => {
     suggestions: [],
     activeLoras: [],
     questions: [],
-    basePrompt: null,
     reasoning: "",
+    editedIn: null,
+    source: null,
+    sentAt: null,
   });
 });
 
@@ -568,19 +602,19 @@ test("setAutoTitle replaces an automatic title but never one the user typed", ()
 
 // --- steps, questions and where a step starts -------------------------------------
 
-test("a version keeps the questions on the way and the prompt it started from", () => {
+test("a version keeps the questions on the way", () => {
   const chat = createChat(emptyStore(), { id: "c", now: 1 });
   const turns = [{ question: "Q", answer: "A" }];
-  const v = addVersion(
-    chat,
-    version("v1", 2, { questions: turns, basePrompt: "THE PROMPT", baseId: CURRENT_PROMPT })
-  );
+  const v = addVersion(chat, version("v1", 2, { questions: turns }));
   assert.deepEqual(v.questions, [{ question: "Q", answer: "A" }]);
-  assert.equal(v.basePrompt, "THE PROMPT");
   turns[0].answer = "changed";
   assert.equal(v.questions[0].answer, "A");
   const raw = JSON.parse(JSON.stringify({ version: 1, chats: [chat] }));
-  raw.chats[0].versions[0].questions.push({ question: "", answer: "x" }, { question: "Q2" }, "junk");
+  raw.chats[0].versions[0].questions.push(
+    { question: "", answer: "x" },
+    { question: "Q2" },
+    "junk"
+  );
   assert.deepEqual(normalizeStore(raw).chats[0].versions[0].questions, [
     { question: "Q", answer: "A" },
   ]);
@@ -588,13 +622,12 @@ test("a version keeps the questions on the way and the prompt it started from", 
 
 test("openQuestion puts a step on hold, dropQuestion takes it back", () => {
   const chat = createChat(emptyStore(), { id: "c", now: 1 });
-  const step = { request: "warmer", images: ["a.png"], baseId: "v1", basePrompt: null, turns: [] };
+  const step = { request: "warmer", images: ["a.png"], baseId: "v1", turns: [] };
   const pending = openQuestion(chat, step, "Sun in frame?", 5);
   assert.deepEqual(pending, {
     request: "warmer",
     images: ["a.png"],
     baseId: "v1",
-    basePrompt: null,
     turns: [],
     question: "Sun in frame?",
   });
@@ -610,7 +643,7 @@ test("normalizeStore keeps a step that waits for an answer, and drops a broken o
   const store = emptyStore();
   const chat = createChat(store, { id: "c", now: 1 });
   const turns = [{ question: "Q", answer: "A" }];
-  openQuestion(chat, { request: "r", images: [], baseId: null, basePrompt: "P", turns }, "Q2", 2);
+  openQuestion(chat, { request: "r", images: [], baseId: null, turns }, "Q2", 2);
   assert.deepEqual(normalizeStore(JSON.parse(JSON.stringify(store))), store);
   for (const pending of [null, "x", {}, { question: "" }, { request: "r" }]) {
     const raw = { version: 1, chats: [{ id: "c", versions: [], pending }] };
@@ -659,8 +692,7 @@ test("startLabel says where a step started", () => {
   const chat = createChat(emptyStore(), { id: "c", now: 1 });
   addVersion(chat, version("v1", 2));
   assert.equal(startLabel(chat, "v1"), "edit of v1");
-  assert.equal(startLabel(chat, CURRENT_PROMPT), "edit of the current prompt");
-  assert.equal(startLabel(chat, "seed"), "edit of the current prompt");
+  assert.equal(startLabel(chat, CURRENT_PROMPT), "new prompt");
   assert.equal(startLabel(chat, null), "new prompt");
   assert.equal(startLabel(chat, "gone"), "new prompt");
 });
@@ -680,7 +712,6 @@ const FAILED = {
   request: "warmer light",
   images: ["a.png"],
   baseId: "v1",
-  basePrompt: null,
   turns: [{ question: "Q", answer: "A" }],
   answer: "A",
   originNode: { id: 7 },
@@ -695,7 +726,6 @@ test("recordFailure keeps what a Retry needs, and nothing that only lives in the
     request: "warmer light",
     images: ["a.png"],
     baseId: "v1",
-    basePrompt: null,
     turns: [{ question: "Q", answer: "A" }],
     answer: "A",
     message: "Insufficient balance",
@@ -723,13 +753,509 @@ test("normalizeStore keeps a saved failure, and drops a broken one", () => {
     request: "r",
     images: [],
     baseId: null,
-    basePrompt: null,
     turns: [],
     answer: null,
     message: "Timed out",
   });
-  for (const failure of [null, "x", {}, { request: "r" }, { message: "m" }, { request: 3, message: "m" }]) {
+  for (const failure of [
+    null,
+    "x",
+    {},
+    { request: "r" },
+    { message: "m" },
+    { request: 3, message: "m" },
+  ]) {
     const raw = { version: 1, chats: [{ id: "c", versions: [], failure }] };
     assert.equal(normalizeStore(raw).chats[0].failure, null);
   }
+});
+
+// --- kinds: written, hand and node versions -----------------------------------------
+
+test("addHandVersion and addNodeVersion", () => {
+  const chat = chatWith("v1");
+  const hand = addHandVersion(chat, { id: "h", now: 20, baseId: "v1", text: "tweaked" });
+  assert.equal(hand.kind, KIND_HAND);
+  assert.equal(hand.n, 2);
+  assert.equal(hand.baseId, "v1");
+  assert.equal(hand.request, "");
+  assert.equal(hand.model, "");
+  assert.equal(hand.cost, null);
+  assert.equal(hand.editedIn, null);
+  const node = addNodeVersion(chat, { id: "n", now: 21, text: "pasted", source: "🌀 Hero" });
+  assert.equal(node.kind, KIND_NODE);
+  assert.equal(node.n, 3);
+  assert.equal(node.baseId, null);
+  assert.equal(node.source, "🌀 Hero");
+  assert.equal(chat.updated, 21);
+});
+
+test("the first written version names the chat, not a node or hand version", () => {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  addNodeVersion(chat, { id: "n", now: 2, text: "from the node" });
+  assert.equal(chat.title, "New chat");
+  addVersion(chat, version("v2", 3, { request: "make it morning", baseId: "n" }));
+  assert.equal(chat.title, "make it morning");
+  addVersion(chat, version("v3", 4, { request: "add fog" }));
+  assert.equal(chat.title, "make it morning");
+});
+
+test("markSent remembers when a version went to a node", () => {
+  const chat = chatWith("v1");
+  markSent(chat.versions[0], 99);
+  assert.equal(chat.versions[0].sentAt, 99);
+});
+
+test("normalizeStore keeps kinds, sentAt and folded, and repairs junk", () => {
+  const raw = {
+    version: 1,
+    chats: [
+      {
+        id: "c",
+        folded: ["a", "gone", "a", 5],
+        versions: [
+          { id: "a", text: "A", kind: "node", source: "Hero", sentAt: 7 },
+          { id: "b", text: "B", kind: "hand", baseId: "a", editedIn: "node" },
+          { id: "d", text: "D", kind: "magic", editedIn: "box", sentAt: "now", source: 3 },
+        ],
+      },
+      { id: "e", versions: [] },
+    ],
+  };
+  const [chat, empty] = normalizeStore(raw).chats;
+  assert.deepEqual(
+    chat.versions.map((v) => [v.kind, v.editedIn, v.source, v.sentAt]),
+    [
+      ["node", null, "Hero", 7],
+      ["hand", "node", null, null],
+      ["written", null, null, null],
+    ]
+  );
+  assert.deepEqual(chat.folded, ["a"]);
+  assert.deepEqual(empty.folded, []);
+});
+
+test("originLabel says where a version came from", () => {
+  const chat = chatWith("v1", "v2");
+  chat.versions[1].baseId = "v1";
+  const hand = addHandVersion(chat, { id: "h", now: 20, baseId: "v2", text: "x" });
+  const inNode = addHandVersion(chat, {
+    id: "i",
+    now: 21,
+    baseId: "h",
+    text: "y",
+    editedIn: "node",
+  });
+  const node = addNodeVersion(chat, { id: "n", now: 22, text: "z", source: "🌀 Hero" });
+  const bare = addNodeVersion(chat, { id: "m", now: 23, text: "w" });
+  assert.equal(originLabel(chat, chat.versions[0]), "new prompt");
+  assert.equal(originLabel(chat, chat.versions[1]), "edit of v1");
+  assert.equal(originLabel(chat, hand), "hand edit of v2");
+  assert.equal(originLabel(chat, inNode), "hand edit of v3, in the node");
+  assert.equal(originLabel(chat, node), "from 🌀 Hero");
+  assert.equal(originLabel(chat, bare), "from the node");
+});
+
+test("rowText: the request, or how a version came to be", () => {
+  const chat = chatWith("v1");
+  assert.equal(rowText(chat.versions[0]), "ask v1");
+  assert.equal(rowText({ ...chat.versions[0], request: "" }), "Optimise the prompt");
+  const hand = addHandVersion(chat, { id: "h", now: 20, baseId: "v1", text: "x" });
+  assert.equal(rowText(hand), "Edited by hand");
+  hand.editedIn = "node";
+  assert.equal(rowText(hand), "Edited in the node");
+  assert.equal(
+    rowText(addNodeVersion(chat, { id: "n", now: 21, text: "z" })),
+    "Taken from the node"
+  );
+});
+
+test("startOptions names hand and node versions", () => {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  addNodeVersion(chat, { id: "n", now: 2, text: "from the node" });
+  addVersion(chat, version("w", 3, { request: "add fog", baseId: "n" }));
+  addHandVersion(chat, { id: "h", now: 4, baseId: "w", text: "fog!" });
+  addHandVersion(chat, { id: "i", now: 5, baseId: "h", text: "fog!!", editedIn: "node" });
+  addVersion(chat, version("x", 6, { request: "wider", baseId: "i" }));
+  assert.deepEqual(
+    startOptions(chat, "Hero").map((o) => o.label),
+    [
+      "Edit v5 (newest)",
+      "Edit v4 (edited in the node)",
+      "Edit v3 (edited by hand)",
+      "Edit v2 (add fog)",
+      "Edit v1 (taken from the node)",
+      "Edit current prompt (Hero)",
+      "New prompt",
+    ]
+  );
+});
+
+// --- a node prompt matched to the chat's versions -----------------------------------
+
+const DUSK = "A red bike by a lake at dusk, soft light, reeds in the water.";
+
+function textChat(...texts) {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  texts.forEach((text, i) => addVersion(chat, version(`v${i + 1}`, 10 + i, { text })));
+  return chat;
+}
+
+test("matchText finds the same text, newest first", () => {
+  const chat = textChat(DUSK, "other", DUSK);
+  const match = matchText(chat.versions, DUSK);
+  assert.equal(match.how, "same");
+  assert.equal(match.version.id, "v3");
+});
+
+test("matchText calls a small tweak close, to the version it is closest to", () => {
+  const chat = textChat(DUSK, "Portrait of an old sailor with a pipe, harbour behind him.");
+  const match = matchText(
+    chat.versions,
+    "A red bike by a calm lake at dusk, soft light, reeds in the water."
+  );
+  assert.equal(match.how, "close");
+  assert.equal(match.version.id, "v1");
+});
+
+test("matchText calls whitespace and punctuation changes close", () => {
+  const chat = textChat(DUSK);
+  const match = matchText(
+    chat.versions,
+    "A red bike by a lake at dusk  soft light;\nreeds in the water"
+  );
+  assert.equal(match.how, "close");
+  assert.equal(match.version.id, "v1");
+});
+
+test("matchText calls a different prompt nothing", () => {
+  const chat = textChat(DUSK);
+  assert.equal(matchText(chat.versions, "Portrait of an old sailor with a pipe."), null);
+  assert.equal(matchText([], DUSK), null);
+});
+
+test("adoptText: the same version, a hand edit in the node, or a node version", () => {
+  const chat = textChat(DUSK);
+  assert.equal(adoptText(chat, DUSK, { id: "a", now: 50, source: "Hero" }).id, "v1");
+  assert.equal(chat.versions.length, 1);
+  assert.equal(chat.updated, 10);
+
+  const tweak = adoptText(chat, DUSK.replace("dusk", "dawn"), { id: "b", now: 51, source: "Hero" });
+  assert.equal(tweak.kind, KIND_HAND);
+  assert.equal(tweak.editedIn, "node");
+  assert.equal(tweak.baseId, "v1");
+  assert.equal(tweak.n, 2);
+  assert.equal(chat.updated, 51);
+
+  const other = adoptText(chat, "Portrait of an old sailor.", { id: "c", now: 52, source: "Hero" });
+  assert.equal(other.kind, KIND_NODE);
+  assert.equal(other.baseId, null);
+  assert.equal(other.source, "Hero");
+  assert.equal(chat.versions.length, 3);
+});
+
+// --- old chats: the quoted node prompt becomes a version ----------------------------
+
+const old = (chat) => normalizeStore({ version: 1, chats: [chat] }).chats[0];
+
+test("migration: a quoted node prompt equal to an earlier version adds nothing", () => {
+  const chat = old({
+    id: "c",
+    versions: [
+      { id: "v1", text: DUSK, request: "a bike" },
+      { id: "v2", text: "B", request: "morning", baseId: "prompt", basePrompt: DUSK },
+    ],
+  });
+  assert.deepEqual(
+    chat.versions.map((v) => [v.id, v.n, v.baseId]),
+    [
+      ["v1", 1, null],
+      ["v2", 2, "v1"],
+    ]
+  );
+  assert.equal("basePrompt" in chat.versions[1], false);
+});
+
+test("migration: a close node prompt becomes a hand edit inserted before", () => {
+  const chat = old({
+    id: "c",
+    targetLabel: "Hero",
+    versions: [
+      { id: "v1", text: DUSK, request: "a bike", created: 5 },
+      {
+        id: "v2",
+        text: "B",
+        request: "morning",
+        created: 9,
+        baseId: "prompt",
+        basePrompt: DUSK + " Fog.",
+      },
+      { id: "v3", text: "C", request: "wider", baseId: "v2" },
+    ],
+  });
+  assert.deepEqual(
+    chat.versions.map((v) => [v.id, v.n, v.kind, v.baseId]),
+    [
+      ["v1", 1, "written", null],
+      ["v2~node", 2, "hand", "v1"],
+      ["v2", 3, "written", "v2~node"],
+      ["v3", 4, "written", "v2"],
+    ]
+  );
+  assert.equal(chat.versions[1].editedIn, "node");
+  assert.equal(chat.versions[1].created, 9);
+  assert.equal(chat.versions[1].text, DUSK + " Fog.");
+});
+
+test("migration: another node prompt becomes a node version from the chat's target", () => {
+  const chat = old({
+    id: "c",
+    targetLabel: "Hero",
+    seedPrompt: "Portrait of an old sailor.",
+    versions: [{ id: "v1", text: "A", request: "warmer", baseId: "seed" }],
+  });
+  assert.deepEqual(
+    chat.versions.map((v) => [v.id, v.kind, v.source, v.baseId, v.text]),
+    [
+      ["v1~node", "node", "Hero", null, "Portrait of an old sailor."],
+      ["v1", "written", null, "v1~node", "A"],
+    ]
+  );
+});
+
+test("migration: seed without a seed prompt, 'prompt' without text and unknown bases become roots", () => {
+  const chat = old({
+    id: "c",
+    versions: [
+      { id: "v1", text: "A", baseId: "seed" },
+      { id: "v2", text: "B", baseId: "prompt" },
+      { id: "v3", text: "C", baseId: "v9" },
+      { id: "v4", text: "D", baseId: "v4" },
+      { id: "v5", text: "E", baseId: "prompt", basePrompt: "  " },
+    ],
+  });
+  assert.deepEqual(
+    chat.versions.map((v) => v.baseId),
+    [null, null, null, null, null]
+  );
+});
+
+test("migration: a waiting question and a failure get their node prompt as a version at the end", () => {
+  const chat = old({
+    id: "c",
+    updated: 77,
+    versions: [{ id: "v1", text: DUSK }],
+    pending: {
+      request: "r",
+      question: "Q?",
+      baseId: "prompt",
+      basePrompt: "Portrait of a sailor.",
+    },
+    failure: { request: "r", message: "m", baseId: "prompt", basePrompt: DUSK + " Fog." },
+  });
+  assert.deepEqual(
+    chat.versions.map((v) => [v.id, v.kind, v.baseId, v.created]),
+    [
+      ["v1", "written", null, 0],
+      ["c~pending", "node", null, 77],
+      ["c~failure", "hand", "v1", 77],
+    ]
+  );
+  assert.equal(chat.pending.baseId, "c~pending");
+  assert.equal(chat.versions[1].text, "Portrait of a sailor.");
+  assert.equal(chat.failure.baseId, "c~failure");
+  assert.equal("basePrompt" in chat.pending, false);
+  assert.equal("basePrompt" in chat.failure, false);
+});
+
+test("migration is idempotent", () => {
+  const raw = {
+    version: 1,
+    chats: [
+      {
+        id: "c",
+        seedPrompt: "Portrait of an old sailor.",
+        versions: [
+          { id: "v1", text: DUSK },
+          { id: "v2", text: "B", baseId: "prompt", basePrompt: DUSK + " Fog." },
+          { id: "v3", text: "C", baseId: "seed" },
+        ],
+        pending: { request: "r", question: "Q?", baseId: "prompt", basePrompt: "Other text." },
+      },
+    ],
+  };
+  const once = normalizeStore(raw);
+  assert.deepEqual(normalizeStore(JSON.parse(JSON.stringify(once))), once);
+});
+
+// --- the graph, folding and the path -------------------------------------------------
+
+const items = (...pairs) => pairs.map(([id, baseId = null]) => ({ id, baseId }));
+const lanesOf = (layout) => Object.fromEntries(layout.rows.map((r) => [r.id, r.lane]));
+
+test("historyLayout: a chain stays in one lane", () => {
+  const layout = historyLayout(items(["a"], ["b", "a"], ["c", "b"], ["d", "c"]));
+  assert.equal(layout.lanes, 1);
+  assert.deepEqual(
+    layout.rows.map((r) => [r.lane, r.parentRow]),
+    [
+      [0, null],
+      [0, 0],
+      [0, 1],
+      [0, 2],
+    ]
+  );
+});
+
+test("historyLayout: branches get lanes of their own", () => {
+  const layout = historyLayout(
+    items(
+      ["v1"],
+      ["v2", "v1"],
+      ["v3", "v2"],
+      ["v4", "v3"],
+      ["v5", "v2"],
+      ["v6", "v5"],
+      ["v7", "v3"],
+      ["v8", "v4"]
+    )
+  );
+  const lane = lanesOf(layout);
+  for (const id of ["v1", "v2", "v3", "v4", "v8"]) assert.equal(lane[id], 0, id);
+  assert.equal(lane.v5, lane.v6);
+  assert.ok(lane.v5 > 0 && lane.v7 > 0 && lane.v5 !== lane.v7);
+  assert.equal(layout.lanes, 3);
+  assert.equal(layout.rows[4].parentRow, 1);
+});
+
+test("historyLayout: a lane is reused once its chain ended", () => {
+  const layout = historyLayout(
+    items(["a"], ["b", "a"], ["c", "a"], ["d", "b"], ["e", "d"], ["f", "d"])
+  );
+  const lane = lanesOf(layout);
+  assert.equal(lane.c, 1);
+  assert.equal(lane.f, 1);
+  assert.equal(layout.lanes, 2);
+});
+
+test("historyLayout: a new start begins its own chain, and an unknown base is a start", () => {
+  const layout = historyLayout(items(["a"], ["b", "a"], ["n"], ["m", "n"], ["next", "gone"]));
+  const lane = lanesOf(layout);
+  assert.equal(lane.a, 0);
+  assert.equal(lane.b, 0);
+  assert.equal(lane.n, 0);
+  assert.equal(lane.m, 0);
+  assert.equal(layout.rows[4].parentRow, null);
+  assert.deepEqual(historyLayout([]), { lanes: 0, rows: [] });
+});
+
+function treeChat() {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  const add = (id, baseId) => addVersion(chat, version(id, 10, { baseId }));
+  add("v1", null);
+  add("v2", "v1");
+  add("v3", "v2");
+  add("v4", "v3");
+  add("v5", "v2");
+  add("v6", "v5");
+  return chat;
+}
+
+test("visibleVersions hides what came from a folded version, foldedCount counts all of it", () => {
+  const chat = treeChat();
+  assert.equal(hasFollowUps(chat, "v2"), true);
+  assert.equal(hasFollowUps(chat, "v6"), false);
+  assert.equal(foldedCount(chat, "v2"), 4);
+  assert.equal(foldedCount(chat, "v5"), 1);
+  toggleFold(chat, "v5");
+  assert.deepEqual(
+    visibleVersions(chat).map((v) => v.id),
+    ["v1", "v2", "v3", "v4", "v5"]
+  );
+  toggleFold(chat, "v2");
+  assert.deepEqual(
+    visibleVersions(chat).map((v) => v.id),
+    ["v1", "v2"]
+  );
+  toggleFold(chat, "v2");
+  assert.deepEqual(chat.folded, ["v5"]);
+});
+
+test("folding may hide the composer's choice; unfoldTo shows it again", () => {
+  const chat = treeChat();
+  toggleFold(chat, "v2");
+  toggleFold(chat, "v5");
+  assert.equal(startValue(chat, "v6"), "v6");
+  unfoldTo(chat, "v6");
+  assert.deepEqual(chat.folded, []);
+  assert.ok(visibleVersions(chat).some((v) => v.id === "v6"));
+  toggleFold(chat, "v6");
+  unfoldTo(chat, "v6");
+  assert.deepEqual(chat.folded, ["v6"]);
+});
+
+test("pathTo walks back to the start", () => {
+  const chat = treeChat();
+  assert.deepEqual([...pathTo(chat, "v6")], ["v6", "v5", "v2", "v1"]);
+  assert.deepEqual([...pathTo(chat, "gone")], []);
+});
+
+// --- hand edits -----------------------------------------------------------------------
+
+test("editVersion keeps what the AI wrote and adds a hand edit under it", () => {
+  const chat = chatWith("v1");
+  const out = editVersion(chat, chat.versions[0], "my words", { id: "h", now: 30 });
+  assert.equal(out.made, true);
+  assert.equal(out.version.kind, KIND_HAND);
+  assert.equal(out.version.baseId, "v1");
+  assert.equal(out.version.text, "my words");
+  assert.equal(chat.versions[0].text, "text v1");
+  assert.equal(chat.versions[0].kind, KIND_WRITTEN);
+});
+
+test("editVersion changes an unused hand edit in place, a used one gets a follow-up", () => {
+  const chat = chatWith("v1");
+  const hand = editVersion(chat, chat.versions[0], "mine", { id: "h", now: 30 }).version;
+  const again = editVersion(chat, hand, "mine, more", { id: "x", now: 31 });
+  assert.deepEqual([again.made, again.version, hand.text], [false, hand, "mine, more"]);
+  assert.equal(chat.versions.length, 2);
+
+  const writing = editVersion(chat, hand, "while writing", {
+    id: "y",
+    now: 32,
+    writingBaseId: "h",
+  });
+  assert.equal(writing.made, true);
+  assert.equal(hand.text, "mine, more");
+
+  const sent = writing.version;
+  markSent(sent, 33);
+  const after = editVersion(chat, sent, "after sending", { id: "z", now: 34 });
+  assert.equal(after.made, true);
+  assert.equal(after.version.baseId, sent.id);
+  assert.equal(sent.text, "while writing");
+});
+
+test("editVersion ignores an empty or whitespace-only change", () => {
+  const chat = chatWith("v1");
+  assert.equal(editVersion(chat, chat.versions[0], "   ", { id: "h", now: 30 }), null);
+  assert.equal(editVersion(chat, chat.versions[0], " text \n v1 ", { id: "h", now: 30 }), null);
+  assert.equal(chat.versions.length, 1);
+});
+
+test("isUsed: sent, followed up, waiting, failed or being written from", () => {
+  const chat = chatWith("v1", "v2");
+  const [v1, v2] = chat.versions;
+  assert.equal(isUsed(chat, v2), false);
+  assert.equal(isUsed(chat, v2, "v2"), true);
+  v2.baseId = "v1";
+  assert.equal(isUsed(chat, v1), true);
+  chat.pending = { baseId: "v2" };
+  assert.equal(isUsed(chat, v2), true);
+  chat.pending = null;
+  chat.failure = { baseId: "v2" };
+  assert.equal(isUsed(chat, v2), true);
+  chat.failure = null;
+  markSent(v2, 5);
+  assert.equal(isUsed(chat, v2), true);
 });
