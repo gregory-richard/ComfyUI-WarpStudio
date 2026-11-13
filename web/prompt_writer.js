@@ -305,12 +305,18 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-ver { flex: none; font-size: 13px; font-weight: 600; }
 .wpw-from { flex: none; font-size: 12px; color: var(--wpw-muted); }
 .wpw-status {
-  flex: none; display: flex; align-items: center; gap: 12px; max-width: 65%; overflow: hidden;
+  flex: none; display: flex; align-items: center; gap: 6px; max-width: 65%; overflow: hidden;
   font-size: 12px; color: var(--wpw-muted); white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 .wpw-card.is-writing .wpw-status, .wpw-card.is-question .wpw-status { color: var(--wpw-yellow); }
 .wpw-card.is-error .wpw-status { color: var(--wpw-red); }
-.wpw-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--wpw-green); margin-right: -4px; }
+.wpw-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--wpw-green); margin-right: 2px; }
+/* What a write cost, how long it took and its tokens: small tags, read at a glance. */
+.wpw-tag {
+  flex: none; padding: 0 7px; font-size: 11px; line-height: 18px; color: inherit;
+  background: var(--wpw-ground); border: 1px solid var(--wpw-line); border-radius: 999px;
+}
+.wpw-tag:empty { display: none; }
 .wpw-preview { flex: 1; min-width: 0; color: var(--wpw-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* What was asked: a quiet margin line, so the prompt below it is what stands out. */
@@ -1544,12 +1550,24 @@ function tokensText(job) {
   return job.tokens ? `≈ ${Number(job.tokens).toLocaleString("en-US")} tokens` : "";
 }
 
-/** What the model thought: open while it thinks, closed under a finished version. */
-function thinkingBlock(text, open) {
+/**
+ * What the model thought: folded until you open it. `key` names the card, so
+ * one you opened stays open when the conversation is drawn again.
+ */
+function thinkingBlock(text, key) {
   const body = el("div", { class: "wpw-thinking-text", text });
   const block = el(
     "details",
-    { class: "wpw-thinking", open },
+    {
+      class: "wpw-thinking",
+      open: view.thinking.has(key),
+      onToggle: () => {
+        if (block.open) {
+          view.thinking.add(key);
+          body.scrollTop = body.scrollHeight;
+        } else view.thinking.delete(key);
+      },
+    },
     el("summary", { text: "Thinking" }),
     body
   );
@@ -1559,20 +1577,22 @@ function thinkingBlock(text, open) {
 /** The card of a write in progress, with handles to fill as the pieces come. */
 function liveCard(chat, job, label) {
   const phase = el("span", { text: phaseOf(job) });
-  const tokens = el("span", { text: tokensText(job) });
+  const seconds = secondsEl(job.startedAt);
+  seconds.className = "wpw-tag";
+  const tokens = el("span", { class: "wpw-tag", text: tokensText(job) });
   const status = el(
     "span",
     { class: "wpw-status" },
     el("span", { class: "wpw-spin" }),
     phase,
-    secondsEl(job.startedAt),
+    seconds,
     tokens
   );
-  const thinking = thinkingBlock(job.thinking, !job.text);
+  const thinking = thinkingBlock(job.thinking, `live:${chat.id}`);
   thinking.block.hidden = !job.thinking;
   const text = el("div", { class: "wpw-text is-live", text: job.text });
   text.hidden = !job.text;
-  view.live = { chatId: chat.id, phase, tokens, thinking, text, closed: !!job.text };
+  view.live = { chatId: chat.id, phase, tokens, thinking, text };
   return el(
     "div",
     { class: "wpw-card is-writing" },
@@ -1607,11 +1627,6 @@ function paintLive() {
     live.thinking.body.scrollTop = live.thinking.body.scrollHeight;
   }
   if (job.text) {
-    // Once the answer starts, the thinking steps aside; it can be opened again.
-    if (!live.closed) {
-      live.thinking.block.open = false;
-      live.closed = true;
-    }
     live.text.hidden = false;
     live.text.textContent = job.text;
   }
@@ -1757,14 +1772,14 @@ function loraRows(chat, version) {
   ];
 }
 
-/** A finished version's line: a dot, then what it cost, how long it took and its tokens. */
+/** A finished version's line: a dot, then tags for what it cost, how long it took and its tokens. */
 function statusEl(version, model) {
   const parts = statusParts({ cost: version.cost, seconds: version.seconds, usage: version.usage });
   return el(
     "span",
     { class: "wpw-status", title: model ? `Finished with ${model}` : "Finished" },
     el("span", { class: "wpw-dot" }),
-    ...parts.map((text) => el("span", { text }))
+    ...parts.map((text) => el("span", { class: "wpw-tag", text }))
   );
 }
 
@@ -1940,7 +1955,7 @@ function versionCard(chat, version, index, busy) {
       { class: "wpw-card is-newest" },
       cardHead(chat, label, version.baseId, statusEl(version, title)),
       stepAsk(chat, version, { onRewind: again, again: true }),
-      version.reasoning && thinkingBlock(version.reasoning, false).block,
+      version.reasoning && thinkingBlock(version.reasoning, version.id).block,
       changesLine(chat, version),
       body,
       ...loraRows(chat, version),
@@ -1984,7 +1999,7 @@ function versionCard(chat, version, index, busy) {
     { class: "wpw-card" },
     head,
     open && stepAsk(chat, version, { onRewind: again, again: true }),
-    open && version.reasoning && thinkingBlock(version.reasoning, false).block,
+    open && version.reasoning && thinkingBlock(version.reasoning, version.id).block,
     open && changesLine(chat, version),
     open &&
       (showing ? changesView(chat, version) : el("div", { class: "wpw-text", text: version.text })),
@@ -2986,6 +3001,8 @@ function buildView(promptNode) {
     editors: [],
     expanded: new Set(),
     changes: new Set(),
+    // Cards whose thinking you opened: "live:<chat id>" while it writes, else the version id.
+    thinking: new Set(),
     popover: null,
     renaming: null,
     confirmDelete: null,

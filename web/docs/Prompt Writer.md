@@ -36,7 +36,7 @@ The **✨ AI** button of a node opens the most recent chat for that node, or a n
 
 ## Versions
 
-Each **Write** is one card: its version number, what it changed (`edit of v2`, `edit of the current prompt` or `new prompt`), what it cost and how long it took (e.g. `Finished · 0.3 ¢ · 8 s · 1,812 → 640 tokens`), then what you asked for with its images and any questions the AI asked on the way, and then the prompt it wrote. The LLM sees only what it edits, your request and those questions and answers, never the rest of the chat, which is why it is not shown as a conversation.
+Each **Write** is one card: its version number, what it changed (`edit of v2`, `edit of the current prompt` or `new prompt`), tags for what it cost, how long it took and its tokens (e.g. `0.3 ¢` `8 s` `1,812 → 640 tokens`), then what you asked for with its images and any questions the AI asked on the way, and then the prompt it wrote. The LLM sees only what it edits, your request and those questions and answers, never the rest of the chat, which is why it is not shown as a conversation.
 
 The newest version is open and editable; your edit is saved when you click away. Older versions are one line with your request; click to read them.
 
@@ -65,7 +65,7 @@ The box at the bottom grows with your text. Images you add show above the text, 
 
 ## While it writes
 
-The card shows what the model is doing (waiting, thinking or writing), the seconds, and an estimate of the tokens it has answered so far; the exact count replaces it when the version is done. Models that send their thinking show it under **Thinking** as it comes, scrolled to the newest line, and the prompt appears as it is written. Once the prompt starts, the thinking folds away, and a finished version keeps it, folded, under its request. Whether a model sends its thinking depends on the model: the `:thinking` variants in NanoGPT's list do.
+The card shows what the model is doing (waiting, thinking or writing), the seconds, and an estimate of the tokens it has answered so far; the exact count replaces it when the version is done. Models that send their thinking show it under **Thinking**, folded; open it to watch it come, scrolled to the newest line. The prompt appears as it is written, and a finished version keeps the thinking, folded, under its request. Whether a model sends its thinking depends on the model: the `:thinking` variants in NanoGPT's list do.
 
 ## Questions
 
