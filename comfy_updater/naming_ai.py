@@ -37,6 +37,8 @@ class ModelInput:
     description: str  # the model's description, HTML as Civitai serves it
     slots: list[Slot]
     new_bases: list[str]  # base models the code table does not know yet
+    # An official file (ComfyUI's own file name) is among the entries: its link owners may name the maker.
+    official: bool = False
 
 
 @dataclass
@@ -67,9 +69,44 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 _CREDIT_CUE = re.compile(
     r"\boriginal(?!ly)|credit|re-?upload|not (?:my|the) (?:own|model|creator|author)|i am not the|i'm not the"
     r"|convert|quantiz|model developer|developed by|made by|created by|trained by"
-    r"|all rights|uploaded by|hugging ?face",
+    r"|all rights|uploaded by|hugging ?face|originally (?:posted|released|uploaded|published|created)",
     re.IGNORECASE,
 )
+# A model or code link, anywhere in the description (also in an href): its owner names the maker.
+_MODEL_LINK = re.compile(
+    r"(?<![a-z0-9.-])(?:https?://)?(?:www\.)?(huggingface\.co|hf\.co|github\.com|modelscope\.cn|modelscope\.ai)"
+    r"/([a-z0-9][a-z0-9_.-]*)(?:/([a-z0-9][a-z0-9_.-]*))?",
+    re.IGNORECASE,
+)
+# Path words in front of the owner ("huggingface.co/spaces/<owner>/...").
+_LINK_PREFIXES = {"spaces", "datasets", "models", "organizations", "collections", "users"}
+# Pages that are not an owner at all.
+_LINK_PAGES = {
+    "docs", "blog", "papers", "login", "join", "search", "settings", "pricing", "about", "features",
+    "topics", "explore", "marketplace", "sponsors", "learn", "tasks", "posts", "enterprise",
+    "api", "new", "apps", "orgs",
+}
+_LINK_OWNERS = 5
+
+
+def link_owners(html_text: str) -> list[str]:
+    """``host/owner`` of each Hugging Face, GitHub or ModelScope link, in order, once each."""
+    owners: list[str] = []
+    for match in _MODEL_LINK.finditer(html_text or ""):
+        host, owner, rest = match.group(1).lower(), match.group(2), match.group(3)
+        if host == "hf.co":
+            host = "huggingface.co"
+        if owner.lower() in _LINK_PREFIXES:
+            owner = rest or ""
+        owner = owner.rstrip(".").lower()
+        if not owner or owner in _LINK_PAGES or owner in _LINK_PREFIXES:
+            continue
+        item = f"{host}/{owner}"
+        if item not in owners:
+            owners.append(item)
+        if len(owners) >= _LINK_OWNERS:
+            break
+    return owners
 
 
 def _cut_words(text: str, limit: int) -> str:
@@ -80,15 +117,34 @@ def _cut_words(text: str, limit: int) -> str:
     return cut[:limit].rstrip()
 
 
-def credit_lines(html_text: str, limit: int = 600) -> str:
+def credit_lines(html_text: str, limit: int = 600, *, official: bool = False) -> str:
     """The description's sentences that may say who made the model, joined; "" if none.
 
     The AI sees only these, and only to answer the original maker. The rest of a
     description (trigger words, settings, changelogs with version numbers) is
     noise for naming, and the title and version never come from the description.
     Whole sentences are kept up to ``limit`` characters; a first sentence longer
-    than that is cut after a whole word.
+    than that is cut after a whole word. The owners of model links (see
+    ``link_owners``) follow as "Links: ...", inside the same limit, but only when
+    there is a credit sentence or the model is an ``official`` file: a model that
+    merely links the tools it was made with must not get their owners as makers.
     """
+    if not official and not _credit_sentences(html_text, limit):
+        return ""
+    owners = link_owners(html_text)
+    links = "Links: " + ", ".join(owners) if owners else ""
+    while links and len(links) > limit and len(owners) > 1:
+        owners.pop()
+        links = "Links: " + ", ".join(owners)
+    if len(links) > limit:
+        links = ""
+    sentences = _credit_sentences(html_text, limit - len(links) - 1 if links else limit)
+    return " ".join(part for part in (sentences, links) if part)
+
+
+def _credit_sentences(html_text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
     text = _BLOCK_TAG.sub("\n", html_text or "")
     text = html.unescape(_TAG.sub(" ", text))
     kept: list[str] = []
@@ -167,7 +223,7 @@ def build_message(mi: ModelInput) -> str:
         lines.append(line)
     if mi.new_bases:
         lines.append("New base models: " + ", ".join(mi.new_bases))
-    lines.append(f"Credit lines (only for the original line): {credit_lines(mi.description) or 'none'}")
+    lines.append(f"Credit lines (only for the original line): {credit_lines(mi.description, official=mi.official) or 'none'}")
     return "\n".join(lines)
 
 

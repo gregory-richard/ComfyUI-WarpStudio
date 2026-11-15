@@ -151,9 +151,10 @@ too old to have Generate Text cannot run the renamer; the view says so.
    about models that changed.
 2. **Review.** Rows that need a look come first: a word the naming model could
    not find in Civitai's text, a maker taken from the description, two files
-   that would get the same name, an official file ComfyUI's templates may look
-   for, a new base code. Each row shows which parts changed. You can **Edit**
-   any part, **Keep this name**, or **Ask again** to let the naming model name
+   that would get the same name, two versions or two models by one creator
+   that would get the same name or title (the naming model is asked once more
+   first), an official file ComfyUI's templates may look for, a new base code. Each row shows which parts changed. You can **Edit**
+   any part, **Keep current name**, or **Ask again** to let the naming model name
    the model afresh on the next dry run. The same release saved twice in one
    folder offers **Remove extra copy**.
 3. **Apply selected** renames the ticked rows. Extra copies you chose to remove
@@ -175,7 +176,7 @@ The dry run lists these as kept, with the reason:
   enough to rebuild a name from.
 - Files whose Civitai match is not the release's main model file, or whose
   Civitai type does not fit the folder (a text encoder in `unet`, say).
-- Anything you marked **Keep this name**. **Undo keep** brings it back.
+- Anything you marked **Keep current name**. **Undo keep current name** brings it back.
 
 Two kinds are left alone without being listed:
 

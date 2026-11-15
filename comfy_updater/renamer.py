@@ -354,7 +354,15 @@ class _Pending:
     source: str
     # Base-model names and codes the base-word check knows: the code table and this model's bases.
     base_names: List[str] = field(default_factory=list)
+    # Per member (``id(placed)``): its precision part, and its saved version decision (None: the AI's).
+    precisions: Dict[int, str] = field(default_factory=dict)
+    decided_versions: Dict[int, Optional[str]] = field(default_factory=dict)
+    # Base model -> saved code (None: the AI's answer gives it).
+    base_code_of: Dict[str, Optional[str]] = field(default_factory=dict)
     retried: bool = False
+    # Re-asked once because another model of the creator got the same title.
+    clash_retried: bool = False
+    clash_reasons: List[str] = field(default_factory=list)
 
 
 def _text(value) -> str:
@@ -399,16 +407,39 @@ def _model_input(group: ModelGroup, base_codes: BaseCodeStore) -> Tuple[ModelInp
         description=description if isinstance(description, str) else "",
         slots=slots,
         new_bases=new_bases,
+        official=any(_is_official_file(placed) for placed in group.placed),
     )
     return model_input, slot_members
 
 
-def _prepare(group: ModelGroup, base_codes: BaseCodeStore, clip_name: str) -> _Pending:
+def _saved_version(placed: Placed, decisions: Optional[DecisionStore]) -> Optional[str]:
+    """The user's version for this file (per file, else per version), or None for the AI's."""
+    if decisions is None:
+        return None
+    version = decisions.file(placed.file_key).get("version")
+    if version is None:
+        version = decisions.version(placed.entry.version_id)
+    return version
+
+
+def _prepare(
+    group: ModelGroup, base_codes: BaseCodeStore, clip_name: str, decisions: Optional[DecisionStore] = None
+) -> _Pending:
     model_input, slot_members = _model_input(group, base_codes)
     message = build_message(model_input)
     slots = model_input.slots
     source = " ".join([model_input.title] + [s.version_name for s in slots] + [s.file_name for s in slots])
+    precisions: Dict[int, str] = {}
+    decided_versions: Dict[int, Optional[str]] = {}
+    for slot, members in slot_members:
+        version_live = _find_version(group.model, slot.version_id) or {}
+        for placed in members:
+            precisions[id(placed)] = _precision(placed, version_live)
+            decided_versions[id(placed)] = _saved_version(placed, decisions)
     return _Pending(
+        precisions=precisions,
+        decided_versions=decided_versions,
+        base_code_of={slot.base_model: base_codes.code(slot.base_model) for slot in slots if slot.base_model},
         group=group,
         model_input=model_input,
         slot_members=slot_members,
@@ -417,7 +448,7 @@ def _prepare(group: ModelGroup, base_codes: BaseCodeStore, clip_name: str) -> _P
             group.model_id, {"message": message, "promptVersion": PROMPT_VERSION, "clipName": clip_name}
         ),
         # The maker check reads the same credit lines the AI saw.
-        credit_text=credit_lines(model_input.description),
+        credit_text=credit_lines(model_input.description, official=model_input.official),
         source=source,
         base_names=_base_names(base_codes, slots),
     )
@@ -514,7 +545,83 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
             probe.title, probe.version, vocabulary, xl_base=xl_is_base(slot.base_model)
         )
         problems.extend(_flag_message(code, probe) for code in codes)
+    problems.extend(_version_clash_problems(pending, answer))
     return list(dict.fromkeys(problems))
+
+
+def _version_clash_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
+    """Two versions of the model whose files would get the same version, precision and base.
+
+    Only where the AI gave at least one of the two versions: a clash between two
+    saved versions is the user's own choice, flagged on the rows but not asked about.
+    """
+    seen: Dict[Tuple[str, str, str], Tuple[Slot, bool]] = {}
+    problems: List[str] = []
+    told: Set[Tuple[str, str]] = set()
+    for slot, members in pending.slot_members:
+        code = pending.base_code_of.get(slot.base_model) if slot.base_model else None
+        base = format_part(code if code is not None else answer.bases.get(slot.base_model, ""))
+        for placed in members:
+            saved = pending.decided_versions.get(id(placed))
+            version = format_part(saved if saved is not None else answer.versions.get(slot.key, ""))
+            key = (version, format_part(pending.precisions.get(id(placed), "")), base)
+            from_answer = saved is None
+            if key not in seen:
+                seen[key] = (slot, from_answer)
+                continue
+            other, other_from_answer = seen[key]
+            if other.version_id == slot.version_id or not (from_answer or other_from_answer):
+                continue
+            pair = (other.version_id, slot.version_id)
+            if pair in told:
+                continue
+            told.add(pair)
+            became = f'both became "{version}"' if version else "both got no version"
+            problems.append(
+                f'Versions "{other.version_name}" and "{slot.version_name}" {became}; keep the words that tell them apart.'
+            )
+    return problems
+
+
+def _mark_version_clashes(rows: List[dict]) -> None:
+    """Flag ``version-clash`` on one model's named rows whose versions differ but whose names would not."""
+    buckets: Dict[Tuple[str, str, str], List[dict]] = {}
+    for row in rows:
+        if row.get("status") not in ("change", "unchanged"):
+            continue
+        row["flags"] = [flag for flag in row.get("flags") or [] if flag != "version-clash"]
+        parts = row.get("parts") or {}
+        key = tuple(str(parts.get(name) or "") for name in ("version", "precision", "base"))
+        buckets.setdefault(key, []).append(row)  # type: ignore[arg-type]
+    for members in buckets.values():
+        if len({str(row.get("versionId")) for row in members}) > 1:
+            for row in members:
+                row["flags"].append("version-clash")
+
+
+def title_clash_models(rows: Iterable[dict], decided_titles: Callable[[str], bool]) -> Dict[str, List[str]]:
+    """Models whose named rows share creator, title and base code with another model: model id -> the others' ids.
+
+    The same title under different base codes is no clash (one idea released per
+    base). Two models whose titles both came from the user are the user's choice.
+    """
+    by_name: Dict[Tuple[str, str, str], List[str]] = {}
+    for row in rows:
+        key = _title_key(row)
+        if key is None:
+            continue
+        ids = by_name.setdefault(key, [])
+        model_id = str(row.get("modelId"))
+        if model_id not in ids:
+            ids.append(model_id)
+    clashes: Dict[str, List[str]] = {}
+    for ids in by_name.values():
+        if len(ids) < 2 or all(decided_titles(model_id) for model_id in ids):
+            continue
+        for model_id in ids:
+            others = clashes.setdefault(model_id, [])
+            others.extend(other for other in ids if other != model_id and other not in others)
+    return clashes
 
 
 def _precision(placed: Placed, version: dict) -> str:
@@ -568,11 +675,13 @@ def _group_rows(
     group = pending.group
     model_decision = decisions.model(group.model_id)
     group_flags: List[str] = []
+    maker_found = "creator" in model_decision
     if "creator" in model_decision:
         creator = model_decision["creator"]
     else:
         creator = _creator_from_answer(pending, answer)
         if creator:
+            maker_found = True
             group_flags.append("maker-from-description")
             if not maker_in_description(creator, pending.credit_text):
                 group_flags.append("maker-not-in-description")
@@ -617,13 +726,19 @@ def _group_rows(
                 creator=format_part(row_creator),
                 title=format_part(title),
                 version=format_part(version),
-                precision=format_part(_precision(placed, version_live)),
+                precision=format_part(
+                    pending.precisions[id(placed)] if id(placed) in pending.precisions
+                    else _precision(placed, version_live)
+                ),
                 base=format_part(code),
             )
             flags.extend(_parts_flags(parts))
             flags.extend(name_check_flags(parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model)))
             if _is_official_file(placed):
                 flags.append("official-file")
+                if not maker_found:
+                    # An official model re-uploaded: the uploader is rarely its maker.
+                    flags.append("maker-unknown")
             if placed.file is None and entry.sha256:
                 flags.append("file-not-in-release")
             new_stem = assemble(parts)
@@ -644,15 +759,20 @@ def _group_rows(
                     "flags": flags,
                     "status": status,
                     "reason": "",
-                    "selected": status == "change" and not flags,
+                    "selected": False,
                     # For re-assembling after an edit and for the sidecar title after apply.
                     "baseModel": slot.base_model,
                     # The model's other bases, for the base-word check after an edit.
                     "modelBaseModels": model_bases,
                     "liveTitle": pending.model_input.title,
+                    # The live Civitai uploader, whoever the name credits.
+                    "uploader": pending.model_input.creator,
                     **entry.identity,
                 }
             )
+    _mark_version_clashes(rows)
+    for row in rows:
+        row["selected"] = row["status"] == "change" and not row["flags"]
     return rows
 
 
@@ -728,6 +848,20 @@ class _FolderCheck:
             for peer in peers:
                 _add_flag(peer, "collision")
 
+    def unplace(self, row: dict) -> None:
+        """Take a placed row back (it is being named again); a peer left alone loses its collision."""
+        peers = self._by_new.get((row["folder"].lower(), row["newStem"].lower()), [])
+        for index, peer in enumerate(peers):
+            if peer is row:
+                del peers[index]
+                break
+        else:
+            return
+        if len(peers) == 1 and "collision" in peers[0]["flags"]:
+            peer = peers[0]
+            peer["flags"] = [flag for flag in peer["flags"] if flag != "collision"]
+            peer["selected"] = peer["status"] == "change" and not peer["flags"]
+
 
 def _error_rows(group: ModelGroup, exc: Exception) -> List[dict]:
     return [_finished_row(p.entry, p.file_key, "error", str(exc) or type(exc).__name__) for p in group.placed]
@@ -741,11 +875,44 @@ GROUP_SIZE = 3
 ANSWER_TOKENS_PER_MODEL = 160
 
 
+@dataclass
+class _Named:
+    """A model whose rows are emitted: kept so a title clash can re-ask it and replace its rows."""
+
+    pending: _Pending
+    rows: List[dict]
+    title_decided: bool
+    # The answer's text when it passed every check (None: it has problems), and whether it is cached.
+    text: Optional[str] = None
+    cached: bool = False
+
+
+def _title_key(row: dict) -> Optional[Tuple[str, str, str]]:
+    """(creator, title, base code) of a named row: two models clash only under the same base.
+
+    One idea released per base (the same title as "(ill)" and "(krea2)") is the
+    user's naming: the base codes already keep those names apart.
+    """
+    if row.get("status") not in ("change", "unchanged"):
+        return None
+    parts = row.get("parts") or {}
+    title = str(parts.get("title") or "")
+    return (str(parts.get("creator") or ""), title, str(parts.get("base") or "")) if title else None
+
+
 class _Namer:
     """Asks the AI for the groups given to ``add``, a batch of calls at a time.
 
     Every group is checked, retried (alone, with the single-model retry message)
     and cached on its own, whatever ``group_size`` put it in a call with.
+
+    Once a model's rows are out, its creator, title and base codes are compared
+    with the other models named so far. Two models with the same creator and
+    title under a shared base code are
+    each re-asked once more, alone, with the other's Civitai title (a model
+    whose title the user decided is not); the new rows replace the old ones in
+    place. ``flag_title_clashes`` flags what still clashes at the end. An answer
+    is cached only while it clashes with no other model.
     """
 
     def __init__(
@@ -776,6 +943,8 @@ class _Namer:
         self.done = 0  # groups whose rows are emitted
         self._new: List[_Pending] = []
         self._retries: List[Tuple[_Pending, str]] = []
+        self._named: Dict[str, _Named] = {}
+        self._by_title: Dict[Tuple[str, str, str], List[str]] = {}
 
     def _emit_rows(self, rows: List[dict]) -> None:
         with self.lock:
@@ -785,17 +954,147 @@ class _Namer:
                 self.emit(row)
             self.done += 1
 
-    def _finish(self, pending: _Pending, answer: ModelAnswer) -> None:
+    def _replace_rows(self, old_rows: List[dict], rows: List[dict]) -> List[dict]:
+        """Update the emitted row dicts in place with the new ones (matched by key); returns the rows now out."""
+        with self.lock:
+            by_key = {row["key"]: row for row in old_rows}
+            out: List[dict] = []
+            for row in rows:
+                old = by_key.pop(row["key"], None)
+                if old is None:
+                    if row["status"] in ("change", "unchanged"):
+                        self.folders.place(row)
+                    self.emit(row)
+                    out.append(row)
+                    continue
+                if old.get("status") in ("change", "unchanged"):
+                    self.folders.unplace(old)
+                # The same keys: updated, never emptied, so a concurrent read sees a whole row.
+                old.update(row)
+                if old["status"] in ("change", "unchanged"):
+                    self.folders.place(old)
+                out.append(old)
+            out.extend(by_key.values())  # never expected: the same entries are named again
+            return out
+
+    def _finish(self, pending: _Pending, answer: ModelAnswer, text: Optional[str] = None, cached: bool = False) -> None:
+        """Rows from the answer: emitted (or replacing the model's earlier ones), then the title check.
+
+        ``text`` is a clean answer to cache once it clashes with nothing; ``cached``: it already is.
+        """
         try:
             rows = _group_rows(pending, answer, self.decisions, self.base_codes)
         except Exception as exc:  # noqa: BLE001 - one model's odd data must not end the run
             rows = _error_rows(pending.group, exc)
-        self._emit_rows(rows)
+        model_id = pending.group.model_id
+        with self.lock:
+            previous = self._named.get(model_id)
+            if previous is None:
+                self._emit_rows(rows)
+                old_partners: Set[str] = set()
+            else:
+                old_partners = self._unregister(model_id)
+                rows = self._replace_rows(previous.rows, rows)
+            named = _Named(
+                pending=pending,
+                rows=rows,
+                title_decided="title" in self.decisions.model(model_id),
+                text=text,
+                cached=cached,
+            )
+            self._named[model_id] = named
+            self._register(model_id)
+            partners = self._partners(model_id)
+            if partners:
+                self._clash(model_id, partners)
+            else:
+                self._cache_if_clear(model_id)
+            for other in old_partners - partners - {model_id}:
+                self._cache_if_clear(other)
+
+    # --- title clashes ---------------------------------------------------------
+
+    def _keys(self, model_id: str) -> Set[Tuple[str, str, str]]:
+        named = self._named.get(model_id)
+        if named is None:
+            return set()
+        return {key for key in (_title_key(row) for row in named.rows) if key is not None}
+
+    def _register(self, model_id: str) -> None:
+        for key in self._keys(model_id):
+            ids = self._by_title.setdefault(key, [])
+            if model_id not in ids:
+                ids.append(model_id)
+
+    def _unregister(self, model_id: str) -> Set[str]:
+        """Take the model's titles out; returns the models it clashed with."""
+        partners = self._partners(model_id)
+        for key in self._keys(model_id):
+            ids = self._by_title.get(key, [])
+            if model_id in ids:
+                ids.remove(model_id)
+        return partners
+
+    def _partners(self, model_id: str) -> Set[str]:
+        """Other models with the same creator and title, unless both titles are the user's."""
+        named = self._named.get(model_id)
+        partners: Set[str] = set()
+        for key in self._keys(model_id):
+            for other in self._by_title.get(key, []):
+                if other == model_id:
+                    continue
+                if named is not None and named.title_decided and self._named[other].title_decided:
+                    continue
+                partners.add(other)
+        return partners
+
+    def _cache_if_clear(self, model_id: str) -> None:
+        named = self._named.get(model_id)
+        if named is None or named.text is None or named.cached or self._partners(model_id):
+            return
+        self.cache.put(named.pending.cache_key, {"text": named.text})
+        named.cached = True
+
+    def _clash(self, model_id: str, partners: Set[str]) -> None:
+        """Uncache the clashing answers and re-ask, once, each model whose title came from the AI."""
+        for member in [model_id, *sorted(partners)]:
+            named = self._named[member]
+            if named.title_decided:
+                continue
+            if named.cached:
+                # Never kept while it clashes: the next dry run asks again.
+                self.cache.drop(named.pending.cache_key)
+                named.cached = False
+            pending = named.pending
+            if pending.clash_retried:
+                continue
+            other = model_id if member != model_id else sorted(partners)[0]
+            other_title = self._named[other].pending.model_input.title
+            shared = self._keys(member) & self._keys(other)
+            title = sorted(shared)[0][1] if shared else ""
+            reason = (
+                f'Another model by this creator, "{other_title}", also became "{title}"; '
+                "keep what sets this model apart."
+            )
+            pending.clash_retried = True
+            pending.clash_reasons = [reason]
+            self._retries.append((pending, retry_message(pending.model_input, [reason])))
+
+    def flag_title_clashes(self) -> None:
+        """Flag ``title-clash`` on the rows of every model that still shares creator and title with another."""
+        with self.lock:
+            for model_id, named in self._named.items():
+                if self._partners(model_id):
+                    for row in named.rows:
+                        if row.get("status") in ("change", "unchanged"):
+                            _add_flag(row, "title-clash")
+
+    # --- asking ----------------------------------------------------------------
 
     def add(self, group: ModelGroup) -> None:
         """A cached answer that still passes the checks names the group now; else it waits for the AI."""
         try:
-            pending = _prepare(group, self.base_codes, self.clip_name)
+            pending = _prepare(group, self.base_codes, self.clip_name, self.decisions)
             cached = self.cache.get(pending.cache_key)
             answer = None
             if cached is not None and isinstance(cached.get("text"), str):
@@ -806,7 +1105,7 @@ class _Namer:
             self._emit_rows(_error_rows(group, exc))
             return
         if answer is not None:
-            self._finish(pending, answer)
+            self._finish(pending, answer, text=cached["text"], cached=True)
         else:
             self._new.append(pending)
 
@@ -840,21 +1139,24 @@ class _Namer:
                 self._check(pending, section)
 
     def _check(self, pending: _Pending, text: str) -> None:
+        model_id = pending.group.model_id
         try:
             answer = parse_answer(text, pending.model_input)
             problems = _answer_problems(pending, answer)
         except Exception as exc:  # noqa: BLE001
+            if model_id in self._named:
+                return  # a re-ask after a title clash: its earlier rows stay
             self._emit_rows(_error_rows(pending.group, exc))
             return
         if problems and not pending.retried:
             pending.retried = True
-            # Retries go into the very next batch.
-            self._retries.append((pending, retry_message(pending.model_input, problems)))
+            # Retries go into the very next batch; after a clash re-ask the clash stays in the reasons.
+            self._retries.append((pending, retry_message(pending.model_input, problems + pending.clash_reasons)))
             return
-        if not problems:
-            # Cached per model, as this model's own answer: reusable whatever the group size.
-            self.cache.put(pending.cache_key, {"text": text})
-        self._finish(pending, answer)
+        if problems and model_id in self._named:
+            return  # the clash re-ask came back worse: the earlier rows stay (and are flagged at the end)
+        # Cached per model, as this model's own answer: reusable whatever the group size.
+        self._finish(pending, answer, text=None if problems else text)
 
 
 def _stopped(control) -> bool:
@@ -896,16 +1198,20 @@ def name_groups(
         batch_size=batch_size,
         group_size=group_size,
     )
-    for group in groups:
-        if _stopped(control):
-            return
-        namer.add(group)
-    while namer.has_work():
-        if _stopped(control):
-            return
-        progress(namer.done, total, f"Naming models with the AI ({namer.done} of {total} done)")
-        namer.run_batch()
-    progress(total, total, f"Named {total} models")
+    try:
+        for group in groups:
+            if _stopped(control):
+                return
+            namer.add(group)
+        while namer.has_work():
+            if _stopped(control):
+                return
+            progress(namer.done, total, f"Naming models with the AI ({namer.done} of {total} done)")
+            namer.run_batch()
+        progress(total, total, f"Named {total} models")
+    finally:
+        # Whenever naming ends (done, stopped or failed): the rows already out get their flags.
+        namer.flag_title_clashes()
 
 
 def _summary(entries: List[Entry], rows: List[dict]) -> dict:
@@ -1059,6 +1365,8 @@ def run_dry_run(
                 break
     finally:
         with lock:
+            # Whenever naming ends (done, stopped or failed), before the run's rows are final.
+            namer.flag_title_clashes()
             stop.set()
         # A cancelled fetch ends within a request. After a NamingModelError or a fetch error
         # one Civitai request may still be in flight and outlive the run: the client's

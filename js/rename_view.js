@@ -24,7 +24,7 @@ const KEPT_REASONS = {
   "release-gone": "Release gone from Civitai",
   "not-main-file": "Not the main model file",
   "type-mismatch": "Type doesn't fit the folder",
-  "kept-by-you": "Kept by you",
+  "kept-by-you": "Current name kept by you",
   "dry-run-again": "Run a new dry run to name it again",
 };
 
@@ -72,11 +72,40 @@ export function isBlockingFlag(flag) {
   return BLOCKING_KINDS.has(flagParts(flag)[0]);
 }
 
+const lower = (text) => String(text ?? "").toLowerCase();
+const quoted = (items) => items.map((item) => `"${item}"`).join(", ");
+
+/* The other named rows a clash flag is about, found in the dry run's rows. */
+function otherRows(row, rows, match) {
+  if (!row || !Array.isArray(rows)) return [];
+  return rows.filter((other) => other && other !== row && other.key !== row.key && NAMED.has(other.status) && match(other));
+}
+
+function collisionPeers(row, rows) {
+  return otherRows(row, rows, (other) => lower(other.folder) === lower(row.folder) && lower(other.newStem) === lower(row.newStem));
+}
+
+function titleClashTitles(row, rows) {
+  const parts = row?.parts || {};
+  const peers = otherRows(row, rows, (other) => String(other.modelId) !== String(row.modelId)
+    && ["creator", "title", "base"].every((name) => (other.parts?.[name] ?? "") === (parts[name] ?? "")));
+  return [...new Set(peers.map((other) => String(other.liveTitle || other.oldStem || "")).filter(Boolean))];
+}
+
+function versionClashPeers(row, rows) {
+  const parts = row?.parts || {};
+  return otherRows(row, rows, (other) => String(other.modelId) === String(row.modelId)
+    && String(other.versionId) !== String(row.versionId)
+    && ["version", "precision", "base"].every((name) => (other.parts?.[name] ?? "") === (parts[name] ?? "")));
+}
+
 /* One flag code in plain words: {text, level, action?}. level is "block"
-   (the name cannot be applied as it is), "warn" (check it) or "info". */
-export function flagInfo(flag, row) {
+   (the name cannot be applied as it is), "warn" (check it) or "info".
+   rows (the whole dry run, optional) lets a clash name the other file or model. */
+export function flagInfo(flag, row, rows) {
   const [kind, arg] = flagParts(flag);
   const parts = (row && row.parts) || {};
+  const uploader = String(row?.uploader || "");
   const value = arg ? String(parts[arg] ?? "") : "";
   const partWord = PART_WORDS[arg] || arg;
   switch (kind) {
@@ -86,6 +115,9 @@ export function flagInfo(flag, row) {
     case "unparsed":
       return { level: "warn", text: "The naming model's answer could not be read, so this name is a fallback. Edit it or ask again." };
     case "empty":
+      if (arg === "title" && row?.liveTitle) {
+        return { level: "block", text: `The AI gave no title (Civitai's title: "${row.liveTitle}"). Type one, or press Ask again.` };
+      }
       return { level: "block", text: `The ${partWord} is empty` };
     case "separator":
       if (arg) return { level: "block", text: `The ${partWord} "${value}" contains " - "` };
@@ -104,8 +136,20 @@ export function flagInfo(flag, row) {
       return { level: "warn", text: `Write ${arg.replace(/(\.0+)+$/, "")} instead of ${arg}` };
     case "creator-from-file-name":
       return { level: "warn", text: "Civitai has no creator for this model; taken from your file name" };
-    case "maker-from-description":
-      return { level: "info", text: `The maker "${parts.creator || ""}" comes from the model's description, not the uploader`, action: "use-maker" };
+    case "maker-from-description": {
+      const maker = parts.creator || "";
+      if (!uploader) return { level: "info", text: `The maker "${maker}" comes from the model's description, not the uploader`, action: "use-maker" };
+      return {
+        level: "info",
+        text: `Uploaded to Civitai by ${uploader}; the description names ${maker} as the model's maker, so the name starts with ${maker}.`,
+        action: "use-maker",
+      };
+    }
+    case "maker-unknown":
+      return {
+        level: "warn",
+        text: `This looks like an official model uploaded by ${uploader || "someone else"}, but the description doesn't say who made it. Set the creator yourself.`,
+      };
     case "maker-not-in-description":
       return { level: "warn", text: `"${parts.creator || ""}" is not named in the description; check who made it` };
     case "new-base-code":
@@ -114,8 +158,37 @@ export function flagInfo(flag, row) {
       return { level: "warn", text: "Official file: ComfyUI templates may look for the original name" };
     case "file-not-in-release":
       return { level: "warn", text: "This file is not in the Civitai release (a conversion or a re-upload?)" };
-    case "collision":
-      return { level: "block", text: "Another file in this folder would get the same name" };
+    case "collision": {
+      const peers = collisionPeers(row, rows);
+      if (!peers.length) return { level: "block", text: "Another file in this folder would get the same name" };
+      const names = quoted(peers.map((other) => other.oldStem));
+      return {
+        level: "block",
+        text: peers.length === 1
+          ? `Another file in this folder, ${names}, would get the same new name.`
+          : `Other files in this folder, ${names}, would get the same new name.`,
+      };
+    }
+    case "title-clash": {
+      const titles = titleClashTitles(row, rows);
+      if (!titles.length) return { level: "warn", text: "Another model by this creator gets the same title." };
+      return {
+        level: "warn",
+        text: titles.length === 1
+          ? `Another model by this creator, ${quoted(titles)}, gets the same title.`
+          : `Other models by this creator, ${quoted(titles)}, get the same title.`,
+      };
+    }
+    case "version-clash": {
+      const peers = versionClashPeers(row, rows);
+      const names = quoted([...new Set(peers.map((other) => other.oldStem))]);
+      return {
+        level: "warn",
+        text: peers.length
+          ? `Another version of this model, ${names}, gets the same version and base code; edit one of the versions.`
+          : "Another version of this model gets the same version and base code; edit one of the versions.",
+      };
+    }
     case "exists":
       return { level: "block", text: "A file with the new name is already in the folder" };
     case "ask-again":
@@ -125,8 +198,17 @@ export function flagInfo(flag, row) {
   }
 }
 
-export function flagMessage(flag, row) {
-  return flagInfo(flag, row).text;
+export function flagMessage(flag, row, rows) {
+  return flagInfo(flag, row, rows).text;
+}
+
+/* Where the row's model is on Civitai, for the line under a row. */
+export function detailsText(row) {
+  if (!row || !NAMED.has(row.status) || !(row.liveTitle || row.uploader)) return "";
+  const bits = [];
+  if (row.liveTitle) bits.push(`Civitai: "${row.liveTitle}"`);
+  if (row.uploader) bits.push(`uploaded by ${row.uploader}`);
+  return bits.join(" \u00b7 ");
 }
 
 /* Why a kept, duplicate or error row is not renamed, in words. */
@@ -734,6 +816,8 @@ export function renderRenameView(container, deps) {
       ? `<div class="cu-rn-chips">${row.changed.map((part) => `<span class="cu-rn-chip">${esc(PART_WORDS[part] || part)}</span>`).join("")}</div>`
       : "";
     const flags = named ? (row.flags || []).map((flag) => flagHtml(flag, row, isLocked)).join("") : "";
+    const details = named && (row.flags || []).length ? detailsText(row) : "";
+    const detailsLine = details ? `<div class="cu-rn-details">${esc(details)}</div>` : "";
     let reason = "";
     if (!named) {
       reason = `<div class="cu-rn-flag" data-level="${row.status === "error" ? "block" : "info"}">${esc(reasonText(row, store.byKey))}</div>`;
@@ -741,10 +825,10 @@ export function renderRenameView(container, deps) {
     const actions = [];
     if (named) {
       actions.push(`<button class="cu-inline-btn" data-rn-action="edit"${disabledIf(isLocked)}>Edit</button>`);
-      if (row.status === "change") actions.push(`<button class="cu-inline-btn" data-rn-action="keep"${disabledIf(isLocked)}>Keep this name</button>`);
+      if (row.status === "change") actions.push(`<button class="cu-inline-btn" data-rn-action="keep"${disabledIf(isLocked)} title="Don't rename this file">Keep current name</button>`);
       if (!(row.flags || []).includes("ask-again")) actions.push(`<button class="cu-inline-btn" data-rn-action="ask-again"${disabledIf(isLocked)} title="Forget the saved name; the naming model names this model again on the next dry run">Ask again</button>`);
     } else if (row.status === "kept" && row.reason === "kept-by-you") {
-      actions.push(`<button class="cu-inline-btn" data-rn-action="unkeep"${disabledIf(isLocked)}>Undo keep</button>`);
+      actions.push(`<button class="cu-inline-btn" data-rn-action="unkeep"${disabledIf(isLocked)} title="Rename this file after all">Undo keep current name</button>`);
     } else if (row.status === "duplicate") {
       const canRemove = canRemoveDuplicates(store);
       const on = canRemove && store.removeDup.has(row.key);
@@ -756,7 +840,7 @@ export function renderRenameView(container, deps) {
     return `<div class="cu-rn-row" data-rn-key="${key}" data-status="${esc(row.status)}">
       <label class="cu-rn-check">${checkbox}</label>
       <div class="cu-rn-body">
-        ${names}${chips}${flags}${reason}
+        ${names}${chips}${flags}${detailsLine}${reason}
         ${actions.length ? `<div class="cu-rn-actions">${actions.join("")}</div>` : ""}
         ${edit}
       </div>
@@ -764,10 +848,13 @@ export function renderRenameView(container, deps) {
   }
 
   function flagHtml(flag, row, isLocked) {
-    const info = flagInfo(flag, row);
+    const info = flagInfo(flag, row, store.rows);
     let action = "";
     if (info.action === "use-maker" && row.parts?.creator) {
       action = ` <button class="cu-inline-btn" data-rn-action="use-maker"${disabledIf(isLocked)}>Use ${esc(row.parts.creator)}</button>`;
+      if (row.uploader && row.uploader.toLowerCase() !== row.parts.creator) {
+        action += ` <button class="cu-inline-btn" data-rn-action="use-uploader"${disabledIf(isLocked)}>Use ${esc(row.uploader)}</button>`;
+      }
     } else if (info.action === "base-link") {
       action = ` <button class="cu-text-btn" data-rn-action="base-link" data-rn-base="${esc(row.baseModel || "")}">Base codes</button>`;
     }
@@ -885,6 +972,9 @@ export function renderRenameView(container, deps) {
       case "ask-again": if (row) decide({ jobId: store.jobId, modelId: row.modelId, askAgain: true }); break;
       case "use-maker":
         if (row) decide({ jobId: store.jobId, modelId: row.modelId, creator: row.parts?.creator || "" });
+        break;
+      case "use-uploader":
+        if (row && row.uploader) decide({ jobId: store.jobId, modelId: row.modelId, creator: row.uploader });
         break;
       case "remove-dup":
         if (row && !locked() && canRemoveDuplicates(store)) {
@@ -1255,6 +1345,12 @@ const RENAME_CSS = `
 
   .cu-rn-flag > button {
     margin-left: 6px;
+  }
+
+  .cu-rn-details {
+    color: var(--cu-dust);
+    font-size: 10.5px;
+    overflow-wrap: anywhere;
   }
 
   .cu-rn-actions {

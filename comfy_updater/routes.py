@@ -35,7 +35,15 @@ from .rename_apply import (
     send_to_trash,
     update_saved_paths,
 )
-from .renamer import RENAME_TYPES, _changed, _disk_stems, _parts_flags, run_dry_run
+from .renamer import (
+    RENAME_TYPES,
+    _changed,
+    _disk_stems,
+    _mark_version_clashes,
+    _parts_flags,
+    run_dry_run,
+    title_clash_models,
+)
 from .request_guard import request_rejection
 from .sidecar import read_data_file, write_json
 from .updater_service import sidecar_seed_item
@@ -1055,8 +1063,10 @@ _PARTS_FLAG_KINDS = {
     "empty", "forbidden", "separator", "non-ascii", "reserved", "trailing", "base-word", "version-format",
 }
 _FOLDER_FLAGS = {"exists", "collision"}
+# Clashes with the model's other versions, or with another model's title: rechecked on every re-assembly.
+_CLASH_FLAGS = {"version-clash", "title-clash"}
 # Where the creator came from: dropped once the user decides the creator.
-_MAKER_FLAGS = {"maker-from-description", "maker-not-in-description", "creator-from-file-name"}
+_MAKER_FLAGS = {"maker-from-description", "maker-not-in-description", "creator-from-file-name", "maker-unknown"}
 _ASSEMBLED_KEYS = ("newStem", "parts", "changed", "flags", "status")
 
 
@@ -1074,13 +1084,15 @@ def reassemble_rows(
     ``rows`` is the whole dry run (its dicts are updated in place, so the job keeps
     the result); ``folder_listing`` maps each lowercased folder of the model to the
     lowercased stems on disk there. Collisions and existing names are rechecked for
-    every row in those folders. Returns the model's rows plus every other row whose
-name, flags or selection changed (other models' rows in the same folders).
+    every row in those folders, version clashes for the model's rows, and title
+    clashes for every row. Returns the model's rows plus every other row whose
+    name, flags or selection changed (other models' rows in the same folders, or
+    of the same creator and title).
     """
     model_id = str(model_id)
     mine = [row for row in rows if str(row.get("modelId")) == model_id]
     folders = {str(row.get("folder") or "").lower() for row in mine}
-    before = {id(row): _row_state(row) for row in rows if str(row.get("folder") or "").lower() in folders}
+    before = {id(row): _row_state(row) for row in rows}
     model_decision = decisions.model(model_id)
     for row in mine:
         status = row.get("status")
@@ -1089,6 +1101,8 @@ name, flags or selection changed (other models' rows in the same folders).
         if asked_again and row.get("status") in _NAMED_STATUSES and "ask-again" not in row["flags"]:
             # The AI names it afresh on the next dry run.
             row["flags"].append("ask-again")
+    _mark_version_clashes(mine)
+    _recheck_title_clashes(rows, decisions)
     _recheck_folders(rows, folders, folder_listing)
     mine_ids = {id(row) for row in mine}
     return [
@@ -1148,7 +1162,7 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
     kept_flags = []
     for flag in flags:
         kind, _, word = flag.partition(":")
-        if kind in _PARTS_FLAG_KINDS or flag in _FOLDER_FLAGS:
+        if kind in _PARTS_FLAG_KINDS or flag in _FOLDER_FLAGS or flag in _CLASH_FLAGS:
             continue
         if flag in _MAKER_FLAGS and "creator" in decided:
             continue
@@ -1186,6 +1200,21 @@ def _name_check_flags(row: dict, parts: NameParts, base_codes) -> list:
     for known, code in base_codes.all().items():
         names.extend((known, code))
     return name_check_flags(parts.title, parts.version, base_vocabulary(names), xl_base=xl_is_base(base_model))
+
+
+def _recheck_title_clashes(rows: list[dict], decisions) -> None:
+    """Recompute "title-clash" on every named row, and the selection of rows whose flags changed."""
+    clashing = title_clash_models(rows, lambda model_id: "title" in decisions.model(model_id))
+    for row in rows:
+        if row.get("status") not in _NAMED_STATUSES:
+            continue
+        old = list(row.get("flags") or [])
+        flags = [flag for flag in old if flag != "title-clash"]
+        if str(row.get("modelId")) in clashing:
+            flags.append("title-clash")
+        if flags != old:
+            row["flags"] = flags
+            row["selected"] = row.get("status") == "change" and not flags
 
 
 def _recheck_folders(rows: list[dict], folders: set, folder_listing: dict) -> None:

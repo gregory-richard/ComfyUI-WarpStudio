@@ -18,7 +18,7 @@
   (9.75 GB) from the view. A ComfyUI without Generate Text cannot run the
   renamer, and the view says so.
 - A dry run lists every old name next to its new one and changes nothing. You
-  review it (flags, edits, **Keep this name**, **Ask again**, **Remove extra
+  review it (flags, edits, **Keep current name**, **Ask again**, **Remove extra
   copy**) and then **Apply selected**. Edits and applied names are remembered
   per model; applied names stay locked until **Ask again**.
 - Kept, not renamed: models Civitai no longer serves, the VAE folder, files
@@ -31,6 +31,18 @@
   old names show those LoRAs and models as missing until you re-pick them.
 - The naming model gets roughly three in four names exactly right on models it
   has not seen in testing. Review the list before you apply it.
+- Clashes are asked about once more before they are flagged: two versions of a
+  model that would get the same name, and two models by one creator that would
+  get the same title under the same base code (one idea released per base is
+  fine). The naming model is told which Civitai names clash; still clashing,
+  the rows are flagged and not ticked. Unresolved answers are not saved.
+- The maker of a re-uploaded official model is read from "originally
+  posted/released ..." lines and the owners of its Hugging Face, GitHub or
+  ModelScope links. An official file whose maker is not found is flagged, so
+  you set the creator yourself; a maker from the description offers
+  **Use <maker>** or **Use <uploader>**.
+- Flagged rows show the model's Civitai title and uploader, and a clash names
+  the other file or model. **Keep this name** is now **Keep current name**.
 
 ## [1.9.2] - 2026-11-04
 

@@ -112,6 +112,10 @@ class RenameStoreTests(unittest.TestCase):
             self.assertEqual({"title": "fifty"}, cache.get(fifty))
             self.assertIsNone(AnswerCache(data_dir).get(five))
 
+            cache.drop(fifty)
+            cache.drop(fifty)  # dropping what is not there is fine
+            self.assertIsNone(AnswerCache(data_dir).get(fifty))
+
     def test_journal_tracks_steps_across_instances_and_clears(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)

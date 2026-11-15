@@ -200,7 +200,9 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.assertFalse(a["selected"])
         self.assertFalse(other["selected"])
         self.assertNotIn("collision", b["flags"])
-        self.assertTrue(b["selected"])
+        # The title is now the other model's too.
+        self.assertEqual(["title-clash"], b["flags"])
+        self.assertFalse(b["selected"])
 
         # A version decision moves a away again: the collision goes on both rows.
         self.decisions.set_version("10", "v3")
@@ -208,7 +210,8 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.assertEqual("maker - better - v3 (sdxl)", a["newStem"])
         self.assertNotIn("collision", a["flags"])
         self.assertNotIn("collision", other["flags"])
-        self.assertTrue(a["selected"])
+        self.assertEqual(["title-clash"], a["flags"])
+        self.assertFalse(a["selected"])
         # Nothing changed for the other row this time: only the model's rows come back.
         self.decisions.set_version("10", "v4")
         self.assertEqual([a, b], reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1"))
@@ -216,10 +219,86 @@ class RenameRouteHelperTests(unittest.TestCase):
     def test_rows_of_other_folders_are_not_returned(self) -> None:
         elsewhere = self.root / "other"
         a = _row(self.folder, "old a", "maker - title - v1 (sdxl)")
-        far = _row(elsewhere, "old z", "maker - better - v1 (sdxl)", model_id="2", flags=["collision"], selected=False)
+        far = _row(elsewhere, "old z", "maker - other - v1 (sdxl)", model_id="2", flags=["collision"], selected=False,
+                   parts={"creator": "maker", "title": "other", "version": "v1", "precision": "", "base": "sdxl"})
         self.decisions.set_model("1", title="Better")
         self.assertEqual([a], reassemble_rows([a, far], self.decisions, self.base_codes, {}, model_id="1"))
         self.assertEqual(["collision"], far["flags"])
+
+    # --- title and version clashes ----------------------------------------
+
+    def towel_rows(self):
+        elsewhere = self.root / "ill"
+        towel = _row(self.folder, "old towel", "bolt - towel - v1 (sdxl)", model_id="1", version_id="10",
+                     flags=["title-clash"], selected=False, liveTitle="Towel", uploader="bolt",
+                     parts={"creator": "bolt", "title": "towel", "version": "v1", "precision": "", "base": "sdxl"})
+        towel2 = _row(elsewhere, "old towel 2", "bolt - towel - v1 (sdxl)", model_id="2", version_id="20",
+                      flags=["title-clash"], selected=False, liveTitle="Towel 2", uploader="bolt",
+                      parts={"creator": "bolt", "title": "towel", "version": "v1", "precision": "", "base": "sdxl"})
+        return towel, towel2
+
+    def test_title_edit_that_ends_a_title_clash_clears_it_on_both_models(self) -> None:
+        towel, towel2 = self.towel_rows()
+        rows = [towel, towel2]
+        self.decisions.set_model("2", title="towel 2")
+        result = reassemble_rows(rows, self.decisions, self.base_codes, {}, model_id="2")
+        # The other model's row is in another folder, but its flags changed: it comes back too.
+        self.assertEqual([towel, towel2], result)
+        self.assertEqual([], towel["flags"])
+        self.assertTrue(towel["selected"])
+        self.assertEqual([], towel2["flags"])
+        self.assertEqual("bolt - towel 2 - v1 (sdxl)", towel2["newStem"])
+        # The uploader and live title stay on the rows.
+        self.assertEqual("bolt", towel2["uploader"])
+        self.assertEqual("Towel 2", towel2["liveTitle"])
+
+    def test_title_edit_that_makes_a_title_clash_flags_both_models(self) -> None:
+        towel, towel2 = self.towel_rows()
+        towel2["parts"]["title"] = "towel 2"
+        towel2["newStem"] = "bolt - towel 2 - v1 (sdxl)"
+        towel["flags"], towel2["flags"] = [], []
+        self.decisions.set_model("2", title="towel")
+        reassemble_rows([towel, towel2], self.decisions, self.base_codes, {}, model_id="2")
+        self.assertEqual(["title-clash"], towel["flags"])
+        self.assertFalse(towel["selected"])
+        self.assertEqual(["title-clash"], towel2["flags"])
+        # Both titles the user's own: their choice, no clash.
+        self.decisions.set_model("1", title="towel")
+        reassemble_rows([towel, towel2], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual([], towel["flags"])
+        self.assertEqual([], towel2["flags"])
+
+    def test_same_title_under_different_bases_is_no_title_clash(self) -> None:
+        towel, towel2 = self.towel_rows()
+        towel2["parts"]["base"] = "ill"
+        towel2["newStem"] = "bolt - towel - v1 (ill)"
+        towel2["baseModel"] = "Illustrious"
+        reassemble_rows([towel, towel2], self.decisions, self.base_codes, {}, model_id="2")
+        self.assertEqual([], towel["flags"])
+        self.assertTrue(towel["selected"])
+        self.assertEqual([], towel2["flags"])
+
+    def test_version_edit_that_ends_a_version_clash_clears_it(self) -> None:
+        high = _row(self.folder, "hl high", "maker - title - v1 (sdxl)", version_id="10", flags=["version-clash"])
+        low = _row(self.root / "low", "hl low", "maker - title - v1 (sdxl)", version_id="11", flags=["version-clash"],
+                   file_key="file:11")
+        self.decisions.set_version("11", "v1 low")
+        reassemble_rows([high, low], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual([], high["flags"])
+        self.assertTrue(high["selected"])
+        self.assertEqual([], low["flags"])
+        self.decisions.set_version("11", "v1")
+        reassemble_rows([high, low], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual(["version-clash"], high["flags"])
+        self.assertEqual(["version-clash"], low["flags"])
+        self.assertFalse(low["selected"])
+
+    def test_decided_creator_drops_maker_unknown(self) -> None:
+        a = _row(self.folder, "glowbase-4b", "siteofficial - glowbase - 4b (sdxl)",
+                 flags=["official-file", "maker-unknown"], selected=False)
+        self.decisions.set_model("1", creator="quillworks")
+        reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual(["official-file"], a["flags"])
 
     # --- whether a dry run may be edited or applied ---------------------
 

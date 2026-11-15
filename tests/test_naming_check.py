@@ -76,6 +76,8 @@ class NamingCheckTests(unittest.TestCase):
         self.assertIs(True, maker_in_description("fernwick", "Original model at Huggingface fernwick/QSD ."))
         self.assertIs(False, maker_in_description("bfl", "by Black Forest Labs"))
         self.assertIs(True, maker_in_description("black forest labs", "by Black Forest Labs"))
+        # The owner part of a model link, as credit_lines lists it.
+        self.assertIs(True, maker_in_description("quillworks lab", "Links: huggingface.co/quillworks-lab"))
 
 
 

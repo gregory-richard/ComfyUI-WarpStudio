@@ -693,6 +693,218 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(row["flags"], [])
         self.assertTrue(row["selected"])
 
+    # --- uploader and maker-unknown ------------------------------------------
+
+    def official(self, description="") -> dict:
+        write_entry(self.unet, "glowbase-4b", 820, 8201, "o1")
+        return {820: live_model(820, "Glowbase 4B", "siteofficial", "Checkpoint", [
+            live_version(8201, "4B", "Krea 2", [live_file(1, "o1", name="glowbase-4b.safetensors")]),
+        ], description=description)}
+
+    def test_rows_carry_the_uploader(self) -> None:
+        models = self.lumegrid()
+        _summary, rows = self.dry_run(models, FakeGenerator({LUMEGRID: "title: lumegrid\noriginal:\nversion 1: zest"}))
+        self.assertEqual(self.row(rows, "tidemint")["uploader"], "tidemint")
+
+    def test_official_file_without_a_maker_is_flagged_maker_unknown(self) -> None:
+        models = self.official()
+        _summary, rows = self.dry_run(models, FakeGenerator({"Glowbase 4B": "title: glowbase\noriginal:\nversion 1: 4b"}))
+        row = self.row(rows, "glowbase")
+        self.assertEqual(row["parts"]["creator"], "siteofficial")
+        self.assertIn("official-file", row["flags"])
+        self.assertIn("maker-unknown", row["flags"])
+        self.assertFalse(row["selected"])
+
+    def test_official_file_with_a_maker_from_a_link_is_not_maker_unknown(self) -> None:
+        models = self.official('<p>Originally Posted; <a href="https://huggingface.co/quillworks-lab/Glowbase-4B">here</a></p>')
+        generator = FakeGenerator({"Glowbase 4B": "title: glowbase\noriginal: quillworks lab\nversion 1: 4b"})
+        _summary, rows = self.dry_run(models, generator)
+        self.assertIn("Links: huggingface.co/quillworks-lab", generator.messages[0])
+        self.assertEqual(len(generator.messages), 1)
+        row = self.row(rows, "glowbase")
+        self.assertEqual(row["parts"]["creator"], "quillworks lab")
+        self.assertIn("maker-from-description", row["flags"])
+        self.assertNotIn("maker-not-in-description", row["flags"])
+        self.assertNotIn("maker-unknown", row["flags"])
+
+    def test_official_file_gets_link_owners_without_a_credit_sentence(self) -> None:
+        models = self.official('<p>4B weights: <a href="https://huggingface.co/quillworks-lab/Glowbase-4B">here</a></p>')
+        generator = FakeGenerator({"Glowbase 4B": "title: glowbase\noriginal: quillworks lab\nversion 1: 4b"})
+        _summary, rows = self.dry_run(models, generator)
+        self.assertIn("Credit lines (only for the original line): Links: huggingface.co/quillworks-lab", generator.messages[0])
+        self.assertEqual(len(generator.messages), 1)
+        self.assertNotIn("maker-not-in-description", self.row(rows, "glowbase")["flags"])
+
+    def test_lora_linking_only_its_tools_gets_no_link_owners(self) -> None:
+        models = self.lumegrid()
+        models[100]["description"] = '<p>Made with <a href="https://github.com/kohya-trainer/sd-scripts">this</a>.</p>'
+        generator = FakeGenerator({LUMEGRID: "title: lumegrid\noriginal:\nversion 1: zest"})
+        self.dry_run(models, generator)
+        self.assertIn("Credit lines (only for the original line): none", generator.messages[0])
+
+    def test_decided_creator_is_not_maker_unknown(self) -> None:
+        models = self.official()
+        self.decisions.set_model(820, creator="siteofficial")
+        _summary, rows = self.dry_run(models, FakeGenerator({"Glowbase 4B": "title: glowbase\noriginal:\nversion 1: 4b"}))
+        self.assertNotIn("maker-unknown", self.row(rows, "glowbase")["flags"])
+
+    # --- version clash within one model --------------------------------------
+
+    def high_low(self, folder=None) -> dict:
+        folder = folder or self.lora
+        write_entry(folder, "hl high", 830, 8301, "h1")
+        write_entry(folder, "hl low", 830, 8302, "h2")
+        return {830: live_model(830, "Pinewave", "maker", "LORA", [
+            live_version(8301, "V1 - High", "Krea 2", [live_file(1, "h1")]),
+            live_version(8302, "V1 - Low", "Krea 2", [live_file(2, "h2")]),
+        ])}
+
+    def test_version_clash_gets_one_retry_that_resolves_it(self) -> None:
+        models = self.high_low()
+        generator = FakeGenerator({"Pinewave": [
+            "title: pinewave\noriginal:\nversion 1: v1\nversion 2: v1",
+            "title: pinewave\noriginal:\nversion 1: v1 high\nversion 2: v1 low",
+        ]})
+        _summary, rows = self.dry_run(models, generator)
+        self.assertEqual(len(generator.messages), 2)
+        self.assertIn(
+            'Versions "V1 - High" and "V1 - Low" both became "v1"; keep the words that tell them apart.',
+            generator.messages[1],
+        )
+        self.assertEqual(self.row(rows, "hl high")["newStem"], "maker - pinewave - v1 high (krea2)")
+        self.assertEqual(self.row(rows, "hl low")["flags"], [])
+        self.assertEqual(len(self.cache._answers), 1)
+
+    def test_version_clash_still_there_after_the_retry_is_flagged(self) -> None:
+        # In two folders, so it is not a folder collision: the clash check alone must catch it.
+        models = self.high_low()
+        write_entry(self.root / "loras2", "hl low", 830, 8302, "h2")
+        (self.lora / "hl low.safetensors").unlink()
+        (self.lora / "hl low.civitai.info").unlink()
+        self.roots["lora"].append(self.root / "loras2")
+        answer = "title: pinewave\noriginal:\nversion 1: v1\nversion 2: v1"
+        generator = FakeGenerator({"Pinewave": [answer, answer]})
+        _summary, rows = self.dry_run(models, generator)
+        self.assertEqual(len(generator.messages), 2)
+        for stem in ("hl high", "hl low"):
+            row = self.row(rows, stem)
+            self.assertIn("version-clash", row["flags"])
+            self.assertNotIn("collision", row["flags"])
+            self.assertFalse(row["selected"])
+        self.assertEqual(self.cache._answers, {})
+
+    def test_versions_told_apart_by_precision_do_not_clash(self) -> None:
+        write_entry(self.unet, "pw fp8", 840, 8401, "p1", weights=False)
+        write_entry(self.unet, "pw bf16", 840, 8402, "p2", weights=False)
+        models = {840: live_model(840, "Pinewave", "maker", "Checkpoint", [
+            live_version(8401, "fp8", "Krea 2", [live_file(1, "p1", fp="fp8")]),
+            live_version(8402, "bf16", "Krea 2", [live_file(2, "p2", fp="bf16")]),
+        ])}
+        generator = FakeGenerator({"Pinewave": "title: pinewave\noriginal:\nversion 1:\nversion 2:"})
+        _summary, rows = self.dry_run(models, generator)
+        self.assertEqual(len(generator.messages), 1)
+        self.assertEqual(self.row(rows, "pw fp8")["newStem"], "maker - pinewave - fp8 (krea2)")
+        self.assertNotIn("version-clash", self.row(rows, "pw bf16")["flags"])
+
+    # --- title clash across models -------------------------------------------
+
+    def towels(self, same_folder=False) -> dict:
+        write_entry(self.lora, "bolt - towel - v1 (krea2)", 850, 8501, "t1")
+        write_entry(self.lora if same_folder else self.root / "ill", "bolt - towel 2 - v1 (krea2)", 851, 8511, "t2")
+        if not same_folder:
+            self.roots["lora"].append(self.root / "ill")
+        return {
+            850: live_model(850, "Towel", "bolt", "LORA", [live_version(8501, "v1", "Krea 2", [live_file(1, "t1")])]),
+            851: live_model(851, "Towel 2", "bolt", "LORA", [live_version(8511, "v1", "Krea 2", [live_file(2, "t2")])]),
+        }
+
+    def test_title_clash_across_folders_re_asks_both_once_and_resolves(self) -> None:
+        models = self.towels()
+        same = "title: towel\noriginal:\nversion 1: v1"
+        generator = FakeGenerator({"Towel": [same, same], "Towel 2": [same, "title: towel 2\noriginal:\nversion 1: v1"]})
+        summary, rows = self.dry_run(models, generator, group_size=1)
+        retries = [m for m in generator.messages if "Your last answer had these problems" in m]
+        self.assertEqual(len(retries), 2)
+        towel_retry = next(m for m in retries if "Model title: Towel\n" in m)
+        towel2_retry = next(m for m in retries if "Model title: Towel 2\n" in m)
+        self.assertIn('Another model by this creator, "Towel 2", also became "towel"; keep what sets this model apart.',
+                      towel_retry)
+        self.assertIn('Another model by this creator, "Towel", also became "towel"', towel2_retry)
+        self.assertEqual(len(generator.messages), 4)
+        first = self.row(rows, "bolt - towel - v1")
+        second = self.row(rows, "bolt - towel 2")
+        self.assertEqual(first["status"], "unchanged")
+        self.assertEqual(second["newStem"], "bolt - towel 2 - v1 (krea2)")
+        self.assertEqual(first["flags"], [])
+        self.assertEqual(second["flags"], [])
+        # The emitted rows are the replaced ones: one row per entry, no stale copy.
+        self.assertEqual(self.emitted, rows)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(summary["flagged"], 0)
+        # Both answers are cached once the clash is gone.
+        self.assertEqual(len(self.cache._answers), 2)
+
+    def test_title_clash_still_there_is_flagged_on_both_and_not_cached(self) -> None:
+        models = self.towels()
+        same = "title: towel\noriginal:\nversion 1: v1"
+        generator = FakeGenerator({"Towel": same, "Towel 2": same})
+        summary, rows = self.dry_run(models, generator, group_size=1)
+        self.assertEqual(len(generator.messages), 4)  # each asked, then re-asked once
+        for stem in ("bolt - towel - v1", "bolt - towel 2"):
+            row = self.row(rows, stem)
+            self.assertIn("title-clash", row["flags"])
+            self.assertFalse(row["selected"])
+        self.assertEqual(summary["flagged"], 2)
+        self.assertEqual(self.cache._answers, {})
+
+    def test_per_base_twins_are_not_a_title_clash(self) -> None:
+        # One idea released per base: the base codes already keep the names apart.
+        models = self.towels()
+        models[851]["modelVersions"][0]["baseModel"] = "SDXL 1.0"
+        same = "title: towel\noriginal:\nversion 1: v1"
+        generator = FakeGenerator({"Towel": same, "Towel 2": same})
+        summary, rows = self.dry_run(models, generator, group_size=1)
+        self.assertEqual(len(generator.messages), 2)
+        self.assertEqual(self.row(rows, "bolt - towel 2")["newStem"], "bolt - towel - v1 (sdxl)")
+        for stem in ("bolt - towel - v1", "bolt - towel 2"):
+            self.assertNotIn("title-clash", self.row(rows, stem)["flags"])
+        self.assertEqual(summary["flagged"], 0)
+        self.assertEqual(len(self.cache._answers), 2)
+
+    def test_decided_title_is_not_re_asked(self) -> None:
+        models = self.towels()
+        self.decisions.set_model(850, title="towel")
+        same = "title: towel\noriginal:\nversion 1: v1"
+        generator = FakeGenerator({"Towel": same, "Towel 2": [same, "title: towel 2\noriginal:\nversion 1: v1"]})
+        _summary, rows = self.dry_run(models, generator, group_size=1)
+        retries = [m for m in generator.messages if "Your last answer had these problems" in m]
+        self.assertEqual(len(retries), 1)
+        self.assertIn("Model title: Towel 2\n", retries[0])
+        self.assertEqual(self.row(rows, "bolt - towel 2")["newStem"], "bolt - towel 2 - v1 (krea2)")
+        self.assertEqual(self.row(rows, "bolt - towel - v1")["flags"], [])
+
+    def test_resolved_title_clash_clears_the_folder_collision(self) -> None:
+        models = self.towels(same_folder=True)
+        same = "title: towel\noriginal:\nversion 1: v1"
+        generator = FakeGenerator({"Towel": same, "Towel 2": [same, "title: towel 2\noriginal:\nversion 1: v1"]})
+        _summary, rows = self.dry_run(models, generator, group_size=1)
+        first = self.row(rows, "bolt - towel - v1")
+        second = self.row(rows, "bolt - towel 2")
+        self.assertEqual(first["flags"], [])
+        self.assertEqual(second["flags"], [])
+        self.assertFalse(first["selected"])  # unchanged
+        self.assertEqual(second["status"], "unchanged")
+
+    def test_unresolved_clash_is_asked_afresh_on_the_next_run(self) -> None:
+        models = self.towels()
+        same = "title: towel\noriginal:\nversion 1: v1"
+        self.dry_run(models, FakeGenerator({"Towel": same, "Towel 2": same}), group_size=1)
+        generator = FakeGenerator({"Towel": same, "Towel 2": "title: towel 2\noriginal:\nversion 1: v1"})
+        self.emitted = []
+        _summary, rows = self.dry_run(models, generator, group_size=1)
+        self.assertEqual(self.row(rows, "bolt - towel 2")["flags"], [])
+        self.assertEqual(self.row(rows, "bolt - towel - v1")["flags"], [])
+
 
 class GatedClient(FakeClient):
     """Fetches in order; before fetching ``gate_model`` it waits (bounded) for ``gate``."""

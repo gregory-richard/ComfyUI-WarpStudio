@@ -289,6 +289,11 @@ class AnswerCache(_JsonStore):
             self._answers[key] = dict(answer)
             self._save()
 
+    def drop(self, key: str) -> None:
+        with self._lock:
+            if self._answers.pop(key, None) is not None:
+                self._save()
+
     def drop_model(self, model_id: str | int) -> None:
         prefix = f"{_clean(model_id)}:"
         with self._lock:

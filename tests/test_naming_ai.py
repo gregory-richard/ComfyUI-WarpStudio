@@ -12,6 +12,7 @@ from comfy_updater.naming_ai import (
     build_group_message,
     build_message,
     credit_lines,
+    link_owners,
     description_excerpt,
     parse_answer,
     parse_group_answer,
@@ -145,6 +146,59 @@ class NamingAiTests(unittest.TestCase):
         html_text = "<p>I originally made this for fun. The official workflow is on github, says the author.</p>"
         self.assertEqual(credit_lines(html_text), "")
         self.assertEqual(credit_lines("<p>Model Developer: Some Lab.</p>"), "Model Developer: Some Lab.")
+
+    def test_credit_lines_keeps_originally_posted_sentences(self):
+        for verb in ("posted", "released", "uploaded", "published", "created"):
+            with self.subTest(verb=verb):
+                self.assertEqual(
+                    credit_lines(f"<p>Nice model. Originally {verb} by Some Lab.</p>"),
+                    f"Originally {verb} by Some Lab.",
+                )
+
+    def test_credit_lines_appends_the_owners_of_model_links(self):
+        html_text = (
+            '<p>Originally Posted; <a href="https://huggingface.co/quillworks-lab/Glow-4B">link</a></p>'
+            "<p>Workflow: https://github.com/emberfold/glow-nodes and "
+            '<a href="https://www.modelscope.cn/models/reedpond/glow">here</a>, '
+            '<a href="https://hf.co/spaces/tinkerer/demo">demo</a></p>'
+            '<p>Again: <a href="https://hf.co/Quillworks-Lab/Glow-9B">9B</a></p>'
+        )
+        # A credit-cue sentence: the link owners follow it (hf.co counts as huggingface.co).
+        self.assertEqual(
+            credit_lines(html_text),
+            "Originally Posted; link Links: huggingface.co/quillworks-lab, github.com/emberfold, "
+            "modelscope.cn/reedpond, huggingface.co/tinkerer",
+        )
+
+    def test_credit_lines_link_owners_only_with_a_credit_sentence_or_an_official_file(self):
+        # A LoRA that only links its tools: no owners, they did not make the model.
+        tools = (
+            '<p>Trained with <a href="https://github.com/kohya-trainer/sd-scripts">sd-scripts</a>. '
+            'Nodes: <a href="https://github.com/nodewright/comfy-nodes">here</a>.</p>'
+        )
+        self.assertEqual(credit_lines(tools), "")
+        # An official file re-uploaded with only a link to where it came from.
+        official = '<p>Steps: 8. <a href="https://huggingface.co/quillworks-lab/Glow">get it</a></p>'
+        self.assertEqual(credit_lines(official), "")
+        self.assertEqual(credit_lines(official, official=True), "Links: huggingface.co/quillworks-lab")
+
+    def test_link_owners_skip_pages_that_are_not_owners(self):
+        html_text = " ".join(
+            f'<a href="https://{path}">x</a>'
+            for path in (
+                "huggingface.co/api/models", "huggingface.co/new", "huggingface.co/docs/diffusers",
+                "github.com/apps/bot", "github.com/features/actions", "github.com/orgs/somegroup/teams",
+                "github.com/", "hf.co/quillworks-lab/a", "huggingface.co/quillworks-lab/b",
+            )
+        )
+        self.assertEqual(link_owners(html_text), ["huggingface.co/quillworks-lab"])
+
+    def test_credit_lines_keeps_links_within_the_limit(self):
+        long = "<p>" + " ".join("Original by maker number %d." % i for i in range(100)) + "</p>"
+        text = credit_lines(long + "<p>https://huggingface.co/quillworks-lab/Glow</p>")
+        self.assertLessEqual(len(text), 600)
+        self.assertTrue(text.endswith(" Links: huggingface.co/quillworks-lab"), text)
+        self.assertTrue(text.startswith("Original by maker number 0."))
 
     def test_description_excerpt_strips_tags_and_entities(self):
         self.assertEqual(
