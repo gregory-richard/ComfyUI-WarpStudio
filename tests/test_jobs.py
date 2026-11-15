@@ -473,6 +473,142 @@ class JobManagerTests(unittest.TestCase):
         self.assertTrue(cards["m1"]["isProvisional"])
         self.assertFalse(cards["m2"]["isProvisional"])
 
+    def _wait_finished(self, job) -> None:
+        import time
+
+        deadline = time.time() + 5
+        while job.status not in ("completed", "failed", "cancelled") and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertIn(job.status, ("completed", "failed", "cancelled"))
+
+    def test_on_complete_gets_a_snapshot_of_a_completed_job_only(self) -> None:
+        import threading
+
+        seen: list = []
+        done = threading.Event()
+
+        def hook(snapshot):
+            seen.append(snapshot)
+            done.set()
+
+        job = self.manager.start("rename-dry-run", lambda p, e, c: ({"change": 1}, [{"key": "a"}]), on_complete=hook)
+        self.assertTrue(done.wait(timeout=5))
+        self.assertEqual(job.id, seen[0]["jobId"])
+        self.assertEqual("completed", seen[0]["status"])
+        self.assertEqual([{"key": "a"}], seen[0]["items"])
+        self.assertEqual({"change": 1}, seen[0]["summary"])
+        self.assertTrue(seen[0]["finishedAt"])
+        # A snapshot: later edits to the job's rows do not reach it.
+        job.items[0]["key"] = "edited"
+        self.assertEqual("a", seen[0]["items"][0]["key"])
+
+        def failing(p, e, c):
+            raise RuntimeError("boom")
+
+        failed = self.manager.start("rename-dry-run", failing, on_complete=hook)
+        self._wait_finished(failed)
+
+        def cancelled_run(p, e, control):
+            control.cancel()
+            return {}, []
+
+        cancelled = self.manager.start("rename-dry-run", cancelled_run, on_complete=hook)
+        self._wait_finished(cancelled)
+        self.assertEqual(1, len(seen))
+
+    def test_the_job_stays_active_until_on_complete_returns(self) -> None:
+        import threading
+
+        during: list = []
+        done = threading.Event()
+
+        def hook(snapshot):
+            job = self.manager.get(snapshot["jobId"])
+            # Edits and applies are refused while the saved copy is written, so none is lost.
+            during.append((job.status, self.manager.get_active() is job))
+            done.set()
+
+        job = self.manager.start("rename-dry-run", lambda p, e, c: ({}, [{"key": "a"}]), on_complete=hook)
+        self.assertTrue(done.wait(timeout=5))
+        self._wait_finished(job)
+        self.assertEqual([("running", True)], during)
+        self.assertEqual("completed", job.status)
+        self.assertEqual("Completed", job.message)
+        self.assertEqual([{"key": "a"}], job.items)
+
+    def test_pause_while_saving_is_ignored(self) -> None:
+        import threading
+
+        paused: list = []
+        done = threading.Event()
+
+        def hook(snapshot):
+            # The work is finished; a pause here has nothing left to pause.
+            paused.append(self.manager.pause(snapshot["jobId"]).status)
+            done.set()
+
+        job = self.manager.start("rename-dry-run", lambda p, e, c: ({}, [{"key": "a"}]), on_complete=hook)
+        self.assertTrue(done.wait(timeout=5))
+        self._wait_finished(job)
+        self.assertEqual(["running"], paused)
+        self.assertEqual("completed", job.status)
+        self.assertEqual("Completed", job.message)
+
+    def test_a_failing_on_complete_hook_does_not_fail_the_job(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        def hook(snapshot):
+            raise OSError("disk full")
+
+        with redirect_stdout(StringIO()):
+            job = self.manager.start("rename-dry-run", lambda p, e, c: ({}, [{"key": "a"}]), on_complete=hook)
+            self._wait_finished(job)
+            import time
+
+            time.sleep(0.05)
+        self.assertEqual("completed", job.status)
+
+    def test_restore_job_registers_a_finished_job_under_its_old_id(self) -> None:
+        record = self.manager.restore_job(
+            "rename-dry-run",
+            "run-1",
+            startedAt="2026-11-14T09:00:00+00:00",
+            finishedAt="2026-11-14T10:00:00+00:00",
+            summary={"change": 1},
+            items=[{"key": "a"}, {"key": "b"}],
+        )
+        self.assertIs(record, self.manager.get("run-1"))
+        self.assertEqual("completed", record.status)
+        self.assertEqual("rename-dry-run", record.type)
+        self.assertEqual("2026-11-14T10:00:00+00:00", record.restoredFrom)
+        self.assertEqual(2, record.progress)
+        self.assertEqual(2, record.total)
+        self.assertEqual({"change": 1}, record.summary)
+        self.assertIsNone(self.manager.get_active())
+        self.assertIsNone(JobRecord(id="x", type="scan").restoredFrom)
+
+    def test_pruning_keeps_the_newest_dry_run_and_the_newest_completed_one(self) -> None:
+        from comfy_updater import jobs as jobs_module
+
+        self.manager._jobs = {
+            "dry-done": JobRecord(id="dry-done", type="rename-dry-run", status="completed",
+                                  finishedAt="2026-01-01T00:00:00Z"),
+            "dry-cancelled": JobRecord(id="dry-cancelled", type="rename-dry-run", status="cancelled",
+                                       finishedAt="2026-01-02T00:00:00Z"),
+        }
+        for index in range(jobs_module._MAX_FINISHED_JOBS + 2):
+            record = JobRecord(id=f"scan-{index}", type="scan", status="completed",
+                               finishedAt=f"2026-02-{index + 1:02d}T00:00:00Z")
+            self.manager._jobs[record.id] = record
+
+        self.assertIsNotNone(self.manager.start("scan", lambda progress, item_cb, control: ({}, [])))
+
+        # The saved (restorable) dry run and the one the panel shows both stay.
+        self.assertIn("dry-done", self.manager._jobs)
+        self.assertIn("dry-cancelled", self.manager._jobs)
+        self.assertNotIn("scan-0", self.manager._jobs)
+
     def test_pruning_keeps_the_newest_check(self) -> None:
         from comfy_updater import jobs as jobs_module
 

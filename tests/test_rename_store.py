@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
+from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, DryRunStore, RenameJournal
 
 
 class RenameStoreTests(unittest.TestCase):
@@ -200,6 +200,172 @@ class RenameStoreTests(unittest.TestCase):
                 {"models": {}, "versions": {}, "files": {}},
                 json.loads(path.read_text(encoding="utf-8")),
             )
+
+
+def _snapshot(job_id="run-1", rows=None, finished="2026-11-14T10:00:00+00:00"):
+    return {
+        "jobId": job_id,
+        "type": "rename-dry-run",
+        "status": "completed",
+        "startedAt": "2026-11-14T09:00:00+00:00",
+        "finishedAt": finished,
+        "progress": 2,
+        "total": 2,
+        "summary": {"change": 1},
+        "items": rows if rows is not None else [{"key": "a", "newStem": "A"}, {"key": "b", "newStem": "B"}],
+    }
+
+
+class DryRunStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_saved_dry_run_survives_a_reload(self) -> None:
+        DryRunStore(self.data_dir).save(_snapshot())
+        loaded = DryRunStore(self.data_dir).load()
+        self.assertEqual("run-1", loaded["jobId"])
+        self.assertEqual("2026-11-14T10:00:00+00:00", loaded["finishedAt"])
+        self.assertEqual({"change": 1}, loaded["summary"])
+        self.assertEqual(["A", "B"], [row["newStem"] for row in loaded["rows"]])
+        self.assertFalse(loaded["applied"])
+        self.assertEqual("run-1", DryRunStore(self.data_dir).job_id())
+
+    def test_nothing_saved_loads_none(self) -> None:
+        store = DryRunStore(self.data_dir)
+        self.assertIsNone(store.load())
+        self.assertIsNone(store.job_id())
+        self.assertFalse((self.data_dir / "last_dry_run.json").exists())
+
+    def test_applied_flag_round_trips_and_a_new_run_resets_it(self) -> None:
+        store = DryRunStore(self.data_dir)
+        store.save(_snapshot())
+        store.mark_applied()
+        self.assertTrue(DryRunStore(self.data_dir).load()["applied"])
+        store.save(_snapshot("run-2"))
+        loaded = DryRunStore(self.data_dir).load()
+        self.assertEqual("run-2", loaded["jobId"])
+        self.assertFalse(loaded["applied"])
+
+    def test_row_updates_follow_the_revision_and_the_job(self) -> None:
+        store = DryRunStore(self.data_dir)
+        store.save(_snapshot())
+        older = store.next_revision()
+        newer = store.next_revision()
+        store.update_rows("run-1", [{"key": "a", "newStem": "new"}], newer)
+        # A write that lost the race to the thread pool must not undo the newer one.
+        store.update_rows("run-1", [{"key": "a", "newStem": "old"}], older)
+        # Another (older) dry run's edits never replace the saved one.
+        store.update_rows("run-0", [{"key": "z"}], store.next_revision())
+        self.assertEqual([{"key": "a", "newStem": "new"}], DryRunStore(self.data_dir).load()["rows"])
+
+    def test_corrupt_file_is_quarantined_and_ignored(self) -> None:
+        path = self.data_dir / "last_dry_run.json"
+        path.write_text("{not json", encoding="utf-8")
+        with redirect_stdout(StringIO()):
+            store = DryRunStore(self.data_dir)
+        self.assertIsNone(store.load())
+        self.assertEqual(1, len(list(self.data_dir.glob("last_dry_run.json.corrupt-*"))))
+        store.save(_snapshot())
+        self.assertEqual("run-1", DryRunStore(self.data_dir).load()["jobId"])
+
+    def test_a_file_of_the_wrong_shape_is_ignored(self) -> None:
+        path = self.data_dir / "last_dry_run.json"
+        path.write_text(json.dumps({"jobId": "", "rows": "nope"}), encoding="utf-8")
+        self.assertIsNone(DryRunStore(self.data_dir).load())
+        path.write_text(json.dumps({"jobId": "x", "rows": [{"key": "a"}, 5]}), encoding="utf-8")
+        loaded = DryRunStore(self.data_dir).load()
+        self.assertEqual([{"key": "a"}], loaded["rows"])
+        self.assertEqual({}, loaded["summary"])
+
+    def test_the_applied_flag_is_synced_to_disk(self) -> None:
+        store = DryRunStore(self.data_dir)
+        store.save(_snapshot())
+        with mock.patch("comfy_updater.sidecar.os.fsync") as fsync:
+            self.assertIsNone(store.mark_applied())
+        self.assertTrue(fsync.called)
+        self.assertTrue(DryRunStore(self.data_dir).load()["applied"])
+
+    def test_a_failed_applied_write_deletes_the_saved_run(self) -> None:
+        store = DryRunStore(self.data_dir)
+        store.save(_snapshot())
+        with mock.patch("comfy_updater.rename_store.write_json", side_effect=OSError("disk full")), \
+                redirect_stdout(StringIO()) as out:
+            warning = store.mark_applied()
+        self.assertIn("disk full", warning)
+        self.assertIn("deleted", warning)
+        self.assertIn(warning, out.getvalue())
+        # A missing saved run is safe; a stale one that could be applied again is not.
+        self.assertFalse((self.data_dir / "last_dry_run.json").exists())
+        self.assertIsNone(store.job_id())
+        self.assertIsNone(DryRunStore(self.data_dir).load())
+
+    def test_a_failed_applied_write_that_cannot_delete_says_so(self) -> None:
+        store = DryRunStore(self.data_dir)
+        store.save(_snapshot())
+        with mock.patch("comfy_updater.rename_store.write_json", side_effect=OSError("disk full")), \
+                mock.patch.object(Path, "unlink", side_effect=OSError("locked")), \
+                redirect_stdout(StringIO()):
+            warning = store.mark_applied()
+        self.assertIn("locked", warning)
+        self.assertIn("by hand", warning)
+
+    def _blocking_write(self):
+        import threading
+
+        entered, release = threading.Event(), threading.Event()
+        real = __import__("comfy_updater.rename_store", fromlist=["write_json"]).write_json
+
+        def slow(path, payload, **kwargs):
+            entered.set()
+            release.wait(timeout=5)
+            real(path, payload, **kwargs)
+
+        return entered, release, slow
+
+    def test_reads_do_not_wait_for_a_write_in_progress(self) -> None:
+        import threading
+
+        store = DryRunStore(self.data_dir)
+        entered, release, slow = self._blocking_write()
+        with mock.patch("comfy_updater.rename_store.write_json", side_effect=slow):
+            writer = threading.Thread(target=store.save, args=(_snapshot(),))
+            writer.start()
+            self.assertTrue(entered.wait(timeout=5))
+            results: list = []
+            reader = threading.Thread(target=lambda: results.append((store.job_id(), store.next_revision())))
+            reader.start()
+            reader.join(timeout=1)
+            self.assertFalse(reader.is_alive(), "job_id()/next_revision() waited for the disk write")
+            release.set()
+            writer.join(timeout=5)
+        self.assertEqual("run-1", results[0][0])
+
+    def test_the_last_state_reaches_the_disk_when_writes_overlap(self) -> None:
+        import threading
+
+        store = DryRunStore(self.data_dir)
+        entered, release, slow = self._blocking_write()
+        with mock.patch("comfy_updater.rename_store.write_json", side_effect=slow):
+            writer = threading.Thread(target=store.save, args=(_snapshot(),))
+            writer.start()
+            self.assertTrue(entered.wait(timeout=5))
+            editor = threading.Thread(
+                target=store.update_rows, args=("run-1", [{"key": "a", "newStem": "edited"}], store.next_revision())
+            )
+            editor.start()
+            release.set()
+            writer.join(timeout=5)
+            editor.join(timeout=5)
+        self.assertEqual([{"key": "a", "newStem": "edited"}], DryRunStore(self.data_dir).load()["rows"])
+
+    def test_the_file_is_written_compact(self) -> None:
+        DryRunStore(self.data_dir).save(_snapshot())
+        text = (self.data_dir / "last_dry_run.json").read_text(encoding="utf-8")
+        self.assertNotIn("\n", text)
 
 
 if __name__ == "__main__":

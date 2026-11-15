@@ -1,4 +1,4 @@
-"""Persistence for the model renamer: remembered decisions, base codes, AI answers, rename journal."""
+"""Persistence for the model renamer: remembered decisions, base codes, AI answers, rename journal, last dry run."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ DECISIONS_FILENAME = "rename_decisions.json"
 BASE_CODES_FILENAME = "base_codes.json"
 NAMING_CACHE_FILENAME = "naming_cache.json"
 RENAME_JOURNAL_FILENAME = "rename_journal.json"
+LAST_DRY_RUN_FILENAME = "last_dry_run.json"
 
 _TRAILING_TAG = re.compile(r"\(([^()]*)\)\s*$")
 
@@ -384,3 +385,123 @@ class RenameJournal(_JsonStore):
             self._data = None
             if self._writable:
                 self.path.unlink(missing_ok=True)
+
+
+class DryRunStore(_JsonStore):
+    """The last completed dry run, so its list survives a ComfyUI restart.
+
+    Kept current as decisions change its rows, and marked applied once an apply
+    or a recovery moves files (it then stays read-only). Written compact: it
+    holds every row of the library.
+
+    ``_lock`` guards the state in memory and is held only briefly, so the event
+    loop's reads (``job_id``, ``next_revision``) never wait on the disk.
+    ``_write_lock`` serialises the writes; each writes the state as it is when
+    its turn comes, so overlapping writes still leave the latest state on disk.
+    Row lists handed to the store are owned by it and replaced, never mutated.
+    """
+
+    def _write(self, payload: dict, *, durable: bool = False) -> None:
+        if self._writable:
+            write_json(self.path, payload, compact=True, durable=durable)
+
+    def __init__(self, data_dir: Path) -> None:
+        super().__init__(data_dir / LAST_DRY_RUN_FILENAME, "the last dry run")
+        self._write_lock = threading.Lock()
+        payload = _as_dict(self._read())
+        self._data: Optional[dict] = None
+        job_id = payload.get("jobId")
+        rows = payload.get("rows")
+        if isinstance(job_id, str) and job_id and isinstance(rows, list):
+            self._data = {
+                "jobId": job_id,
+                "startedAt": str(payload.get("startedAt") or ""),
+                "finishedAt": str(payload.get("finishedAt") or ""),
+                "summary": _as_dict(payload.get("summary")),
+                "rows": [row for row in rows if isinstance(row, dict)],
+                "applied": payload.get("applied") is True,
+            }
+        # Revisions order row writes that reach the thread pool out of order.
+        self._issued = 0
+        self._written = 0
+
+    def _flush(self, *, durable: bool = False) -> None:
+        with self._write_lock:
+            with self._lock:
+                if self._data is None:
+                    return
+                payload = dict(self._data)
+            self._write(payload, durable=durable)
+
+    def load(self) -> Optional[dict]:
+        with self._lock:
+            return json.loads(json.dumps(self._data)) if self._data is not None else None
+
+    def job_id(self) -> Optional[str]:
+        with self._lock:
+            return self._data["jobId"] if self._data is not None else None
+
+    def next_revision(self) -> int:
+        with self._lock:
+            self._issued += 1
+            return self._issued
+
+    def save(self, snapshot: dict) -> None:
+        """Replace the saved dry run with this finished job (a ``JobRecord.as_dict()`` snapshot)."""
+        with self._lock:
+            self._issued += 1
+            self._written = self._issued
+            self._data = {
+                "jobId": str(snapshot.get("jobId") or ""),
+                "startedAt": str(snapshot.get("startedAt") or ""),
+                "finishedAt": str(snapshot.get("finishedAt") or ""),
+                "summary": _as_dict(snapshot.get("summary")),
+                "rows": list(snapshot.get("items") or []),
+                "applied": False,
+            }
+        self._flush()
+
+    def update_rows(self, job_id: str, rows: list[dict], revision: int) -> None:
+        """Save edited rows of the saved dry run; older revisions and other dry runs are ignored."""
+        with self._lock:
+            if self._data is None or self._data["jobId"] != job_id or revision <= self._written:
+                return
+            self._written = revision
+            self._data["rows"] = rows
+        self._flush()
+
+    def mark_applied(self) -> Optional[str]:
+        """Files moved: the saved rows may now name other files, so they stay read-only.
+
+        Synced to disk. Returns None, or a warning when the flag could not be
+        saved: the saved run is then deleted, since a missing run is safe and a
+        stale one that could be applied again after a restart is not.
+        """
+        with self._lock:
+            if self._data is None or self._data["applied"]:
+                return None
+            self._data["applied"] = True
+        try:
+            self._flush(durable=True)
+            return None
+        except OSError as exc:
+            return self._drop_after_failed_write(exc)
+
+    def _drop_after_failed_write(self, exc: OSError) -> str:
+        with self._write_lock:
+            with self._lock:
+                self._data = None
+            try:
+                self.path.unlink(missing_ok=True)
+                warning = (
+                    f"Could not save that this dry run was applied ({exc}), so its saved copy was deleted: "
+                    "after a restart it is gone instead of coming back as if it had not been applied."
+                )
+            except OSError as unlink_exc:
+                warning = (
+                    f"Could not save that this dry run was applied ({exc}) and could not delete {self.path} "
+                    f"({unlink_exc}). Delete that file by hand before restarting ComfyUI, or the dry run comes "
+                    "back after the restart as if it had not been applied."
+                )
+        print(f"Civitai updater: {warning}")
+        return warning

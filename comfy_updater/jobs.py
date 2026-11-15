@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
@@ -10,6 +11,10 @@ from .base_models import UNKNOWN_FAMILY, base_family, family_sort_key
 from .constants import INFO_SIDECAR_SUFFIX, MODEL_PAGE_BASE_URL, SUPPORTED_MODEL_TYPES
 
 _MAX_FINISHED_JOBS = 5
+# The panel stays bound to the newest job of these types, so pruning never drops it.
+_KEEP_NEWEST_TYPES = ("check-updates", "rename-dry-run")
+# A dry run is saved across restarts only once completed: the newest completed one stays too.
+_KEEP_NEWEST_COMPLETED_TYPES = ("rename-dry-run",)
 
 GROUP_KEYS = ("none", "type", "baseFamily")
 MATURE_MODES = ("show", "blur", "hide")
@@ -34,6 +39,8 @@ class JobRecord:
     errors: list[str] = field(default_factory=list)
     control: "JobControl | None" = None
     seededPaths: set = field(default_factory=set)
+    # finishedAt of a job brought back from disk after a restart, else None.
+    restoredFrom: str | None = None
 
     def as_dict(self, include_items: bool = True) -> dict:
         payload = {
@@ -61,12 +68,17 @@ class JobManager:
         self.archive_store = archive_store
         self.config_store = config_store
 
-    def start(self, job_type: str, runner, seed_items: list[dict] | None = None) -> JobRecord | None:
+    def start(
+        self, job_type: str, runner, seed_items: list[dict] | None = None, on_complete=None
+    ) -> JobRecord | None:
         """Start a job, or return None when another job is still active.
 
         ``seed_items`` pre-fills the job with previous results (marked
         ``_seeded``) so the UI keeps showing them while the job re-checks;
         each seeded entry is replaced as a fresh item for its path arrives.
+        ``on_complete(snapshot)`` runs on the job thread once the job completed
+        (not when it failed or was cancelled), with a deep copy of ``as_dict()``
+        taken as it completed; an error in it is printed, the job stays completed.
         """
         job_id = str(uuid.uuid4())
         control = JobControl(job_id)
@@ -87,7 +99,7 @@ class JobManager:
 
         thread = threading.Thread(
             target=self._run_job,
-            args=(record, runner, control),
+            args=(record, runner, control, on_complete),
             daemon=True,
             name=f"civitai-updater-{job_type}-{job_id[:8]}",
         )
@@ -291,10 +303,39 @@ class JobManager:
             self._jobs["cached"] = record
         return record
 
+    def restore_job(
+        self,
+        job_type: str,
+        job_id: str,
+        *,
+        startedAt: str,
+        finishedAt: str,
+        summary: dict,
+        items: list[dict],
+    ) -> JobRecord:
+        """Register a job finished before a restart under its old id, so stored ids still resolve."""
+        record = JobRecord(
+            id=job_id,
+            type=job_type,
+            status="completed",
+            startedAt=startedAt,
+            finishedAt=finishedAt,
+            summary=summary,
+            items=items,
+            progress=len(items),
+            total=len(items),
+            message="Restored",
+            restoredFrom=finishedAt,
+        )
+        with self._lock:
+            self._jobs[job_id] = record
+        return record
+
     def pause(self, job_id: str) -> JobRecord | None:
         with self._lock:
             job = self._jobs.get(job_id)
-            if not job or job.status != "running" or not job.control:
+            if not job or job.status != "running" or not job.control or job.finishedAt:
+                # A finished job still saving its results has nothing left to pause.
                 return job
             job.control.pause()
             job.status = "paused"
@@ -325,7 +366,7 @@ class JobManager:
                 job.message = "Cancelled"
             return job
 
-    def _run_job(self, job: JobRecord, runner, control: "JobControl") -> None:
+    def _run_job(self, job: JobRecord, runner, control: "JobControl", on_complete=None) -> None:
         with self._lock:
             job.status = "running"
             job.startedAt = _utc_now()
@@ -365,6 +406,7 @@ class JobManager:
                 job.errors.append(str(exc))
             return
 
+        snapshot = None
         with self._lock:
             if control.is_cancelled():
                 job.status = "cancelled"
@@ -373,14 +415,36 @@ class JobManager:
                 # yet plus the fresh partial results — so cancelling does not
                 # blank the previous check's results.
             else:
-                job.status = "completed"
                 job.items = items or job.items
                 job.seededPaths = set()
             job.finishedAt = _utc_now()
             job.summary = summary or {}
             job.progress = job.total
-            if not job.message:
+            if job.status != "cancelled":
+                if on_complete is not None:
+                    # The job stays active until the hook returns, so no edit or apply
+                    # can land while it saves (and be lost, or reset by the save).
+                    snapshot = copy.deepcopy(job.as_dict())
+                    snapshot["status"] = "completed"
+                else:
+                    self._publish_completed_locked(job)
+            elif not job.message:
                 job.message = "Completed"
+
+        if snapshot is not None:
+            try:
+                on_complete(snapshot)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Civitai updater: could not save the finished {job.type} job ({exc}).")
+            with self._lock:
+                self._publish_completed_locked(job)
+
+    @staticmethod
+    def _publish_completed_locked(job: JobRecord) -> None:
+        job.status = "completed"
+        if not job.message or job.message == "Stopping":
+            # A stop that came after the runner returned changes nothing: it completed.
+            job.message = "Completed"
 
     def _prune_finished_locked(self) -> None:
         """Drop all but the most recent finished jobs so item lists don't accumulate forever."""
@@ -392,11 +456,19 @@ class JobManager:
         if len(finished) <= _MAX_FINISHED_JOBS:
             return
         finished.sort(key=lambda job: job.finishedAt or "", reverse=True)
-        # The panel stays bound to the last check's results however many scans
-        # ran since, so that job is never the one dropped.
-        newest_check = next((job for job in finished if job.type == "check-updates"), None)
+        # The panel stays bound to the last check's results (and the last dry
+        # run) however many scans ran since, so those jobs are never dropped.
+        keep = set()
+        for job_type in _KEEP_NEWEST_TYPES:
+            newest = next((job for job in finished if job.type == job_type), None)
+            if newest is not None:
+                keep.add(newest.id)
+        for job_type in _KEEP_NEWEST_COMPLETED_TYPES:
+            newest = next((job for job in finished if job.type == job_type and job.status == "completed"), None)
+            if newest is not None:
+                keep.add(newest.id)
         for job in finished[_MAX_FINISHED_JOBS:]:
-            if job is not newest_check:
+            if job.id not in keep:
                 self._jobs.pop(job.id, None)
 
     def _archived_snapshot(self) -> dict[str, set[str]]:

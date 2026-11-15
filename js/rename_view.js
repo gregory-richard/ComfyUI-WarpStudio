@@ -12,6 +12,7 @@ export const RENAME_JOB_TYPES = [DRY_RUN_JOB, APPLY_JOB, DOWNLOAD_JOB];
 const NO_SEND2TRASH = "Removing extra copies needs the send2trash package. Install it into ComfyUI's Python (pip install send2trash) and restart ComfyUI.";
 const PAGE = 150;
 const LAST_JOB_KEY = "civitai-updater.rename.dryRunJob";
+const SELECTION_KEY = "civitai-updater.rename.selection";
 const NAMED = new Set(["change", "unchanged"]);
 const PART_WORDS = { creator: "creator", title: "title", version: "version", precision: "precision", base: "base code" };
 
@@ -43,6 +44,9 @@ export function createRenameStore() {
     summary: null,
     errors: [],
     applied: false,
+    restoredFrom: null,
+    forgottenJobId: null,
+    persistWarning: "",
     loadedJobId: null,
     selected: new Map(),
     removeDup: new Set(),
@@ -320,6 +324,47 @@ function setRows(store, rows) {
   store.removeDup = new Set([...store.removeDup].filter((key) => store.byKey.get(key)?.status === "duplicate"));
 }
 
+/* The user's choices for one dry run: checkbox overrides as differences from
+   the server's default `selected` (selectable rows only), and the extra copies
+   marked for removal. {overrides: {key: true|false}, removeDup: [key]} */
+export function selectionState(store) {
+  const overrides = {};
+  for (const row of store.rows) {
+    if (!canSelect(row) || !store.selected.has(row.key)) continue;
+    const on = Boolean(store.selected.get(row.key));
+    if (on !== Boolean(row.selected)) overrides[row.key] = on;
+  }
+  const removeDup = [...store.removeDup].filter((key) => store.byKey.get(key)?.status === "duplicate");
+  return { overrides, removeDup };
+}
+
+/* Put saved choices back; a row that is gone or no longer selectable stays as it
+   is (unchecked), and only rows still listed as extra copies get marked. */
+export function restoreSelection(store, saved) {
+  for (const [key, on] of Object.entries(saved?.overrides || {})) {
+    const row = store.byKey.get(key);
+    if (row && canSelect(row)) store.selected.set(key, Boolean(on));
+  }
+  for (const key of saved?.removeDup || []) {
+    if (store.byKey.get(key)?.status === "duplicate") store.removeDup.add(key);
+  }
+}
+
+/* The saved choices if they belong to this dry run, else null (stored text may be anything). */
+export function parseSelection(text, jobId) {
+  if (!text || !jobId) return null;
+  try {
+    const data = JSON.parse(text);
+    if (!data || data.jobId !== jobId) return null;
+    const overrides = data.overrides ?? {};
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return null;
+    const removeDup = Array.isArray(data.removeDup) ? data.removeDup.filter((key) => typeof key === "string") : [];
+    return { overrides, removeDup };
+  } catch (_) {
+    return null;
+  }
+}
+
 /* Base models to list in the Base codes section: the saved table plus the
    ones rows flag as new, with the code the naming model suggested. */
 export function baseCodeEntries(baseCodes, rows) {
@@ -361,6 +406,32 @@ function writeLastJob(jobId) {
   } catch (_) {
     // per-browser convenience only
   }
+}
+
+/* Checkbox and remove-copy choices of one dry run, so a reload or a ComfyUI restart keeps them. */
+function readSelection(jobId) {
+  try {
+    return parseSelection(window.localStorage.getItem(SELECTION_KEY), jobId);
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeSelection(jobId, state) {
+  try {
+    if (jobId && state && (Object.keys(state.overrides || {}).length || (state.removeDup || []).length)) {
+      window.localStorage.setItem(SELECTION_KEY, JSON.stringify({ jobId, overrides: state.overrides, removeDup: state.removeDup }));
+    } else {
+      window.localStorage.removeItem(SELECTION_KEY);
+    }
+  } catch (_) {
+    // per-browser convenience only
+  }
+}
+
+function formatTime(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? String(iso || "") : date.toLocaleString();
 }
 
 /* ---------------------------------------------------------------- the view */
@@ -415,10 +486,14 @@ export function renderRenameView(container, deps) {
     try {
       const data = await deps.getJson(`${ROUTE}/rename/rows?jobId=${encodeURIComponent(store.jobId)}`);
       setRows(store, data.rows);
+      const saved = readSelection(store.jobId);
+      if (saved) restoreSelection(store, saved);
+      else writeSelection(null); // choices of another dry run, if any, are dropped
       store.summary = data.summary || null;
       store.errors = Array.isArray(data.errors) ? data.errors : [];
       store.runStatus = data.status || "";
       store.applied = Boolean(data.applied);
+      store.restoredFrom = data.restoredFrom || null;
       store.loadedJobId = store.jobId;
       if (store.applied) {
         // Read-only: nothing is left to choose for this dry run.
@@ -437,12 +512,21 @@ export function renderRenameView(container, deps) {
   }
 
   function forgetDryRun() {
+    store.forgottenJobId = store.jobId;
     store.jobId = null;
     store.loadedJobId = null;
     setRows(store, []);
     store.summary = null;
     store.applied = false;
+    store.restoredFrom = null;
     writeLastJob(null);
+    writeSelection(null);
+  }
+
+  function saveSelection() {
+    if (store.jobId && store.loadedJobId === store.jobId && !store.applied) {
+      writeSelection(store.jobId, selectionState(store));
+    }
   }
 
   async function refresh() {
@@ -461,8 +545,14 @@ export function renderRenameView(container, deps) {
       store.runLine = "";
       store.loadedJobId = null;
       await loadRows();
-    } else if (store.jobId && store.loadedJobId !== store.jobId) {
-      await loadRows();
+    } else {
+      const saved = store.status?.lastDryRun;
+      if (!store.jobId && saved && saved !== store.forgottenJobId) {
+        // No dry run of this browser's own: show the one the server kept across a restart.
+        store.jobId = saved;
+        writeLastJob(saved);
+      }
+      if (store.jobId && store.loadedJobId !== store.jobId) await loadRows();
     }
     render();
   }
@@ -480,6 +570,8 @@ export function renderRenameView(container, deps) {
       store.runActive = true;
       store.runLine = "Starting\u2026";
       store.applied = false;
+      store.restoredFrom = null;
+      store.persistWarning = "";
       store.result = null;
       store.recoverResult = null;
       store.editing = null;
@@ -489,6 +581,7 @@ export function renderRenameView(container, deps) {
       setRows(store, []);
       store.removeDup.clear();
       writeLastJob(data.jobId);
+      writeSelection(null);
       notify(null);
     });
   }
@@ -498,6 +591,7 @@ export function renderRenameView(container, deps) {
     await request(async () => {
       const data = await deps.postJson(`${ROUTE}/rename/decision`, payload);
       replaceRows(store, data.rows);
+      saveSelection();
       if (done) done();
       notify(null);
     });
@@ -508,7 +602,9 @@ export function renderRenameView(container, deps) {
     const payload = applyPayload(store);
     if (!payload.keys.length && !payload.removeDuplicates.length) return;
     await request(async () => {
-      await deps.startJob(`${ROUTE}/jobs/rename-apply`, APPLY_JOB, payload, "Applying the renames\u2026");
+      const data = await deps.startJob(`${ROUTE}/jobs/rename-apply`, APPLY_JOB, payload, "Applying the renames\u2026");
+      // The server could not save that this dry run was applied (it deleted its saved copy instead).
+      if (data?.persistWarning) store.persistWarning = String(data.persistWarning);
       store.confirming = false;
       store.result = null;
       store.runLine = "Applying\u2026";
@@ -520,6 +616,7 @@ export function renderRenameView(container, deps) {
     if (store.busy || otherJob()) return;
     await request(async () => {
       const data = await deps.postJson(`${ROUTE}/rename/recover`, { action });
+      if (data?.persistWarning) store.persistWarning = String(data.persistWarning);
       store.recoverResult = { action, done: data.done, skipped: Array.isArray(data.skipped) ? data.skipped : [] };
       if (store.status) store.status.journal = data.journal || { pending: false, steps: 0 };
       await loadStatus();
@@ -678,6 +775,8 @@ export function renderRenameView(container, deps) {
       html.push(headHtml());
       if (store.applied) {
         html.push(`<div class="cu-rn-banner" data-level="info"><div class="cu-rn-banner-text">These names were applied. Run a new dry run to see your files as they are now.</div></div>`);
+      } else if (store.restoredFrom) {
+        html.push(`<div class="cu-rn-banner" data-level="info"><div class="cu-rn-banner-text">Dry run from ${esc(formatTime(store.restoredFrom))}, restored after a restart. Files changed since are skipped when you apply.</div></div>`);
       }
       if (store.confirming) html.push(confirmHtml());
       const sections = groupRows(store.rows);
@@ -697,8 +796,11 @@ export function renderRenameView(container, deps) {
   }
 
   function messageHtml() {
-    if (!store.message) return "";
-    return `<div class="cu-rn-message" data-level="${store.message.level === "error" ? "error" : "info"}">${esc(store.message.text)}
+    const warning = store.persistWarning
+      ? `<div class="cu-rn-banner" data-level="warn"><div class="cu-rn-banner-text">${esc(store.persistWarning)}</div></div>`
+      : "";
+    if (!store.message) return warning;
+    return warning + `<div class="cu-rn-message" data-level="${store.message.level === "error" ? "error" : "info"}">${esc(store.message.text)}
       <button class="cu-text-btn" data-rn-action="dismiss" title="Dismiss">\u00d7</button></div>`;
   }
 
@@ -950,6 +1052,7 @@ export function renderRenameView(container, deps) {
         const on = target.dataset.rnOn === "1";
         const rows = groupRows(store.rows)[target.dataset.rnSection] || [];
         for (const r of rows) if (canSelect(r)) store.selected.set(r.key, on);
+        saveSelection();
         render();
         break;
       }
@@ -980,6 +1083,7 @@ export function renderRenameView(container, deps) {
         if (row && !locked() && canRemoveDuplicates(store)) {
           if (store.removeDup.has(row.key)) store.removeDup.delete(row.key);
           else store.removeDup.add(row.key);
+          saveSelection();
           render();
         }
         break;
@@ -1020,6 +1124,7 @@ export function renderRenameView(container, deps) {
     const row = rowOf(target);
     if (!row || !canSelect(row) || locked()) return;
     store.selected.set(row.key, target.checked);
+    saveSelection();
     // The Apply count and the Select all/none toggles follow the selection.
     render();
   }

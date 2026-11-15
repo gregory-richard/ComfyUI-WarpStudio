@@ -10,7 +10,7 @@ from comfy_updater.config_store import ConfigStore
 from unittest import mock
 
 from comfy_updater.jobs import JobManager, JobRecord
-from comfy_updater.rename_store import BaseCodeStore, DecisionStore, RenameJournal
+from comfy_updater.rename_store import BaseCodeStore, DecisionStore, DryRunStore, RenameJournal
 from comfy_updater.routes import (
     NAMING_MODEL_FILENAME,
     NAMING_MODEL_URL,
@@ -27,6 +27,10 @@ from comfy_updater.routes import (
     ExclusiveSlot,
     apply_followups,
     download_naming_model,
+    dry_run_rows_writer,
+    rename_rows_payload,
+    restore_last_dry_run,
+    save_finished_dry_run,
     mark_dry_runs_stale,
     run_apply,
     update_check_job_paths,
@@ -546,6 +550,91 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.assertEqual({"old", "newer"}, applied)
         for job in (old, newer):
             self.assertEqual((409, STALE_DRY_RUN_ERROR), rename_job_problem(job, active_job=None, applied=applied))
+
+    # --- the last dry run across restarts --------------------------------
+
+    def _finished_dry_run(self, rows, job_id="run-1"):
+        return {
+            "jobId": job_id, "type": RENAME_DRY_RUN_JOB, "status": "completed",
+            "startedAt": "2026-11-14T09:00:00+00:00", "finishedAt": "2026-11-14T10:00:00+00:00",
+            "progress": len(rows), "total": len(rows), "summary": {"change": len(rows)}, "items": rows,
+        }
+
+    def test_restore_registers_the_saved_dry_run_under_its_id(self) -> None:
+        rows = [_row(self.folder, "old a", "maker - title - v1 (sdxl)")]
+        save_finished_dry_run(DryRunStore(self.data_dir))(self._finished_dry_run(rows))
+
+        manager, applied = JobManager(), set()
+        job = restore_last_dry_run(manager, DryRunStore(self.data_dir), applied)
+        self.assertIs(job, manager.get("run-1"))
+        self.assertEqual(RENAME_DRY_RUN_JOB, job.type)
+        self.assertEqual("completed", job.status)
+        self.assertEqual(rows, job.items)
+        self.assertEqual(set(), applied)
+        self.assertIsNone(rename_job_problem(job, active_job=None, applied=applied))
+        payload = rename_rows_payload(job, applied)
+        self.assertEqual("2026-11-14T10:00:00+00:00", payload["restoredFrom"])
+        self.assertFalse(payload["applied"])
+        self.assertEqual(rows, payload["rows"])
+        self.assertEqual({"change": 1}, payload["summary"])
+
+    def test_nothing_to_restore(self) -> None:
+        manager = JobManager()
+        self.assertIsNone(restore_last_dry_run(manager, DryRunStore(self.data_dir), set()))
+        self.assertEqual([], manager.job_ids(RENAME_DRY_RUN_JOB))
+
+    def test_a_dry_run_of_this_session_is_not_marked_restored(self) -> None:
+        job = JobRecord(id="live", type=RENAME_DRY_RUN_JOB, status="completed", items=[{"key": "a"}])
+        payload = rename_rows_payload(job, set())
+        self.assertIsNone(payload["restoredFrom"])
+        self.assertEqual("completed", payload["status"])
+
+    def test_only_a_completed_dry_run_is_saved(self) -> None:
+        store = DryRunStore(self.data_dir)
+        hook = save_finished_dry_run(store)
+        hook(dict(self._finished_dry_run([{"key": "a"}]), status="cancelled"))
+        self.assertIsNone(store.load())
+        hook(self._finished_dry_run([{"key": "a"}]))
+        self.assertEqual("run-1", store.job_id())
+
+    def test_a_restored_applied_dry_run_stays_read_only(self) -> None:
+        store = DryRunStore(self.data_dir)
+        save_finished_dry_run(store)(self._finished_dry_run([{"key": "a"}]))
+        manager, applied = JobManager(), set()
+        restore_last_dry_run(manager, store, applied)
+        mark_dry_runs_stale(manager, applied)
+        self.assertIsNone(store.mark_applied())  # saved: no warning for the panel
+
+        manager, applied = JobManager(), set()  # restart
+        job = restore_last_dry_run(manager, DryRunStore(self.data_dir), applied)
+        self.assertEqual({"run-1"}, applied)
+        self.assertTrue(rename_rows_payload(job, applied)["applied"])
+        self.assertEqual((409, STALE_DRY_RUN_ERROR), rename_job_problem(job, active_job=None, applied=applied))
+
+    def test_an_edit_survives_a_restart(self) -> None:
+        a = _row(self.folder, "old a", "maker - title - v1 (sdxl)")
+        save_finished_dry_run(DryRunStore(self.data_dir))(self._finished_dry_run([a]))
+
+        store = DryRunStore(self.data_dir)  # first restart
+        manager = JobManager()
+        job = restore_last_dry_run(manager, store, set())
+        self.decisions.set_model("1", title="Better")
+        reassemble_rows(job.items, self.decisions, self.base_codes, {str(self.folder).lower(): {"old a"}}, model_id="1")
+        write = dry_run_rows_writer(store, job.id, job.items)
+        # The writer holds a copy: rows edited after it was made are not what it writes.
+        job.items[0]["newStem"] = "edited later"
+        write()
+
+        manager = JobManager()  # second restart
+        job = restore_last_dry_run(manager, DryRunStore(self.data_dir), set())
+        self.assertEqual("maker - better - v1 (sdxl)", job.items[0]["newStem"])
+        self.assertEqual("better", job.items[0]["parts"]["title"])
+
+    def test_edits_of_an_older_dry_run_do_not_replace_the_saved_one(self) -> None:
+        store = DryRunStore(self.data_dir)
+        save_finished_dry_run(store)(self._finished_dry_run([{"key": "new"}], job_id="run-2"))
+        dry_run_rows_writer(store, "run-1", [{"key": "old"}])()
+        self.assertEqual([{"key": "new"}], DryRunStore(self.data_dir).load()["rows"])
 
     def test_check_jobs_in_memory_get_the_new_paths(self) -> None:
         old, new = str(self.folder / "Old.safetensors"), str(self.folder / "new.safetensors")

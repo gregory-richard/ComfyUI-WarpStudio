@@ -80,6 +80,7 @@ def register_routes(
     base_codes=None,
     answer_cache=None,
     journal=None,
+    dry_runs=None,
 ) -> None:
     global _ROUTES_REGISTERED
     if _ROUTES_REGISTERED:
@@ -381,7 +382,9 @@ def register_routes(
         return web.json_response(job.as_dict(include_items=False))
 
     if None not in (decisions, base_codes, answer_cache, journal):
-        _register_rename_routes(routes, config_store, job_manager, decisions, base_codes, answer_cache, journal)
+        _register_rename_routes(
+            routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, dry_runs
+        )
     else:
         print("Civitai updater: the renamer's stores are missing, so its routes were not registered.")
 
@@ -614,10 +617,23 @@ _NAMED_STATUSES = ("change", "unchanged")
 _MB = 1024 * 1024
 
 
-def _register_rename_routes(routes, config_store, job_manager, decisions, base_codes, answer_cache, journal) -> None:
+def _register_rename_routes(
+    routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, dry_runs=None
+) -> None:
     # Dry runs made before the last apply or recovery: their old stems may now name other files.
     applied_jobs: set = set()
     recovery_slot = ExclusiveSlot()
+    if dry_runs is not None:
+        restore_last_dry_run(job_manager, dry_runs, applied_jobs)
+
+    async def persist_stale() -> Optional[str]:
+        """Files are moving: the saved dry run stays read-only after a restart too.
+
+        Returns a warning for the panel when that could not be saved (see DryRunStore.mark_applied).
+        """
+        if dry_runs is None:
+            return None
+        return await asyncio.to_thread(dry_runs.mark_applied)
 
     def busy():
         return web.json_response({"error": JOB_RUNNING_ERROR}, status=409)
@@ -640,9 +656,10 @@ def _register_rename_routes(routes, config_store, job_manager, decisions, base_c
     async def get_rename_status(request):  # noqa: ARG001
         # Reads every text encoder's header: off the event loop.
         models = await asyncio.to_thread(list_naming_models)
-        return web.json_response(
-            rename_status(config_store.get(), has_text_generation(), models, journal, base_codes=base_codes)
-        )
+        status = rename_status(config_store.get(), has_text_generation(), models, journal, base_codes=base_codes)
+        # The dry run saved across restarts, for a panel that has no dry run of its own to show.
+        status["lastDryRun"] = dry_runs.job_id() if dry_runs is not None else None
+        return web.json_response(status)
 
     @routes.post("/civitai-updater/jobs/rename-dry-run")
     @_guarded
@@ -687,7 +704,8 @@ def _register_rename_routes(routes, config_store, job_manager, decisions, base_c
                 # ComfyUI's rejection lists every file it has; the panel gets the start.
                 raise RuntimeError(_short_error(str(exc))) from exc
 
-        job = job_manager.start(RENAME_DRY_RUN_JOB, runner)
+        on_complete = save_finished_dry_run(dry_runs) if dry_runs is not None else None
+        job = job_manager.start(RENAME_DRY_RUN_JOB, runner, on_complete=on_complete)
         if not job:
             return busy()
         return web.json_response({"jobId": job.id})
@@ -698,17 +716,7 @@ def _register_rename_routes(routes, config_store, job_manager, decisions, base_c
         job = dry_run_job(request.query.get("jobId", "").strip())
         if job is None:
             return web.json_response({"error": "job not found"}, status=404)
-        return web.json_response(
-            {
-                "rows": list(job.items),
-                "status": job.status,
-                "progress": job.progress,
-                "total": job.total,
-                "summary": job.summary,
-                "errors": [_short_error(error) for error in job.errors],
-                "applied": job.id in applied_jobs,
-            }
-        )
+        return web.json_response(rename_rows_payload(job, applied_jobs))
 
     @routes.post("/civitai-updater/rename/decision")
     @_guarded
@@ -754,6 +762,13 @@ def _register_rename_routes(routes, config_store, job_manager, decisions, base_c
         result = reassemble_rows(
             rows, decisions, base_codes, listing, model_id=model_id, asked_again=asked_again
         )
+        if dry_runs is not None and dry_runs.job_id() == job.id:
+            # Copied here, before the next request can edit the rows; written off the loop.
+            write = dry_run_rows_writer(dry_runs, job.id, rows)
+            try:
+                await asyncio.to_thread(write)
+            except OSError as exc:
+                print(f"Civitai updater: could not save the dry run's edited rows ({exc}).")
         return web.json_response({"rows": result})
 
     @routes.post("/civitai-updater/rename/base-code")
@@ -800,7 +815,11 @@ def _register_rename_routes(routes, config_store, job_manager, decisions, base_c
         # No await since the check above, so no second apply or edit slipped in between.
         # Every dry run held (another tab's too) is stale once files move.
         mark_dry_runs_stale(job_manager, applied_jobs)
-        return web.json_response({"jobId": apply_job.id})
+        response = {"jobId": apply_job.id}
+        warning = await persist_stale()
+        if warning:
+            response["persistWarning"] = warning
+        return web.json_response(response)
 
     @routes.post("/civitai-updater/rename/recover")
     @_guarded
@@ -817,6 +836,7 @@ def _register_rename_routes(routes, config_store, job_manager, decisions, base_c
         try:
             pending = journal.pending()
             mark_dry_runs_stale(job_manager, applied_jobs)
+            warning = await persist_stale()
             try:
                 result = await asyncio.to_thread(recover, journal, action)
                 mapping = recovered_path_mapping(pending, result, action)
@@ -828,9 +848,10 @@ def _register_rename_routes(routes, config_store, job_manager, decisions, base_c
                 )
         finally:
             recovery_slot.release()
-        return web.json_response(
-            {"done": result["done"], "skipped": result["skipped"], "journal": _journal_status(journal)}
-        )
+        response = {"done": result["done"], "skipped": result["skipped"], "journal": _journal_status(journal)}
+        if warning:
+            response["persistWarning"] = warning
+        return web.json_response(response)
 
     @routes.post("/civitai-updater/jobs/download-naming-model")
     @_guarded
@@ -886,6 +907,55 @@ class ExclusiveSlot:
 def mark_dry_runs_stale(job_manager, applied: set) -> None:
     """Every dry run held now (up to five finished, any tab's) may name files that are about to move."""
     applied.update(job_manager.job_ids(RENAME_DRY_RUN_JOB))
+
+
+def restore_last_dry_run(job_manager, dry_runs, applied: set):
+    """Bring the dry run saved before a restart back under its id; returns its job or None."""
+    saved = dry_runs.load()
+    if saved is None:
+        return None
+    job = job_manager.restore_job(
+        RENAME_DRY_RUN_JOB,
+        saved["jobId"],
+        startedAt=saved["startedAt"],
+        finishedAt=saved["finishedAt"],
+        summary=saved["summary"],
+        items=saved["rows"],
+    )
+    if saved["applied"]:
+        applied.add(job.id)
+    return job
+
+
+def save_finished_dry_run(dry_runs) -> Callable[[dict], None]:
+    """The dry run job's on_complete: a completed run replaces the saved one."""
+
+    def save(snapshot: dict) -> None:
+        if snapshot.get("status") == "completed":
+            dry_runs.save(snapshot)
+
+    return save
+
+
+def dry_run_rows_writer(dry_runs, job_id: str, rows: list[dict]) -> Callable[[], None]:
+    """Copy the rows and take a revision now; the returned call writes them (in a thread)."""
+    snapshot = copy.deepcopy(rows)
+    revision = dry_runs.next_revision()
+    return lambda: dry_runs.update_rows(job_id, snapshot, revision)
+
+
+def rename_rows_payload(job, applied: set) -> dict:
+    return {
+        "rows": list(job.items),
+        "status": job.status,
+        "progress": job.progress,
+        "total": job.total,
+        "summary": job.summary,
+        "errors": [_short_error(error) for error in job.errors],
+        "applied": job.id in applied,
+        # When it came back from disk after a restart: the finish time, else None.
+        "restoredFrom": job.restoredFrom,
+    }
 
 
 def update_check_job_paths(job_manager, mapping: dict) -> None:

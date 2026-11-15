@@ -5,7 +5,7 @@ from pathlib import Path
 from .archived_updates import ArchivedUpdateStore
 from .config_store import ConfigStore
 from .jobs import JobManager
-from .rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
+from .rename_store import AnswerCache, BaseCodeStore, DecisionStore, DryRunStore, RenameJournal
 from .routes import register_routes
 from .updater_service import UpdaterService
 
@@ -33,6 +33,7 @@ def initialize_plugin() -> None:
         base_codes=BaseCodeStore(data_dir),
         answer_cache=AnswerCache(data_dir),
         journal=RenameJournal(data_dir),
+        dry_runs=DryRunStore(data_dir),
     )
 
     _INITIALIZED = True
