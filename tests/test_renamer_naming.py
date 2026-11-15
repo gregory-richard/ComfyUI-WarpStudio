@@ -600,6 +600,99 @@ class NamingTests(unittest.TestCase):
         self.assertNotIn("Glow 2", generator.calls[1][0])
         self.assertEqual(self.row(rows, "m1")["flags"], [])
 
+    # --- base words and version format ------------------------------------
+
+    def glide(self, creator="brightfern", stem="brightfern - deep glide - v1 (anima)", description="") -> dict:
+        self.base_codes.set("Anima", "anima")
+        write_entry(self.lora, stem, 900, 9001, "g9")
+        return {900: live_model(900, "Deep Glide", creator, "LORA", [
+            live_version(9001, "v1.0 Anima", "Anima", [live_file(1, "g9")]),
+        ], description=description)}
+
+    def test_base_word_and_version_format_get_one_retry_then_flags(self) -> None:
+        models = self.glide()
+        answer = "title: deep glide\noriginal:\nversion 1: v1.0 anima"
+        generator = FakeGenerator({"Deep Glide": [answer, answer]})
+        _summary, rows = self.dry_run(models, generator)
+        self.assertEqual(len(generator.messages), 2)
+        retry = generator.messages[1]
+        self.assertIn('"anima" is a base model name; leave it out of the title and version.', retry)
+        self.assertIn('write "v1", not "v1.0".', retry)
+        row = self.row(rows, "brightfern")
+        self.assertEqual(row["newStem"], "brightfern - deep glide - v1.0 anima (anima)")
+        self.assertIn("base-word:anima", row["flags"])
+        self.assertIn("version-format:v1.0", row["flags"])
+        self.assertFalse(row["selected"])
+        self.assertEqual(self.cache._answers, {})
+
+    def test_answer_without_base_words_is_cached_and_unflagged(self) -> None:
+        models = self.glide()
+        generator = FakeGenerator({"Deep Glide": ["title: deep glide\noriginal:\nversion 1: v1.0 anima",
+                                                  "title: deep glide\noriginal:\nversion 1: v1"]})
+        _summary, rows = self.dry_run(models, generator)
+        row = self.row(rows, "brightfern")
+        self.assertEqual(row["flags"], [])
+        self.assertEqual(row["status"], "unchanged")
+        self.assertEqual(len(self.cache._answers), 1)
+
+    def test_xl_is_a_base_word_on_an_sdxl_family_base(self) -> None:
+        write_entry(self.lora, "maker - glow xl - v2 (pony)", 910, 9101, "x9")
+        self.base_codes.set("Pony", "pony")
+        models = {910: live_model(910, "Glow XL", "maker", "LORA", [live_version(9101, "v2", "Pony", [live_file(1, "x9")])])}
+        answer = "title: glow xl\noriginal:\nversion 1: v2"
+        _summary, rows = self.dry_run(models, FakeGenerator({"Glow XL": [answer, answer]}))
+        self.assertIn("base-word:xl", self.row(rows, "maker")["flags"])
+
+    def test_cached_answer_failing_the_base_check_is_asked_again(self) -> None:
+        models = self.glide()
+        answer = "title: deep glide\noriginal:\nversion 1: v1 anima"
+        # Cached while the base check did not exist yet.
+        with mock.patch("comfy_updater.renamer.name_check_flags", return_value=[]):
+            self.dry_run(models, FakeGenerator({"Deep Glide": answer}))
+        self.assertEqual(len(self.cache._answers), 1)
+        generator = FakeGenerator({"Deep Glide": "title: deep glide\noriginal:\nversion 1: v1"})
+        self.emitted = []
+        _summary, rows = self.dry_run(models, generator)
+        self.assertEqual(len(generator.messages), 1)
+        self.assertEqual(self.row(rows, "brightfern")["flags"], [])
+
+    # --- creator fallback ---------------------------------------------------
+
+    def test_no_live_creator_takes_the_creator_from_the_file_name(self) -> None:
+        models = self.glide(creator=None)
+        _summary, rows = self.dry_run(models, FakeGenerator({"Deep Glide": "title: deep glide\noriginal:\nversion 1: v1"}))
+        row = self.row(rows, "brightfern")
+        self.assertEqual(row["parts"]["creator"], "brightfern")
+        self.assertIn("creator-from-file-name", row["flags"])
+        self.assertNotIn("empty:creator", row["flags"])
+        self.assertFalse(row["selected"])
+
+    def test_no_creator_anywhere_stays_empty(self) -> None:
+        models = self.glide(creator=None, stem="deep glide v1")
+        _summary, rows = self.dry_run(models, FakeGenerator({"Deep Glide": "title: deep glide\noriginal:\nversion 1: v1"}))
+        row = self.row(rows, "deep glide")
+        self.assertEqual(row["parts"]["creator"], "")
+        self.assertIn("empty:creator", row["flags"])
+        self.assertNotIn("creator-from-file-name", row["flags"])
+        self.assertFalse(row["selected"])
+
+    def test_decision_or_original_beats_the_file_name_creator(self) -> None:
+        models = self.glide(creator=None, description="<p>Original by fernwick.</p>")
+        answer = "title: deep glide\noriginal: fernwick\nversion 1: v1"
+        _summary, rows = self.dry_run(models, FakeGenerator({"Deep Glide": answer}))
+        row = self.row(rows, "brightfern")
+        self.assertEqual(row["parts"]["creator"], "fernwick")
+        self.assertIn("maker-from-description", row["flags"])
+        self.assertNotIn("creator-from-file-name", row["flags"])
+
+        self.decisions.set_model(900, creator="someone")
+        self.emitted = []
+        _summary, rows = self.dry_run(models, FakeGenerator({"Deep Glide": answer}))
+        row = self.row(rows, "brightfern")
+        self.assertEqual(row["parts"]["creator"], "someone")
+        self.assertEqual(row["flags"], [])
+        self.assertTrue(row["selected"])
+
 
 class GatedClient(FakeClient):
     """Fetches in order; before fetching ``gate_model`` it waits (bounded) for ``gate``."""

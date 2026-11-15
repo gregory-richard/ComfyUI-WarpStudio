@@ -22,6 +22,7 @@ from .comfy_queue import (
 from .constants import CACHE_SCHEMA_VERSION, INFO_SIDECAR_SUFFIX, SUPPORTED_MODEL_TYPES, USER_AGENT
 from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
 from .naming_ai import SYSTEM_PROMPT
+from .naming_check import base_vocabulary, name_check_flags, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
 from .path_resolver import custom_path_problem, normalize_model_types, resolve_model_roots
 from .rename_apply import (
@@ -1050,9 +1051,12 @@ def _base_code_problem(code: str) -> str:
 
 
 # Flags that come from the parts themselves and are recomputed on every re-assembly.
-_PARTS_FLAG_KINDS = {"empty", "forbidden", "separator", "non-ascii", "reserved", "trailing"}
+_PARTS_FLAG_KINDS = {
+    "empty", "forbidden", "separator", "non-ascii", "reserved", "trailing", "base-word", "version-format",
+}
 _FOLDER_FLAGS = {"exists", "collision"}
-_MAKER_FLAGS = {"maker-from-description", "maker-not-in-description"}
+# Where the creator came from: dropped once the user decides the creator.
+_MAKER_FLAGS = {"maker-from-description", "maker-not-in-description", "creator-from-file-name"}
 _ASSEMBLED_KEYS = ("newStem", "parts", "changed", "flags", "status")
 
 
@@ -1162,6 +1166,7 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
         base=str(parts.get("base") or ""),
     )
     kept_flags.extend(_parts_flags(name_parts))
+    kept_flags.extend(_name_check_flags(row, name_parts, base_codes))
     new_stem = assemble(name_parts)
     row.update(
         newStem=new_stem,
@@ -1171,6 +1176,16 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
         status="unchanged" if new_stem == old_stem else "change",
         reason="",
     )
+
+
+def _name_check_flags(row: dict, parts: NameParts, base_codes) -> list:
+    """The renamer's base-word and version-format check, on the parts as they are now."""
+    base_model = str(row.get("baseModel") or "")
+    names = [base_model, parts.base]
+    names.extend(name for name in row.get("modelBaseModels") or [] if isinstance(name, str))
+    for known, code in base_codes.all().items():
+        names.extend((known, code))
+    return name_check_flags(parts.title, parts.version, base_vocabulary(names), xl_base=xl_is_base(base_model))
 
 
 def _recheck_folders(rows: list[dict], folders: set, folder_listing: dict) -> None:

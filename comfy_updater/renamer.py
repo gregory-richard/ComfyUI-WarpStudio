@@ -28,7 +28,14 @@ from .naming_ai import (
     retry_message,
     split_group_answer,
 )
-from .naming_check import invented_words, maker_in_description
+from .naming_check import (
+    base_vocabulary,
+    invented_words,
+    maker_in_description,
+    name_check_flags,
+    strip_zeros,
+    xl_is_base,
+)
 from .naming_scheme import NameParts, assemble, format_part, parse_stem, part_problems, stem_problems
 from .path_resolver import list_model_files
 from .rename_apply import file_identity
@@ -345,6 +352,8 @@ class _Pending:
     cache_key: str
     credit_text: str  # the description's credit lines, as the AI saw them
     source: str
+    # Base-model names and codes the base-word check knows: the code table and this model's bases.
+    base_names: List[str] = field(default_factory=list)
     retried: bool = False
 
 
@@ -410,7 +419,16 @@ def _prepare(group: ModelGroup, base_codes: BaseCodeStore, clip_name: str) -> _P
         # The maker check reads the same credit lines the AI saw.
         credit_text=credit_lines(model_input.description),
         source=source,
+        base_names=_base_names(base_codes, slots),
     )
+
+
+def _base_names(base_codes: BaseCodeStore, slots: List[Slot]) -> List[str]:
+    names: List[str] = []
+    for base_model, code in base_codes.all().items():
+        names.extend((base_model, code))
+    names.extend(slot.base_model for slot in slots if slot.base_model)
+    return names
 
 
 def _is_ascii(text: str) -> bool:
@@ -440,6 +458,10 @@ def _invented_message(word: str) -> str:
 
 def _flag_message(code: str, parts: NameParts) -> str:
     kind, _, part = code.partition(":")
+    if kind == "base-word":
+        return f'"{part}" is a base model name; leave it out of the title and version.'
+    if kind == "version-format":
+        return f'write "{strip_zeros(part)}", not "{part}".'
     value = getattr(parts, part, "") if part else ""
     if kind == "empty":
         return f"The {part} is empty."
@@ -479,6 +501,7 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
     for name in pending.model_input.new_bases:
         if not format_part(answer.bases.get(name, "")):
             problems.append(f'There is no "base {name}:" line.')
+    vocabulary = base_vocabulary(pending.base_names + list(answer.bases.values()))
     for slot, _members in pending.slot_members:
         probe = NameParts(
             creator=original or "creator",
@@ -487,7 +510,10 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
             precision="",
             base=format_part(answer.bases.get(slot.base_model, "")) or "base",
         )
-        problems.extend(_flag_message(code, probe) for code in _parts_flags(probe))
+        codes = _parts_flags(probe) + name_check_flags(
+            probe.title, probe.version, vocabulary, xl_base=xl_is_base(slot.base_model)
+        )
+        problems.extend(_flag_message(code, probe) for code in codes)
     return list(dict.fromkeys(problems))
 
 
@@ -530,6 +556,12 @@ def _changed(old_stem: str, parts: NameParts) -> List[str]:
     return changed
 
 
+def _file_name_creator(stem: str) -> str:
+    """The creator part of a stem in the scheme's shape (``creator - title ...``), else ""."""
+    parts = parse_stem(stem)
+    return parts.creator if parts.title else ""
+
+
 def _group_rows(
     pending: _Pending, answer: ModelAnswer, decisions: DecisionStore, base_codes: BaseCodeStore
 ) -> List[dict]:
@@ -546,16 +578,25 @@ def _group_rows(
                 group_flags.append("maker-not-in-description")
         else:
             creator = pending.model_input.creator
+    # Civitai has no creator (a deleted account): the entry's own file name may still have one.
+    creator_fallback = "creator" not in model_decision and not format_part(creator)
     title_from_answer = "title" not in model_decision
     title = answer.title if title_from_answer else model_decision["title"]
     title_invented = invented_words(pending.source, [answer.title]) if title_from_answer and not answer.unparsed else []
 
+    model_bases = list(dict.fromkeys(slot.base_model for slot, _members in pending.slot_members if slot.base_model))
+    vocabulary = base_vocabulary(pending.base_names + list(answer.bases.values()))
     rows: List[dict] = []
     for slot, members in pending.slot_members:
         version_live = _find_version(group.model, slot.version_id) or {}
         for placed in members:
             entry = placed.entry
             flags = list(group_flags)
+            row_creator = creator
+            if creator_fallback:
+                row_creator = _file_name_creator(entry.stem)
+                if row_creator:
+                    flags.append("creator-from-file-name")
             version = decisions.file(placed.file_key).get("version")
             if version is None:
                 version = decisions.version(entry.version_id)
@@ -573,13 +614,14 @@ def _group_rows(
                 code = answer.bases.get(slot.base_model, "")
                 flags.append("new-base-code")
             parts = NameParts(
-                creator=format_part(creator),
+                creator=format_part(row_creator),
                 title=format_part(title),
                 version=format_part(version),
                 precision=format_part(_precision(placed, version_live)),
                 base=format_part(code),
             )
             flags.extend(_parts_flags(parts))
+            flags.extend(name_check_flags(parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model)))
             if _is_official_file(placed):
                 flags.append("official-file")
             if placed.file is None and entry.sha256:
@@ -605,6 +647,8 @@ def _group_rows(
                     "selected": status == "change" and not flags,
                     # For re-assembling after an edit and for the sidecar title after apply.
                     "baseModel": slot.base_model,
+                    # The model's other bases, for the base-word check after an edit.
+                    "modelBaseModels": model_bases,
                     "liveTitle": pending.model_input.title,
                     **entry.identity,
                 }

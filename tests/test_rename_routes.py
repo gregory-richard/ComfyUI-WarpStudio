@@ -311,6 +311,50 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.assertIn("separator:title", a["flags"])
         self.assertFalse(a["selected"])
 
+    def test_editing_a_base_word_out_makes_the_row_selectable(self) -> None:
+        a = _row(self.folder, "old a", "maker - glow sdxl - v1.0 (sdxl)", flags=["base-word:sdxl", "version-format:v1.0"],
+                 parts={"creator": "maker", "title": "glow sdxl", "version": "v1.0", "precision": "", "base": "sdxl"},
+                 selected=False)
+        self.decisions.set_model("1", title="Glow")
+        reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual(["version-format:v1.0"], a["flags"])
+        self.assertFalse(a["selected"])
+        self.decisions.set_version("10", "v1")
+        reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual("maker - glow - v1 (sdxl)", a["newStem"])
+        self.assertEqual([], a["flags"])
+        self.assertTrue(a["selected"])
+
+    def test_editing_a_base_word_in_adds_the_flag(self) -> None:
+        a = _row(self.folder, "old a", "maker - glow - v2 (sdxl)",
+                 parts={"creator": "maker", "title": "glow", "version": "v2", "precision": "", "base": "sdxl"})
+        self.base_codes.set("Krea 2", "krea2")
+        self.decisions.set_model("1", title="Glow XL")
+        self.decisions.set_version("10", "v2 krea2")
+        reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
+        # "xl" counts on an SDXL base; "krea2" is a code from the table.
+        self.assertEqual(["base-word:xl", "base-word:krea2"], a["flags"])
+        self.assertFalse(a["selected"])
+
+    def test_base_word_vocabulary_includes_the_models_other_bases(self) -> None:
+        a = _row(self.folder, "old a", "maker - glow - v2 (sdxl)", modelBaseModels=["SDXL 1.0", "Glimmer 3"],
+                 parts={"creator": "maker", "title": "glow", "version": "v2", "precision": "", "base": "sdxl"})
+        self.decisions.set_version("10", "v2 glimmer")
+        reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual(["base-word:glimmer"], a["flags"])
+
+    def test_creator_from_file_name_stays_until_the_creator_is_decided(self) -> None:
+        a = _row(self.folder, "maker - old - v1 (sdxl)", "maker - title - v1 (sdxl)", flags=["creator-from-file-name"],
+                 selected=False)
+        self.decisions.set_model("1", title="Title")
+        reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual(["creator-from-file-name"], a["flags"])
+        self.assertFalse(a["selected"])
+        self.decisions.set_model("1", title="Title", creator="maker")
+        reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual([], a["flags"])
+        self.assertTrue(a["selected"])
+
     def test_base_code_from_the_table_replaces_a_new_code(self) -> None:
         a = _row(self.folder, "old a", "maker - title - v1 (sdxlx)", flags=["new-base-code"],
                  parts={"creator": "maker", "title": "title", "version": "v1", "precision": "", "base": "sdxlx"})

@@ -98,6 +98,12 @@ export function flagInfo(flag, row) {
       return { level: "block", text: "The new name ends with a dot or a space" };
     case "non-ascii":
       return { level: "warn", text: "The new name has emojis or non-English letters; plain letters, digits, spaces, dots and hyphens are safest" };
+    case "base-word":
+      return { level: "warn", text: `“${arg}” is a base-model name — usually it doesn't belong here` };
+    case "version-format":
+      return { level: "warn", text: `Write ${arg.replace(/(\.0+)+$/, "")} instead of ${arg}` };
+    case "creator-from-file-name":
+      return { level: "warn", text: "Civitai has no creator for this model; taken from your file name" };
     case "maker-from-description":
       return { level: "info", text: `The maker "${parts.creator || ""}" comes from the model's description, not the uploader`, action: "use-maker" };
     case "maker-not-in-description":
