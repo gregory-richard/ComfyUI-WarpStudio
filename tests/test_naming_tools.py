@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 
@@ -68,6 +69,37 @@ class RunnerHelperTests(unittest.TestCase):
             code = runner.main(["--clip", "x", "--data", str(Path(folder) / "none.json")])
         self.assertEqual(code, runner.EXIT_BAD_INPUT)
         self.assertIn("REFUSED", out.getvalue())
+
+    def test_group_size_asks_several_models_per_call_and_scores_each(self):
+        calls = []
+
+        class FakeGenerator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def generate(self, messages, max_lengths=None):
+                calls.append((list(messages), max_lengths))
+                answers = []
+                for message in messages:
+                    count = message.count("Creator: c\n")
+                    one = "title: t\noriginal:\nversion 1: v1"
+                    answers.append(one if count == 1 else "\n".join(f"Model {n}:\n{one}" for n in range(1, count + 1)))
+                return answers
+
+        data = {"cases": [case(1), case(2), case(3)]}
+        with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()) as out:
+            path = Path(folder) / "cases.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with mock.patch.object(runner, "ComfyTextGenerator", FakeGenerator), \
+                    mock.patch.object(runner, "queue_idle", return_value=True):
+                code = runner.main(["--clip", "x", "--data", str(path), "--group-size", "2"])
+        self.assertEqual(code, runner.EXIT_PASS, out.getvalue())
+        self.assertIn("group size 2: 3/3 pass", out.getvalue())
+        _warmup, (messages, max_lengths) = calls
+        self.assertEqual(len(messages), 2)
+        self.assertIn("Model 2:\n", messages[0])
+        self.assertNotIn("Model 1:", messages[1])
+        self.assertEqual(max_lengths, [2 * 160, 160])
 
 
 class BuilderHelperTests(unittest.TestCase):

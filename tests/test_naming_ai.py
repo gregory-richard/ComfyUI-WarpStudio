@@ -9,11 +9,14 @@ from comfy_updater.naming_ai import (
     ModelAnswer,
     ModelInput,
     Slot,
+    build_group_message,
     build_message,
     credit_lines,
     description_excerpt,
     parse_answer,
+    parse_group_answer,
     retry_message,
+    split_group_answer,
     without_precision,
 )
 
@@ -257,6 +260,103 @@ class NamingAiTests(unittest.TestCase):
         )
         self.assertRegex(naming_ai.PROMPT_VERSION, r"^[0-9a-f]{12}$")
         self.assertIn("version 1:", naming_ai.SYSTEM_PROMPT)
+
+
+def one_slot_model(model_id: str, title: str) -> ModelInput:
+    return ModelInput(
+        model_id=model_id,
+        creator="maker",
+        title=title,
+        description="",
+        slots=[Slot(key="1", version_id=model_id + "1", file_id="", version_name="v1", base_model="Krea 2")],
+        new_bases=[],
+    )
+
+
+class GroupedQuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.inputs = [one_slot_model("1", "Alpha Glow"), one_slot_model("2", "Beta Fog"), two_slot_model()]
+
+    def test_group_message_is_the_intro_then_each_single_message_under_a_header(self):
+        message = build_group_message(self.inputs)
+        sections = "\n\n".join(f"Model {n}:\n{build_message(mi)}" for n, mi in enumerate(self.inputs, start=1))
+        self.assertEqual(message, naming_ai.GROUP_INTRO + "\n\n" + sections)
+        # The intro explains grouped questions with a worked example ...
+        self.assertIn('"Model 1:"', naming_ai.GROUP_INTRO)
+        self.assertIn("Example answer:", naming_ai.GROUP_INTRO)
+        # ... and the example's own headers never pass for the answer's.
+        self.assertEqual(split_group_answer(naming_ai.GROUP_INTRO, 3), ["", "", ""])
+
+    def test_zero_based_headers_are_unparsed_for_every_model(self):
+        # Numbered from 0, every answer would land on the wrong model.
+        text = "Model 0:\ntitle: a\nModel 1:\ntitle: b\nModel 2:\ntitle: c"
+        self.assertEqual(split_group_answer(text, 3), ["", "", ""])
+        self.assertEqual([a.unparsed for a in parse_group_answer(text, self.inputs)], [True, True, True])
+
+    def test_group_message_of_one_model_is_the_single_message(self):
+        self.assertEqual(build_group_message(self.inputs[:1]), build_message(self.inputs[0]))
+
+    def test_split_reads_one_section_per_header(self):
+        text = (
+            "Model 1:\ntitle: alpha glow\noriginal:\nversion 1: v1\n\n"
+            "Model 2:\ntitle: beta fog\noriginal:\nversion 1: v1\n\n"
+            "Model 3:\ntitle: lumegrid realism\noriginal:\nversion 1: zest\nversion 2: mellow v1\nbase Krea 3: krea3\n"
+        )
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.title for a in answers], ["alpha glow", "beta fog", "lumegrid realism"])
+        self.assertEqual(answers[2].versions, {"1": "zest", "2": "mellow v1"})
+        self.assertEqual(answers[2].bases, {"Krea 3": "krea3"})
+        self.assertFalse(any(a.unparsed for a in answers))
+
+    def test_split_sections_are_single_answers(self):
+        text = "Model 1:\ntitle: a\nModel 2:\ntitle: b\n"
+        sections = split_group_answer(text, 2)
+        self.assertEqual([parse_answer(s, mi).title for s, mi in zip(sections, self.inputs)], ["a", "b"])
+        self.assertNotIn("Model", sections[0])
+
+    def test_missing_section_is_unparsed_for_that_model_only(self):
+        text = "Model 1:\ntitle: alpha glow\nversion 1: v1\nModel 3:\ntitle: lumegrid\n"
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.unparsed for a in answers], [False, True, False])
+        self.assertEqual(answers[2].title, "lumegrid")
+
+    def test_prose_and_markdown_around_sections_are_ignored(self):
+        text = (
+            "<think>Model 1: title: wrong</think>Here are the answers.\n"
+            "**Model 1:**\ntitle: alpha glow\nversion 1: v1\n\n"
+            "### Model 2\n- title: beta fog\n- version 1: v1\n\nHope this helps!"
+        )
+        answers = parse_group_answer(text, self.inputs[:2])
+        self.assertEqual([a.title for a in answers], ["alpha glow", "beta fog"])
+
+    def test_header_with_the_answer_on_the_same_line(self):
+        answers = parse_group_answer("Model 1: title: alpha glow\nModel 2: title: beta fog", self.inputs[:2])
+        self.assertEqual([a.title for a in answers], ["alpha glow", "beta fog"])
+
+    def test_out_of_order_section_is_unparsed(self):
+        text = "Model 2:\ntitle: beta fog\nModel 1:\ntitle: alpha glow\nModel 3:\ntitle: lumegrid\n"
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.unparsed for a in answers], [True, False, False])
+        self.assertEqual(answers[1].title, "beta fog")
+
+    def test_wrong_header_numbers_are_unparsed(self):
+        # A repeated number is ambiguous; a number past the group is nobody's.
+        text = "Model 1:\ntitle: a\nModel 1:\ntitle: b\nModel 4:\ntitle: d\n"
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.unparsed for a in answers], [True, True, True])
+
+    def test_no_headers_at_all_is_unparsed_for_every_model(self):
+        answers = parse_group_answer("title: alpha glow\nversion 1: v1", self.inputs[:2])
+        self.assertEqual([a.unparsed for a in answers], [True, True])
+
+    def test_model_title_line_is_not_a_header(self):
+        sections = split_group_answer("Model 1:\ntitle: x\nModel title: Beta\nModel 2:\ntitle: y", 2)
+        self.assertIn("Model title: Beta", sections[0])
+
+    def test_grouped_questions_leave_the_system_prompt_alone(self):
+        # Explained in the grouped message only: the system prompt, so every cache key, is unchanged.
+        self.assertNotIn("Model 1:", naming_ai.SYSTEM_PROMPT)
+        self.assertNotIn("Model 1:", build_group_message(self.inputs[:1]))
 
 
 if __name__ == "__main__":

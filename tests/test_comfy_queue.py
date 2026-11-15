@@ -101,6 +101,18 @@ class ComfyQueueTests(unittest.TestCase):
         self.assertEqual(graph["10"]["inputs"]["max_length"], 160)
         self.assertEqual(graph["5001"], {"class_type": "PreviewAny", "inputs": {"source": ["11", 0]}})
 
+    def test_build_graph_takes_a_max_length_per_message(self):
+        graph = build_graph("q.safetensors", "SYS", ["a", "b"], max_lengths=[160, 480])
+        self.assertEqual(graph["10"]["inputs"]["max_length"], 160)
+        self.assertEqual(graph["11"]["inputs"]["max_length"], 480)
+
+    def test_generate_passes_max_lengths_to_the_graph(self):
+        opener = FakeOpener([{}, finished({"5000": {"text": ["x"]}, "5001": {"text": ["y"]}})])
+        gen = ComfyTextGenerator(BASE, "q.safetensors", "SYS", opener=opener, poll_seconds=0)
+        gen.generate(["a", "b"], max_lengths=[160, 320])
+        body = json.loads(opener.requests[0].data)
+        self.assertEqual(body["prompt"]["11"]["inputs"]["max_length"], 320)
+
     def test_generate_posts_once_polls_history_and_returns_texts_in_order(self):
         opener = FakeOpener([
             {},

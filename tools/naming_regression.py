@@ -2,7 +2,7 @@
 
 usage: python tools/naming_regression.py --clip qwen3.5_9b_int8_convrot.safetensors
            [--url http://127.0.0.1:8188] [--data .civitai_updater/naming_regression.json]
-           [--case 3 --case 10] [--json-out results.json] [--wait 0]
+           [--case 3 --case 10] [--json-out results.json] [--wait 0] [--group-size 1]
 
 Each case is one Civitai model as the renamer would send it (creator, title, raw
 description HTML, the version slots) and the expected answer. The data file is
@@ -17,7 +17,8 @@ Data format::
 An expected value may be a list of accepted answers. A case passes when the
 answer parses, every part matches (after the renamer's own formatting:
 lowercase, collapsed spaces) and the invented-content check finds nothing.
-The answer is the model's first one; no retry. An original maker must appear in
+The answer is the model's first one; no retry. ``--group-size K`` asks K models
+per Generate Text call, as the renamer does, and scores each model's own section. An original maker must appear in
 the description's credit lines (the text the model saw), which is stricter than
 the renamer's check against the whole description. Needs a live ComfyUI, so it
 is not part of the test suite. It queues jobs only while ComfyUI's queue is empty.
@@ -42,10 +43,12 @@ sys.path.insert(0, str(ROOT))
 
 from comfy_updater.comfy_queue import ComfyTextGenerator, NamingModelError  # noqa: E402
 from comfy_updater.naming_ai import (  # noqa: E402
-    ModelInput, PROMPT_VERSION, SYSTEM_PROMPT, Slot, build_message, credit_lines, parse_answer,
+    ModelInput, PROMPT_VERSION, SYSTEM_PROMPT, Slot, build_group_message, credit_lines, parse_answer,
+    split_group_answer,
 )
 from comfy_updater.naming_check import invented_words, maker_in_description  # noqa: E402
 from comfy_updater.naming_scheme import format_part  # noqa: E402
+from comfy_updater.renamer import ANSWER_TOKENS_PER_MODEL  # noqa: E402
 
 DEFAULT_DATA = ROOT / ".civitai_updater" / "naming_regression.json"
 
@@ -171,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--case", type=int, action="append", help="run only these case numbers")
     parser.add_argument("--json-out", type=Path, help="also write every answer and score here")
     parser.add_argument("--wait", type=float, default=0, help="seconds to wait for a busy queue (default: refuse)")
+    parser.add_argument("--group-size", type=int, default=1, help="models per Generate Text call (default 1)")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -181,15 +185,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED: {exc}")
         return EXIT_BAD_INPUT
     inputs = [model_input(c) for c in cases]
-    messages = [build_message(mi) for mi in inputs]
+    size = max(1, args.group_size)
+    chunks = [inputs[i:i + size] for i in range(0, len(inputs), size)]
+    messages = [build_group_message(chunk) for chunk in chunks]
+    max_lengths = [len(chunk) * ANSWER_TOKENS_PER_MODEL for chunk in chunks]
     generator = ComfyTextGenerator(args.url, args.clip, SYSTEM_PROMPT, poll_seconds=0.5)
 
     try:
         wait_for_idle(args.url, args.wait)
-        generator.generate(messages[:1])  # warm-up: loads the model so the timing below is generation only
+        generator.generate(messages[:1], max_lengths=max_lengths[:1])  # warm-up: loads the model so the timing below is generation only
         wait_for_idle(args.url, args.wait)
         start = time.monotonic()
-        texts = generator.generate(messages)
+        answers = generator.generate(messages, max_lengths=max_lengths)
         seconds = time.monotonic() - start
     except QueueBusy as exc:
         print(f"BUSY: {exc}")
@@ -198,6 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: {exc}")
         return EXIT_BLOCKED
 
+    # Each model is scored on its own section of its call's answer.
+    texts = []
+    for chunk, answer in zip(chunks, answers):
+        texts.extend([answer] if len(chunk) == 1 else split_group_answer(answer, len(chunk)))
     results = [judge(c, mi, t) for c, mi, t in zip(cases, inputs, texts)]
     for r in results:
         if r["ok"]:
@@ -211,11 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     passed = sum(r["ok"] for r in results)
     flagged = sum(bool(r["invented"]) for r in results)
     per_model = seconds / len(results) if results else 0.0
-    print(f"\nprompt {PROMPT_VERSION}: {passed}/{len(results)} pass, {flagged} with invented content, "
+    print(f"\nprompt {PROMPT_VERSION}, group size {size}: {passed}/{len(results)} pass, {flagged} with invented content, "
           f"{seconds:.1f} s ({per_model:.2f} s per model)")
     if args.json_out:
         args.json_out.write_text(json.dumps({
-            "prompt_version": PROMPT_VERSION, "passed": passed, "total": len(results),
+            "prompt_version": PROMPT_VERSION, "group_size": size, "passed": passed, "total": len(results),
             "invented": flagged, "seconds": seconds, "results": results,
         }, ensure_ascii=False, indent=1), encoding="utf-8")
     return EXIT_PASS if passed == len(results) else EXIT_FAIL

@@ -290,18 +290,24 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual("error", by_stem["odd versions"]["status"])
         self.assertTrue(by_stem["odd type"]["reason"])
 
-    def test_cancel_in_the_first_fetches_does_not_seed_base_codes(self) -> None:
-        from comfy_updater.rename_store import BaseCodeStore
+    def test_seed_comes_from_the_local_sidecars_before_any_fetch(self) -> None:
+        from comfy_updater.rename_store import AnswerCache, BaseCodeStore
         from comfy_updater.renamer import run_dry_run
 
-        write_entry(self.lora, "a - b (sdxl)", 1, 11, "abc")
-        write_entry(self.lora, "c - d (pony)", 2, 21, "abd")
+        for stem, model_id, version_id, base in (("a - b (sdxl)", 1, 11, "SDXL 1.0"), ("c - d (pony)", 2, 21, "Pony")):
+            write_entry(self.lora, stem, model_id, version_id, "ab" + str(model_id))
+            info_path = self.lora / (stem + ".civitai.info")
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+            info["baseModel"] = base
+            info_path.write_text(json.dumps(info), encoding="utf-8")
         models = {
-            "1": live_model(1, "LORA", [{"id": 11, "baseModel": "SDXL 1.0", "files": [live_file(1, "ABC")]}]),
-            "2": live_model(2, "LORA", [{"id": 21, "baseModel": "Pony", "files": [live_file(2, "ABD")]}]),
+            "1": live_model(1, "LORA", [{"id": 11, "baseModel": "SDXL 1.0", "files": [live_file(1, "AB1")]}]),
+            "2": live_model(2, "LORA", [{"id": 21, "baseModel": "Pony", "files": [live_file(2, "AB2")]}]),
         }
 
         class StopAfterFirst:
+            """Lets the run start, then stops it."""
+
             def __init__(self):
                 self.checks = 0
 
@@ -312,24 +318,20 @@ class ClassifyTests(unittest.TestCase):
                 self.checks += 1
                 return self.checks > 1
 
-        base_codes = BaseCodeStore(self.root / "codes")
-
         class NoGenerator:
-            def generate(self, messages):  # pragma: no cover - stopped before naming
+            def generate(self, messages, max_lengths=None):  # pragma: no cover - stopped before naming
                 raise AssertionError("no naming after a stop")
 
-        from comfy_updater.rename_store import AnswerCache
-
+        base_codes = BaseCodeStore(self.root / "codes")
+        client = FakeClient(models)
         run_dry_run(
-            self.roots, FakeClient(models), NoGenerator(), decisions=self.decisions, base_codes=base_codes,
+            self.roots, client, NoGenerator(), decisions=self.decisions, base_codes=base_codes,
             cache=AnswerCache(self.root / "codes"), clip_name="q", progress=no_progress, emit=lambda row: None,
             control=StopAfterFirst(),
         )
-        self.assertEqual({}, base_codes.all())
-        again = BaseCodeStore(self.root / "codes")
-        # Not marked seeded: the next full dry run still seeds from every stem.
-        again.seed([("Pony", "c - d (pony)")])
-        self.assertEqual({"Pony": "pony"}, again.all())
+        # The local data is complete however early the run stopped: every base is seeded.
+        self.assertEqual(client.calls, [])
+        self.assertEqual({"SDXL 1.0": "sdxl", "Pony": "pony"}, base_codes.all())
 
 
 class RequestErrorStatusTests(unittest.TestCase):

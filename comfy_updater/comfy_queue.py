@@ -59,8 +59,18 @@ def comfy_base_url(listen: Optional[str] = None, port: Optional[int] = None, tls
     return f"{scheme}://{host}:{port or 8188}"
 
 
-def build_graph(clip_name: str, system_prompt: str, messages: list[str], max_length: int = 160) -> dict:
-    """One CLIPLoader and system prompt shared by a Generate Text + Preview pair per message."""
+def build_graph(
+    clip_name: str,
+    system_prompt: str,
+    messages: list[str],
+    max_length: int = 160,
+    max_lengths: Optional[list[int]] = None,
+) -> dict:
+    """One CLIPLoader and system prompt shared by a Generate Text + Preview pair per message.
+
+    ``max_lengths`` gives each message its own answer length (a grouped question
+    answers several models); otherwise every message gets ``max_length``.
+    """
     graph = {
         "1": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip_name, "type": "stable_diffusion"}},
         "2": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": system_prompt}},
@@ -69,7 +79,7 @@ def build_graph(clip_name: str, system_prompt: str, messages: list[str], max_len
         graph[str(10 + i)] = {"class_type": "TextGenerateV2", "inputs": {
             "clip": ["1", 0],
             "prompt": message,
-            "max_length": max_length,
+            "max_length": max_lengths[i] if max_lengths and i < len(max_lengths) else max_length,
             "sampling_mode": "off",
             "thinking": False,
             "use_default_template": True,
@@ -100,11 +110,11 @@ class ComfyTextGenerator:
         self.timeout_seconds = timeout_seconds
         self.should_stop = should_stop
 
-    def generate(self, messages: list[str]) -> list[str]:
+    def generate(self, messages: list[str], max_lengths: Optional[list[int]] = None) -> list[str]:
         """Queue one job for all messages and return the answers in message order."""
         if not messages:
             return []
-        graph = build_graph(self.clip_name, self.system_prompt, messages)
+        graph = build_graph(self.clip_name, self.system_prompt, messages, max_lengths=max_lengths)
         prompt_id = self._queue(graph)
         entry = self._wait(prompt_id)
         outputs = entry.get("outputs") or {}

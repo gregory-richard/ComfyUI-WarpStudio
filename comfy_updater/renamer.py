@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import os
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple
+import queue
+import threading
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from .civitai_client import CivitaiRequestError
 from .constants import INFO_SIDECAR_SUFFIX, SUPPORTED_MODEL_EXTENSIONS
@@ -19,10 +21,12 @@ from .naming_ai import (
     ModelAnswer,
     ModelInput,
     Slot,
+    build_group_message,
     build_message,
     credit_lines,
     parse_answer,
     retry_message,
+    split_group_answer,
 )
 from .naming_check import invented_words, maker_in_description
 from .naming_scheme import NameParts, assemble, format_part, parse_stem, part_problems, stem_problems
@@ -232,6 +236,37 @@ def _slots(placed: List[Placed]) -> Dict[str, List[Placed]]:
     return slots
 
 
+def _by_model(entries: List[Entry]) -> Dict[str, List[Entry]]:
+    """Entries per model, so each model is fetched once and sorted whole."""
+    by_model: Dict[str, List[Entry]] = {}
+    for entry in entries:
+        by_model.setdefault(entry.model_id, []).append(entry)
+    return by_model
+
+
+def _classify_model(
+    model_id: str, model_entries: List[Entry], client, decisions: DecisionStore
+) -> Tuple[Optional[ModelGroup], List[dict]]:
+    """Fetch one model and sort all its entries: the group to name (or None) and its finished rows."""
+    model_entries = sorted(model_entries, key=lambda e: (str(e.folder).lower(), e.stem.lower(), e.stem))
+    try:
+        model = client.get_model(model_id, raise_on_error=True)
+        if not isinstance(model, dict):
+            raise CivitaiRequestError(f"Civitai returned no data for model {model_id}")
+    except CivitaiRequestError as exc:
+        not_found = getattr(exc, "status", None) == 404
+        rows = []
+        for entry in model_entries:
+            status, reason = ("kept", "not-on-civitai") if not_found else ("error", str(exc))
+            rows.append(_finished_row(entry, path_file_key(entry.path), status, reason))
+        return None, rows
+    try:
+        return _sort_model(model_id, model, model_entries, decisions)
+    except Exception as exc:  # noqa: BLE001 - one model's odd live data must not end the run
+        reason = str(exc) or type(exc).__name__
+        return None, [_finished_row(entry, path_file_key(entry.path), "error", reason) for entry in model_entries]
+
+
 def classify(
     entries: List[Entry],
     client,
@@ -241,10 +276,7 @@ def classify(
     control=None,
 ) -> Tuple[List[ModelGroup], List[dict]]:
     """Fetch each model once and sort its entries into groups to name and finished rows."""
-    by_model: Dict[str, List[Entry]] = {}
-    for entry in entries:
-        by_model.setdefault(entry.model_id, []).append(entry)
-
+    by_model = _by_model(entries)
     groups: List[ModelGroup] = []
     rows: List[dict] = []
     total = len(by_model)
@@ -254,25 +286,7 @@ def classify(
             if control.is_cancelled():
                 break
         progress(index, total, f"Fetching model {model_id} from Civitai")
-        model_entries = sorted(model_entries, key=lambda e: (str(e.folder).lower(), e.stem.lower(), e.stem))
-
-        try:
-            model = client.get_model(model_id, raise_on_error=True)
-            if not isinstance(model, dict):
-                raise CivitaiRequestError(f"Civitai returned no data for model {model_id}")
-        except CivitaiRequestError as exc:
-            not_found = getattr(exc, "status", None) == 404
-            for entry in model_entries:
-                status, reason = ("kept", "not-on-civitai") if not_found else ("error", str(exc))
-                rows.append(_finished_row(entry, path_file_key(entry.path), status, reason))
-            continue
-
-        try:
-            group, model_rows = _sort_model(model_id, model, model_entries, decisions)
-        except Exception as exc:  # noqa: BLE001 - one model's odd live data must not end the run
-            reason = str(exc) or type(exc).__name__
-            rows.extend(_finished_row(entry, path_file_key(entry.path), "error", reason) for entry in model_entries)
-            continue
+        group, model_rows = _classify_model(model_id, model_entries, client, decisions)
         rows.extend(model_rows)
         if group is not None:
             groups.append(group)
@@ -623,16 +637,38 @@ def _add_flag(row: dict, flag: str) -> None:
 
 
 class _FolderCheck:
-    """Collisions between new names in one folder, and with files outside the rename set."""
+    """Collisions between new names in one folder, and with files outside the rename set.
 
-    def __init__(self, groups: List[ModelGroup]) -> None:
-        self._rename_stems: Dict[str, Set[str]] = {}
-        for group in groups:
-            for placed in group.placed:
-                folder = str(placed.entry.folder).lower()
-                self._rename_stems.setdefault(folder, set()).add(placed.entry.stem.lower())
+    A file on disk counts as outside the rename set once its entry is known to keep
+    its name. Entries not decided yet (still being fetched) count as renamed; when
+    one turns out to stay, rows already placed on its name are flagged in place.
+    """
+
+    def __init__(self, entries: Iterable[Entry]) -> None:
+        self._renaming: Dict[str, Dict[str, int]] = {}  # folder -> stem -> entries that may still be renamed
+        for entry in entries:
+            stems = self._renaming.setdefault(str(entry.folder).lower(), {})
+            stem = entry.stem.lower()
+            stems[stem] = stems.get(stem, 0) + 1
         self._disk: Dict[str, Set[str]] = {}
         self._by_new: Dict[Tuple[str, str], List[dict]] = {}
+
+    @classmethod
+    def for_groups(cls, groups: List[ModelGroup]) -> "_FolderCheck":
+        return cls(placed.entry for group in groups for placed in group.placed)
+
+    def stays(self, entry: Entry) -> None:
+        """This entry keeps its name: its file is now outside the rename set."""
+        folder = str(entry.folder).lower()
+        stems = self._renaming.get(folder, {})
+        stem = entry.stem.lower()
+        if stems.get(stem, 0) <= 0:
+            return
+        stems[stem] -= 1
+        if stems[stem] == 0:
+            # Its file was listed from this folder, so it is on disk.
+            for row in self._by_new.get((folder, stem), []):
+                _add_flag(row, "exists")
 
     def place(self, row: dict) -> None:
         """Flag the row; an earlier row it collides with is flagged too, in place."""
@@ -640,7 +676,7 @@ class _FolderCheck:
         new = row["newStem"].lower()
         if folder not in self._disk:
             self._disk[folder] = _disk_stems(Path(row["folder"]))
-        if new in self._disk[folder] - self._rename_stems.get(folder, set()):
+        if new in self._disk[folder] and self._renaming.get(folder, {}).get(new, 0) <= 0:
             _add_flag(row, "exists")
         peers = self._by_new.setdefault((folder, new), [])
         peers.append(row)
@@ -651,6 +687,137 @@ class _FolderCheck:
 
 def _error_rows(group: ModelGroup, exc: Exception) -> List[dict]:
     return [_finished_row(p.entry, p.file_key, "error", str(exc) or type(exc).__name__) for p in group.placed]
+
+
+# Models per Generate Text call: the long system prompt is read once for all of them.
+# Measured: K=3 scored within 2 cases of K=1 on both regression sets at 0.49 s/model (K=1: ~1.04);
+# K=4 did not (31/50 against 39/50).
+GROUP_SIZE = 3
+# Answer room per model in a call (a one-model answer is well under this).
+ANSWER_TOKENS_PER_MODEL = 160
+
+
+class _Namer:
+    """Asks the AI for the groups given to ``add``, a batch of calls at a time.
+
+    Every group is checked, retried (alone, with the single-model retry message)
+    and cached on its own, whatever ``group_size`` put it in a call with.
+    """
+
+    def __init__(
+        self,
+        generator,
+        *,
+        decisions: DecisionStore,
+        base_codes: BaseCodeStore,
+        cache: AnswerCache,
+        clip_name: str,
+        folders: "_FolderCheck",
+        emit: Callable[[dict], None],
+        batch_size: int,
+        group_size: int,
+        lock=None,
+    ) -> None:
+        self.generator = generator
+        self.decisions = decisions
+        self.base_codes = base_codes
+        self.cache = cache
+        self.clip_name = clip_name
+        self.folders = folders
+        self.emit = emit
+        self.batch_size = max(1, int(batch_size))
+        self.group_size = max(1, int(group_size))
+        # Held while rows are placed and emitted: the fetch side emits rows too.
+        self.lock = lock if lock is not None else threading.RLock()
+        self.done = 0  # groups whose rows are emitted
+        self._new: List[_Pending] = []
+        self._retries: List[Tuple[_Pending, str]] = []
+
+    def _emit_rows(self, rows: List[dict]) -> None:
+        with self.lock:
+            for row in rows:
+                if row["status"] in ("change", "unchanged"):
+                    self.folders.place(row)
+                self.emit(row)
+            self.done += 1
+
+    def _finish(self, pending: _Pending, answer: ModelAnswer) -> None:
+        try:
+            rows = _group_rows(pending, answer, self.decisions, self.base_codes)
+        except Exception as exc:  # noqa: BLE001 - one model's odd data must not end the run
+            rows = _error_rows(pending.group, exc)
+        self._emit_rows(rows)
+
+    def add(self, group: ModelGroup) -> None:
+        """A cached answer that still passes the checks names the group now; else it waits for the AI."""
+        try:
+            pending = _prepare(group, self.base_codes, self.clip_name)
+            cached = self.cache.get(pending.cache_key)
+            answer = None
+            if cached is not None and isinstance(cached.get("text"), str):
+                answer = parse_answer(cached["text"], pending.model_input)
+                if _answer_problems(pending, answer):
+                    answer = None  # the checks changed since it was cached: ask again
+        except Exception as exc:  # noqa: BLE001
+            self._emit_rows(_error_rows(group, exc))
+            return
+        if answer is not None:
+            self._finish(pending, answer)
+        else:
+            self._new.append(pending)
+
+    def has_work(self) -> bool:
+        return bool(self._new or self._retries)
+
+    def has_full_call(self) -> bool:
+        """Enough waiting for at least one full call (a retry is always a full call)."""
+        return bool(self._retries) or len(self._new) >= self.group_size
+
+    def run_batch(self) -> None:
+        """One queued ComfyUI job: retries first, each alone, then the new groups ``group_size`` per call."""
+        calls: List[Tuple[List[_Pending], str]] = []
+        while self._retries and len(calls) < self.batch_size:
+            pending, message = self._retries.pop(0)
+            calls.append(([pending], message))
+        while self._new and len(calls) < self.batch_size:
+            chunk, self._new = self._new[: self.group_size], self._new[self.group_size:]
+            calls.append((chunk, build_group_message([pending.model_input for pending in chunk])))
+        if not calls:
+            return
+        texts = self.generator.generate(
+            [message for _chunk, message in calls],
+            max_lengths=[len(chunk) * ANSWER_TOKENS_PER_MODEL for chunk, _message in calls],
+        )
+        for index, (chunk, _message) in enumerate(calls):
+            # A missing output comes back as "": unparsed, so retried, flagged, never cached.
+            text = texts[index] if index < len(texts) and isinstance(texts[index], str) else ""
+            sections = [text] if len(chunk) == 1 else split_group_answer(text, len(chunk))
+            for pending, section in zip(chunk, sections):
+                self._check(pending, section)
+
+    def _check(self, pending: _Pending, text: str) -> None:
+        try:
+            answer = parse_answer(text, pending.model_input)
+            problems = _answer_problems(pending, answer)
+        except Exception as exc:  # noqa: BLE001
+            self._emit_rows(_error_rows(pending.group, exc))
+            return
+        if problems and not pending.retried:
+            pending.retried = True
+            # Retries go into the very next batch.
+            self._retries.append((pending, retry_message(pending.model_input, problems)))
+            return
+        if not problems:
+            # Cached per model, as this model's own answer: reusable whatever the group size.
+            self.cache.put(pending.cache_key, {"text": text})
+        self._finish(pending, answer)
+
+
+def _stopped(control) -> bool:
+    if control is None:
+        return False
+    control.wait_if_paused()
+    return control.is_cancelled()
 
 
 def name_groups(
@@ -665,6 +832,7 @@ def name_groups(
     emit: Callable[[dict], None],
     control,
     batch_size: int = 8,
+    group_size: int = GROUP_SIZE,
 ) -> None:
     """Ask the AI per model (cached), check every answer, and emit each group's rows once decided.
 
@@ -672,77 +840,27 @@ def name_groups(
     row dicts already emitted are updated too. A ``NamingModelError`` from the
     generator propagates: rows already emitted stay, unanswered groups get none.
     """
-    batch_size = max(1, int(batch_size))
     total = len(groups)
-    done = 0
-    folders = _FolderCheck(groups)
-
-    def emit_rows(rows: List[dict]) -> None:
-        nonlocal done
-        for row in rows:
-            if row["status"] in ("change", "unchanged"):
-                folders.place(row)
-            emit(row)
-        done += 1
-
-    def finish(pending: _Pending, answer: ModelAnswer) -> None:
-        try:
-            rows = _group_rows(pending, answer, decisions, base_codes)
-        except Exception as exc:  # noqa: BLE001 - one model's odd data must not end the run
-            rows = _error_rows(pending.group, exc)
-        emit_rows(rows)
-
-    def stopped() -> bool:
-        if control is None:
-            return False
-        control.wait_if_paused()
-        return control.is_cancelled()
-
-    queue: List[Tuple[_Pending, str]] = []
+    namer = _Namer(
+        generator,
+        decisions=decisions,
+        base_codes=base_codes,
+        cache=cache,
+        clip_name=clip_name,
+        folders=_FolderCheck.for_groups(groups),
+        emit=emit,
+        batch_size=batch_size,
+        group_size=group_size,
+    )
     for group in groups:
-        if stopped():
+        if _stopped(control):
             return
-        try:
-            pending = _prepare(group, base_codes, clip_name)
-            cached = cache.get(pending.cache_key)
-            answer = None
-            if cached is not None and isinstance(cached.get("text"), str):
-                answer = parse_answer(cached["text"], pending.model_input)
-                if _answer_problems(pending, answer):
-                    answer = None  # the checks changed since it was cached: ask again
-        except Exception as exc:  # noqa: BLE001
-            emit_rows(_error_rows(group, exc))
-            continue
-        if answer is not None:
-            finish(pending, answer)
-        else:
-            queue.append((pending, pending.message))
-
-    while queue:
-        if stopped():
+        namer.add(group)
+    while namer.has_work():
+        if _stopped(control):
             return
-        batch, queue = queue[:batch_size], queue[batch_size:]
-        progress(done, total, f"Naming models with the AI ({done} of {total} done)")
-        texts = generator.generate([message for _pending, message in batch])
-        retries: List[Tuple[_Pending, str]] = []
-        for index, (pending, _message) in enumerate(batch):
-            # A missing output comes back as "": unparsed, so retried, flagged, never cached.
-            text = texts[index] if index < len(texts) and isinstance(texts[index], str) else ""
-            try:
-                answer = parse_answer(text, pending.model_input)
-                problems = _answer_problems(pending, answer)
-            except Exception as exc:  # noqa: BLE001
-                emit_rows(_error_rows(pending.group, exc))
-                continue
-            if problems and not pending.retried:
-                pending.retried = True
-                retries.append((pending, retry_message(pending.model_input, problems)))
-                continue
-            if not problems:
-                cache.put(pending.cache_key, {"text": text})
-            finish(pending, answer)
-        # Retries go into the very next batch.
-        queue = retries + queue
+        progress(namer.done, total, f"Naming models with the AI ({namer.done} of {total} done)")
+        namer.run_batch()
     progress(total, total, f"Named {total} models")
 
 
@@ -755,6 +873,20 @@ def _summary(entries: List[Entry], rows: List[dict]) -> dict:
         if status in ("change", "unchanged") and row.get("flags"):
             summary["flagged"] += 1
     return summary
+
+
+def _local_base_pairs(entries: List[Entry]) -> List[Tuple[str, str]]:
+    """Each entry's base model from its own sidecar, with its current stem: no network needed."""
+    pairs: List[Tuple[str, str]] = []
+    for entry in entries:
+        base = _text(entry.info.get("baseModel")).strip()
+        if base:
+            pairs.append((base, entry.stem))
+    return pairs
+
+
+# How long the naming side waits for the fetch side before it looks at cancel/pause again.
+_POLL_SECONDS = 0.1
 
 
 def run_dry_run(
@@ -770,37 +902,127 @@ def run_dry_run(
     emit: Callable[[dict], None],
     control,
     batch_size: int = 8,
+    group_size: int = GROUP_SIZE,
 ) -> Tuple[dict, List[dict]]:
-    """The dry-run job body: collect, classify, seed base codes, emit finished rows, name groups."""
+    """The dry-run job body: collect, seed base codes, then fetch and name at the same time.
+
+    A fetch thread classifies one model at a time, emits its finished rows (kept,
+    duplicate, error) at once and hands its group to this thread, which names the
+    groups as they come, ``group_size`` per call. Both stop on cancel; an error on
+    the fetch thread ends the run as the job's error; a ``NamingModelError`` stops
+    both and keeps the rows already emitted. Rows are only emitted under ``lock``,
+    and never after the run returned.
+    """
     rows: List[dict] = []
+    lock = threading.RLock()
+    stop = threading.Event()  # set under ``lock`` when the run ends: the fetch side emits nothing after it
 
     def keep(row: dict) -> None:
         rows.append(row)
         emit(row)
 
     entries = collect_entries(roots)
-    groups, finished = classify(entries, client, decisions, progress=progress, control=control)
-    pairs: List[Tuple[str, str]] = []
-    for group in groups:
-        for placed in group.placed:
-            base = _text((_find_version(group.model, placed.entry.version_id) or {}).get("baseModel"))
-            if base:
-                pairs.append((base, placed.entry.stem))
-    if control is None or not control.is_cancelled():
-        # A stopped first run saw only some models: seeding from them would be final.
-        base_codes.seed(pairs)
-    for row in finished:
-        keep(row)
-    name_groups(
-        groups,
+    if _stopped(control):
+        return _summary(entries, rows), rows
+    # Before the first question, so no model is named with a code the AI made up.
+    base_codes.seed(_local_base_pairs(entries))
+
+    by_model = _by_model(entries)
+    total = len(by_model)
+    folders = _FolderCheck(entries)
+    namer = _Namer(
         generator,
         decisions=decisions,
         base_codes=base_codes,
         cache=cache,
         clip_name=clip_name,
-        progress=progress,
+        folders=folders,
         emit=keep,
-        control=control,
         batch_size=batch_size,
+        group_size=group_size,
+        lock=lock,
     )
-    return _summary(entries, rows), rows
+    counts = {"fetched": 0, "without_group": 0}
+
+    def report() -> None:
+        # Under the lock, and never once the run has ended: a late report from the fetch
+        # side must not overwrite the job's last progress.
+        with lock:
+            if stop.is_set():
+                return
+            done = namer.done + counts["without_group"]
+            progress(done, total, f"Named {done} of {total} · fetched {counts['fetched']} of {total}")
+
+    handoff: "queue.Queue[Tuple[str, object]]" = queue.Queue()
+
+    def fetch() -> None:
+        try:
+            for model_id, model_entries in by_model.items():
+                if stop.is_set() or _stopped(control):
+                    break
+                group, model_rows = _classify_model(model_id, model_entries, client, decisions)
+                renamed = {id(placed.entry) for placed in group.placed} if group is not None else set()
+                with lock:
+                    if stop.is_set():
+                        break
+                    for entry in model_entries:
+                        if id(entry) not in renamed:
+                            folders.stays(entry)
+                    for row in model_rows:
+                        keep(row)
+                    counts["fetched"] += 1
+                    if group is None:
+                        counts["without_group"] += 1
+                if group is not None:
+                    handoff.put(("group", group))
+                report()
+        except BaseException as exc:  # noqa: BLE001 - handed to the naming side, which raises it
+            handoff.put(("error", exc))
+            return
+        handoff.put(("done", None))
+
+    fetching = True
+
+    def take(wait: bool) -> None:
+        """Hand every fetched group to the namer; with ``wait``, wait a moment for the first."""
+        nonlocal fetching
+        while fetching:
+            try:
+                kind, value = handoff.get(timeout=_POLL_SECONDS) if wait else handoff.get_nowait()
+            except queue.Empty:
+                return
+            wait = False
+            if kind == "error":
+                raise value  # type: ignore[misc]
+            if kind == "done":
+                fetching = False
+            else:
+                namer.add(value)  # type: ignore[arg-type]
+
+    worker = threading.Thread(target=fetch, name="renamer-fetch", daemon=True)
+    worker.start()
+    finished = False
+    try:
+        while not _stopped(control):
+            # Wait for more only while there is not yet a full call to ask.
+            take(wait=fetching and not namer.has_full_call())
+            if namer.has_full_call() or (namer.has_work() and not fetching):
+                report()
+                namer.run_batch()
+                report()
+            elif not fetching and not namer.has_work():
+                finished = True
+                break
+    finally:
+        with lock:
+            stop.set()
+        # A cancelled fetch ends within a request. After a NamingModelError or a fetch error
+        # one Civitai request may still be in flight and outlive the run: the client's
+        # should_stop is the job's cancel flag, not ``stop``. It emits nothing once ``stop``
+        # is set, so don't wait long for it.
+        worker.join(timeout=1.0)
+    if finished:
+        progress(total, total, f"Named {total} models · fetched {total} of {total}")
+    # Only now: with ``stop`` set no row can be added, so the summary matches the rows returned.
+    with lock:
+        return _summary(entries, rows), rows

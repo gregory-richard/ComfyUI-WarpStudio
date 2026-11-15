@@ -171,6 +171,67 @@ def build_message(mi: ModelInput) -> str:
     return "\n".join(lines)
 
 
+# Leads every grouped question. It lives here, not in the system prompt, so the
+# system prompt (and with it PROMPT_VERSION and every cache key) does not change.
+# The example models are made up.
+GROUP_INTRO = """You get several models at once, each under its own header: "Model 1:", "Model 2:" and so on. Answer every model, in the same order, under a header with the same number, each with the usual lines. Name each model only from its own lines, never from another model's.
+
+Example question:
+
+Model 1:
+Creator: fjordlamp
+Model title: Brass Teapot Glow | SDXL
+Versions:
+1. v1.0 [base: SDXL 1.0]
+Credit lines (only for the original line): none
+
+Model 2:
+Creator: mosslight_art
+Model title: Paper Lantern Festival Krea2
+Versions:
+1. Krea2 Night v2.0 [base: Krea 2]
+2. Dusk [base: Krea 2]
+Credit lines (only for the original line): none
+
+Model 3:
+Creator: kiln_uploads
+Model title: Ashwood Portraits [reupload]
+Versions:
+1. v3 [base: Illustrious]
+Credit lines (only for the original line): Original model by Hollowpine, re-uploaded with permission.
+
+Example answer:
+
+Model 1:
+title: brass teapot glow
+original:
+version 1: v1
+
+Model 2:
+title: paper lantern festival
+original:
+version 1: night v2
+version 2: dusk
+
+Model 3:
+title: ashwood portraits
+original: Hollowpine
+version 1: v3
+
+Now answer these models:"""
+
+
+def build_group_message(inputs: list[ModelInput]) -> str:
+    """Several models in one question: ``GROUP_INTRO``, then each one's own message under "Model 1:" ... "Model K:".
+
+    One model is asked with its plain message, so its answer stays cacheable as is.
+    """
+    if len(inputs) == 1:
+        return build_message(inputs[0])
+    sections = "\n\n".join(f"Model {number}:\n{build_message(mi)}" for number, mi in enumerate(inputs, start=1))
+    return GROUP_INTRO + "\n\n" + sections
+
+
 def retry_message(mi: ModelInput, problems: list[str]) -> str:
     lines = [build_message(mi), "", "Your last answer had these problems:"]
     lines.extend(f"- {problem}" for problem in problems)
@@ -188,6 +249,57 @@ _VERSION_LINE = re.compile(r"^version\s+(\S+?)" + _KEY_END + r"(.*)$", re.IGNORE
 _BASE_LINE = re.compile(r"^base\s+(.+?)" + _KEY_END + r"(.*)$", re.IGNORECASE)
 
 
+# "Model 2:", "**Model 2:**", "### Model 2", "Model 2: title: x" (the rest of the line is the answer's).
+_GROUP_HEADER = re.compile(r"^model\s+(\d+)\s*[*`]*\s*(?::|$)[*`]*\s*(.*)$", re.IGNORECASE)
+
+
+def _without_thinking(text: str) -> str:
+    closes = list(_THINK_CLOSE.finditer(text))
+    if closes:
+        text = text[closes[-1].end():]
+    return _THINK_TAG.sub("", text)
+
+
+def split_group_answer(text: str, count: int) -> list[str]:
+    """The answer to a grouped question, one section of text per model ("" when it has none).
+
+    Sections come from the "Model N:" headers. A header numbered outside 1..K means
+    the numbering itself is off, so every model's answer is unparsed. Otherwise a
+    section counts only when its number comes after the numbers before it and
+    appears once; any other section belongs to nobody, so that model's answer is
+    unparsed (a missing number affects only its own model).
+    """
+    sections: list[tuple[int, list[str]]] = []
+    for raw in _without_thinking(text or "").splitlines():
+        match = _GROUP_HEADER.match(_MARKUP_LEAD.sub("", raw).strip())
+        if match:
+            sections.append((int(match.group(1)), [match.group(2)] if match.group(2) else []))
+        elif sections:
+            sections[-1][1].append(raw)
+    seen: dict[int, int] = {}
+    for number, _lines in sections:
+        seen[number] = seen.get(number, 0) + 1
+    result = [""] * count
+    if any(not 1 <= number <= count for number in seen):
+        # Numbered some other way (from 0, past the group): every section may be on the wrong model.
+        return result
+    last = 0
+    for number, lines in sections:
+        if seen[number] > 1 or number <= last:
+            continue
+        last = number
+        result[number - 1] = "\n".join(lines)
+    return result
+
+
+def parse_group_answer(text: str, inputs: list[ModelInput]) -> list[ModelAnswer]:
+    """One ``ModelAnswer`` per model of a grouped question, in the group's order."""
+    if len(inputs) == 1:
+        return [parse_answer(text, inputs[0])]
+    sections = split_group_answer(text, len(inputs))
+    return [parse_answer(section, mi) for section, mi in zip(sections, inputs)]
+
+
 def _value(raw: str) -> str:
     return raw.strip(" \t*`")
 
@@ -198,11 +310,7 @@ def parse_answer(text: str, mi: ModelInput) -> ModelAnswer:
     Everything up to the last ``</think>`` is thinking, not the answer. Markdown around
     the answer lines (bullets, bold keys, headings, code fences) is ignored.
     """
-    text = text or ""
-    closes = list(_THINK_CLOSE.finditer(text))
-    if closes:
-        text = text[closes[-1].end():]
-    text = _THINK_TAG.sub("", text)
+    text = _without_thinking(text or "")
     slot_keys = {slot.key for slot in mi.slots}
     base_names = {name.lower(): name for name in mi.new_bases}
     title = None
