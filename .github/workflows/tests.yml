@@ -48,4 +48,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check syntax
-        run: node --check js/civitai_updater.js
+        run: |
+          node --check js/civitai_updater.js
+          node --check js/rename_view.js

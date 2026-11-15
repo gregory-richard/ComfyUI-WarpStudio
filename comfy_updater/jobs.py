@@ -251,6 +251,18 @@ class JobManager:
         merged["hiddenUpdates"] = hidden_updates
         return merged
 
+    def job_ids(self, job_type: str) -> list[str]:
+        """Ids of every job of this type still held, finished or not."""
+        with self._lock:
+            return [job.id for job in self._jobs.values() if job.type == job_type]
+
+    def edit_items(self, job_type: str, edit) -> None:
+        """Call ``edit(items)`` on every held job of this type, under the lock (items change in place)."""
+        with self._lock:
+            for job in self._jobs.values():
+                if job.type == job_type:
+                    edit(job.items)
+
     def get_active(self) -> JobRecord | None:
         with self._lock:
             for job in self._jobs.values():

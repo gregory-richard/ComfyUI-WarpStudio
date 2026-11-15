@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -114,11 +115,17 @@ def quarantine_corrupt_file(path: Path) -> Path:
     return backup
 
 
-def write_json(path: Path, payload: dict) -> None:
+def write_json(path: Path, payload: dict, *, compact: bool = False, durable: bool = False) -> None:
+    """Write through a temporary file. ``compact`` drops the indent; ``durable`` syncs it to disk first."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    text = json.dumps(payload, separators=(",", ":")) if compact else json.dumps(payload, indent=2)
     try:
-        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            if durable:
+                handle.flush()
+                os.fsync(handle.fileno())
         tmp_path.replace(path)
     except OSError:
         try:

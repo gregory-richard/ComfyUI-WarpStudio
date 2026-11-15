@@ -239,12 +239,15 @@ class CivitaiClient:
                         detail = "Civitai denied the request. This resource may require an API key — set one in the settings panel."
                     print(f"Civitai updater: {response.status_code} {response.reason} for {url}. {detail}")
                     if raise_on_error:
-                        raise CivitaiRequestError(f"{response.status_code} {response.reason}. {detail}")
+                        raise CivitaiRequestError(
+                            f"{response.status_code} {response.reason}. {detail}", status=response.status_code
+                        )
                     return None
                 if response.status_code in (400, 404):
                     if raise_on_error:
                         raise CivitaiRequestError(
-                            f"{response.status_code} {response.reason}. The model may have been removed from Civitai."
+                            f"{response.status_code} {response.reason}. The model may have been removed from Civitai.",
+                            status=response.status_code,
                         )
                     return None
                 last_error = f"{response.status_code} {response.reason}"
@@ -386,5 +389,13 @@ def _is_png_data(data: bytes) -> bool:
 
 
 class CivitaiRequestError(RuntimeError):
-    """Raised when a Civitai request fails after retries."""
+    """Raised when a Civitai request fails after retries.
+
+    ``status`` is the HTTP status when Civitai answered with a definite refusal
+    (400/401/403/404); None for failures that were retried.
+    """
+
+    def __init__(self, message: str = "", status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 

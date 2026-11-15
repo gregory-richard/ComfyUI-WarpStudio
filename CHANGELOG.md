@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- A **Rename** view next to **Updates** and **Issues** renames your model files
+  after their current Civitai releases, as
+  `creator - title - version [precision] (base)`, all lowercase. Precision is
+  given only to checkpoints and UNets, never to LoRAs. It is read from the
+  file, or for a metadata-only entry taken from Civitai's file info when the
+  release has a single main model file.
+  Sidecars, previews and any other file sharing the model's name are renamed
+  with it.
+- The names are cleaned by a local text model that ComfyUI's built-in
+  **Generate Text** node runs, through ComfyUI's queue (its jobs show in the
+  queue history). Pick it under **Settings → Civitai Updater → Rename → Naming
+  model**, or download Comfy-Org's `qwen3.5_9b_int8_convrot.safetensors`
+  (9.75 GB) from the view. A ComfyUI without Generate Text cannot run the
+  renamer, and the view says so.
+- A dry run lists every old name next to its new one and changes nothing. You
+  review it (flags, edits, **Keep this name**, **Ask again**, **Remove extra
+  copy**) and then **Apply selected**. Edits and applied names are remembered
+  per model; applied names stay locked until **Ask again**.
+- Kept, not renamed: models Civitai no longer serves, the VAE folder, files
+  whose Civitai match is not the release's main model file or whose type does
+  not fit the folder, and anything you keep.
+- A rename interrupted by a crash or restart can be finished or undone from the
+  Rename view. Extra copies you remove go to the Recycle Bin, through the new
+  `send2trash` requirement.
+- There is no backwards compatibility: saved workflows and images that use the
+  old names show those LoRAs and models as missing until you re-pick them.
+- The naming model gets roughly three in four names exactly right on models it
+  has not seen in testing. Review the list before you apply it.
+
 ## [1.9.2] - 2026-11-04
 
 ### Security

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
+import threading
 
 from .constants import SUPPORTED_MODEL_TYPES
 from .sidecar import quarantine_corrupt_file, write_json
@@ -19,6 +20,9 @@ DEFAULT_CONFIG = {
     "useCustomPaths": True,
     "treatSidecarsAsInstalled": True,
     "matureMode": "show",
+    # The renamer's AI: a file in ComfyUI's text_encoders folders, named as
+    # CLIPLoader's clip_name (relative path, subfolders included).
+    "namingModel": "",
     "customPaths": {model_type: [] for model_type in SUPPORTED_MODEL_TYPES},
 }
 
@@ -29,6 +33,8 @@ class ConfigStore:
         self.config_path = self.data_dir / "config.json"
         self._config = deepcopy(DEFAULT_CONFIG)
         self._writable = True
+        # Job threads (the naming-model download) and the server loop both save settings.
+        self._lock = threading.RLock()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._load()
 
@@ -78,6 +84,7 @@ class ConfigStore:
             "useCustomPaths",
             "treatSidecarsAsInstalled",
             "matureMode",
+            "namingModel",
         ):
             if key in incoming:
                 merged[key] = incoming[key]
@@ -114,6 +121,9 @@ class ConfigStore:
         merged["treatSidecarsAsInstalled"] = bool(merged["treatSidecarsAsInstalled"])
         if merged["matureMode"] not in ("show", "blur", "hide"):
             merged["matureMode"] = "show"
+        if not isinstance(merged["namingModel"], str):
+            merged["namingModel"] = ""
+        merged["namingModel"] = merged["namingModel"].strip()
 
         return merged
 
@@ -122,7 +132,8 @@ class ConfigStore:
             write_json(self.config_path, self._config)
 
     def get(self) -> dict:
-        return deepcopy(self._config)
+        with self._lock:
+            return deepcopy(self._config)
 
     def get_public(self) -> dict:
         cfg = self.get()
@@ -132,17 +143,18 @@ class ConfigStore:
 
     def update(self, incoming: dict) -> dict:
         incoming = incoming or {}
-        merged = self._merged({**self._config, **incoming})
-        if "customPaths" in incoming and isinstance(incoming["customPaths"], dict):
-            current_custom = deepcopy(self._config.get("customPaths", {}))
-            normalized_custom = self._merged({"customPaths": incoming["customPaths"]})["customPaths"]
-            for model_type in SUPPORTED_MODEL_TYPES:
-                if model_type in incoming["customPaths"]:
-                    current_custom[model_type] = normalized_custom[model_type]
-            merged["customPaths"] = current_custom
-        self._config = merged
-        self._save()
-        return self.get()
+        with self._lock:
+            merged = self._merged({**self._config, **incoming})
+            if "customPaths" in incoming and isinstance(incoming["customPaths"], dict):
+                current_custom = deepcopy(self._config.get("customPaths", {}))
+                normalized_custom = self._merged({"customPaths": incoming["customPaths"]})["customPaths"]
+                for model_type in SUPPORTED_MODEL_TYPES:
+                    if model_type in incoming["customPaths"]:
+                        current_custom[model_type] = normalized_custom[model_type]
+                merged["customPaths"] = current_custom
+            self._config = merged
+            self._save()
+            return self.get()
 
 
 def _int_in_range(value, default: int, minimum: int, maximum: int) -> int:

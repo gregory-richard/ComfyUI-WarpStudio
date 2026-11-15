@@ -129,13 +129,13 @@ class RouteAndVersionHelperTests(unittest.TestCase):
                 return {"path": path, "modelType": "lora", "infoPath": info_path, "metadataOnly": metadata_only}
 
             identified = {
-                "id": 3215580,
-                "modelId": 2743970,
+                "id": 4102233,
+                "modelId": 3901177,
                 "name": "Minimax H3 v2",
                 "baseModel": "MiniMax H3",
                 "publishedAt": "2026-09-14T00:05:40.680Z",
                 "createdAt": "2026-08-10T10:03:57.473Z",
-                "model": {"name": "Ahegao Face", "nsfw": True},
+                "model": {"name": "Pout Face", "nsfw": True},
                 "images": [{"type": "image", "url": "https://img.example/h3.jpeg"}],
             }
             files = [
@@ -154,11 +154,11 @@ class RouteAndVersionHelperTests(unittest.TestCase):
             )
             seed = seeds[0]
             self.assertTrue(seed["_seeded"])
-            self.assertEqual("2743970", seed["modelId"])
-            self.assertEqual("3215580", seed["localVersionId"])
+            self.assertEqual("3901177", seed["modelId"])
+            self.assertEqual("4102233", seed["localVersionId"])
             self.assertEqual("2026-09-14T00:05:40.680Z", seed["localVersionDate"])
             self.assertEqual("MiniMax H3", seed["baseModel"])
-            self.assertEqual("Ahegao Face", seed["modelName"])
+            self.assertEqual("Pout Face", seed["modelName"])
             self.assertEqual("https://img.example/h3.jpeg", seed["localPreviewUrl"])
             self.assertEqual([], seed["remoteVersions"])
             self.assertFalse(seed["hasUpdate"])

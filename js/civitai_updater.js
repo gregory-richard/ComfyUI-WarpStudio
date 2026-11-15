@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 
 const TAB_ID = "civitai-updater";
 const EXTENSION_NAME = "civitai-updater.ui";
@@ -27,6 +28,7 @@ const SETTINGS = {
   customUnet: "CivitaiUpdater.CustomPaths.UNet",
   customEmbedding: "CivitaiUpdater.CustomPaths.Embedding",
   matureMode: "CivitaiUpdater.MatureContent",
+  namingModel: "CivitaiUpdater.NamingModel",
 };
 
 const GROUP_OPTIONS = [
@@ -132,6 +134,20 @@ const state = {
   progressEtaEl: null,
   lightboxKeyHandler: null,
   recoveringJob: false,
+
+  currentMessage: "",
+  // The Rename view keeps its rows and choices here, so they survive ComfyUI
+  // rebuilding the tab each time it is opened.
+  renameStore: createRenameStore(),
+  renameView: null,
+  renamePaneEl: null,
+  updatesPaneEl: null,
+  // Text encoders the backend can run, from /rename/status: the naming-model setting's options.
+  namingModels: [],
+  syncedNamingModel: null,
+  // True only after the user picks a naming model in the settings: until then
+  // the panel never posts one, so it cannot overwrite the backend's choice.
+  namingModelDirty: false,
 };
 
 app.registerExtension({
@@ -156,10 +172,19 @@ app.registerExtension({
         { value: "blur", text: "Blur previews" },
         { value: "hide", text: "Hide mature models" },
       ], tooltip: "Blur hides the preview image only \u2014 titles stay readable so you can still identify a model. Hide removes mature models from results and reports how many were left out.", category: ["Civitai Updater", "General", "Mature Content"], onChange: () => { scheduleSettingsSync(); onMatureModeChanged(); } },
+    { id: SETTINGS.namingModel, name: "Naming model", type: "combo", defaultValue: "", options: (value) => namingModelOptions(value), tooltip: "The text encoder that Generate Text runs to propose the new file names. The list shows the files in your text_encoders folders.", category: ["Civitai Updater", "Rename", "Naming Model"], onChange: (value) => {
+      // Only a choice made here is sent: the backend picks the model itself after a download.
+      state.namingModelDirty = String(value ?? "") !== state.syncedNamingModel;
+      scheduleSettingsSync();
+    } },
   ],
   async setup() {
     injectStyles();
     if (await hydrateSettingsFromBackend()) scheduleSettingsSync(true);
+    // The naming-model setting lists the text encoders the backend found.
+    getJson("/civitai-updater/rename/status")
+      .then((status) => setNamingModels(status.namingModels))
+      .catch(() => {});
     app.extensionManager.registerSidebarTab({
       id: TAB_ID,
       icon: TAB_ICON,
@@ -234,9 +259,11 @@ async function renderTab(el) {
         <h3>Results</h3>
         <select id="cu-size" title="Results per page">${PAGE_SIZES.map((v) => `<option value="${v}">${v}</option>`).join("")}</select>
       </div>
+      <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
+      <div id="cu-rename-pane" style="display:none"></div>
+      <div id="cu-updates-pane">
       <div id="cu-scan-report" class="cu-scan-report"></div>
       <div id="cu-check-summary" class="cu-summary">No update check has run yet.</div>
-      <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view" style="display:none"></div>
       <div class="cu-filters">
         <div id="cu-filter-type" class="cu-filter-slot"></div>
         <div id="cu-filter-base" class="cu-filter-slot"></div>
@@ -251,6 +278,7 @@ async function renderTab(el) {
         <button id="cu-prev" class="cu-page-btn" disabled title="Previous page">&lsaquo;</button>
         <span id="cu-page" class="cu-page-info">1 / 1</span>
         <button id="cu-next" class="cu-page-btn" disabled title="Next page">&rsaquo;</button>
+      </div>
       </div>
     </section>
   `;
@@ -279,6 +307,20 @@ async function renderTab(el) {
   state.pauseEl = root.querySelector("#cu-pause");
   state.stopEl = root.querySelector("#cu-stop");
   state.jobControlsEl = root.querySelector("#cu-job-controls");
+  state.renamePaneEl = root.querySelector("#cu-rename-pane");
+  state.updatesPaneEl = root.querySelector("#cu-updates-pane");
+  state.renameView = renderRenameView(state.renamePaneEl, {
+    store: state.renameStore,
+    getJson,
+    postJson,
+    escapeHtml,
+    startJob: startPanelJob,
+    activeJob: () => (state.currentJobId ? { jobId: state.currentJobId, type: state.currentJobType, status: state.currentJobStatus } : null),
+    setStatus,
+    adoptNamingModel,
+    setNamingModels,
+    reloadResults: reloadCheckResults,
+  });
   bindEvents(root);
   state.statusEl.textContent = state.statusText;
   renderCacheInfo();
@@ -291,10 +333,19 @@ async function renderTab(el) {
   updateControlButtons();
   root.querySelector("#cu-size").value = String(state.pageSize);
   el.appendChild(root);
+  applyResultMode();
 
   if (!state.currentJobId && !state.checkJobId) {
     loadCachedResults();
   }
+}
+
+/* After the renamer moved files: the check results (patched to the new paths on
+   the server) are fetched again, so no row shows a file under its old name. */
+async function reloadCheckResults() {
+  if (state.currentJobId) return;
+  if (state.checkJobId) await loadResultPage(true);
+  else await loadCachedResults();
 }
 
 async function loadCachedResults() {
@@ -413,6 +464,8 @@ async function recoverFromLostJob() {
     renderCacheInfo();
     renderResults();
     setStatus("The server was restarted \u2014 reloading the last saved results.");
+    // A dry run the panel was following is gone too: unlock the Rename view.
+    if (state.renameView) state.renameView.refresh();
     await loadCachedResults();
   } finally {
     state.recoveringJob = false;
@@ -503,6 +556,8 @@ function bindEvents(root) {
       const mode = viewTab.dataset.view;
       if (!mode || mode === state.resultMode) return;
       state.resultMode = mode;
+      applyResultMode();
+      if (mode === "rename") return;
       state.pageOffset = 0;
       // The views list different models, so their filter options differ too.
       state.filterTypes = null;
@@ -671,6 +726,7 @@ function pollJob(jobId) {
 
       state.currentJobStatus = status;
       state.currentSummary = job.summary || null;
+      state.currentMessage = String(job.message || "");
       if (Array.isArray(job.summary?.sidecarWarnings)) {
         state.sidecarWarnings = job.summary.sidecarWarnings;
         renderSidecarWarnings();
@@ -708,7 +764,11 @@ function pollJob(jobId) {
       state.lastStatus = status;
       state.lastItemCount = itemCount;
 
-      if (["completed", "failed", "cancelled"].includes(status)) {
+      const renameJob = RENAME_JOB_TYPES.includes(state.currentJobType);
+      const finished = ["completed", "failed", "cancelled"].includes(status);
+      if (renameJob && !finished && state.renameView) state.renameView.onJob(job, false);
+
+      if (finished) {
         clearInterval(state.pollTimer);
         state.pollTimer = null;
         if (state.currentJobType === "check-updates") {
@@ -733,6 +793,8 @@ function pollJob(jobId) {
           setStatus(`Failed: ${msg}`);
         } else if (status === "cancelled") {
           setStatus("Job cancelled");
+        } else if (renameJob) {
+          setStatus("Done");
         } else if (state.currentJobType === "check-updates") {
           const updates = job.summary?.withUpdates || 0;
           const hidden = job.summary?.hiddenUpdates || 0;
@@ -747,6 +809,8 @@ function pollJob(jobId) {
         updateProgress(progress, total, false);
         clearCurrentJob();
         updateControlButtons();
+        // After the job is cleared, so the view sees no active job while it reloads.
+        if (renameJob && state.renameView) await state.renameView.onJob(job, true);
       }
     } catch (error) {
       if (isLostJobError(error)) {
@@ -778,6 +842,8 @@ function pollJob(jobId) {
 
 async function loadResultPage(force) {
   const requestSeq = ++state.resultRequestSeq;
+  // The Rename view has no result pages; switching back loads them.
+  if (state.resultMode === "rename") return;
   if (!state.checkJobId) {
     renderResults();
     return;
@@ -856,6 +922,11 @@ function summaryLine(s) {
 function renderProgressCounts() {
   if (state.stopRequested && state.currentJobId) {
     setStatus("Stopping\u2026");
+    return;
+  }
+  if (RENAME_JOB_TYPES.includes(state.currentJobType)) {
+    // Dry runs, applies and the download report their step as the job message.
+    setStatus(state.currentMessage || `Processing ${state.currentProgress} of ${state.currentTotal}`);
     return;
   }
   const s = state.currentSummary;
@@ -1228,22 +1299,84 @@ function hasCollapsedBand() {
     || (group.subgroups || []).some((sub) => state.collapsed.has(sub.key)));
 }
 
+/* Rename is always there; Updates and Issues need a check to list anything.
+   Before a check, an Updates tab without a count leads back from Rename. */
 function renderViewSwitch() {
   if (!state.viewSwitchEl) return;
-  if (!state.checkJobId) {
-    state.viewSwitchEl.innerHTML = "";
-    state.viewSwitchEl.style.display = "none";
-    return;
-  }
+  // Issues has no tab without a check; fall back to the tab that stays.
+  if (!state.checkJobId && state.resultMode === "issues") state.resultMode = "updates";
   const counts = state.modeCounts || {};
-  const tab = (mode, label, hint) => {
+  const tab = (mode, label, hint, withCount = true) => {
     const selected = state.resultMode === mode ? "true" : "false";
     return `<button class="cu-view-tab" type="button" role="tab" data-view="${mode}" aria-selected="${selected}" title="${hint}">`
-      + `<span>${label}</span><span class="cu-view-count">${Number(counts[mode] || 0)}</span></button>`;
+      + `<span>${label}</span>${withCount ? `<span class="cu-view-count">${Number(counts[mode] || 0)}</span>` : ""}</button>`;
   };
-  state.viewSwitchEl.innerHTML = tab("updates", "Updates", "Models with a newer release")
-    + tab("issues", "Issues", "Models Civitai could not match or check");
-  state.viewSwitchEl.style.display = "";
+  const checkTabs = state.checkJobId
+    ? tab("updates", "Updates", "Models with a newer release") + tab("issues", "Issues", "Models Civitai could not match or check")
+    : tab("updates", "Updates", "Run Check for Updates to list newer releases", false);
+  state.viewSwitchEl.innerHTML = checkTabs + tab("rename", "Rename", "Rename your model files after their Civitai releases", false);
+}
+
+/* Show the selected view's pane; the Rename view loads its state when shown. */
+function applyResultMode() {
+  const rename = state.resultMode === "rename";
+  if (state.renamePaneEl) state.renamePaneEl.style.display = rename ? "" : "none";
+  if (state.updatesPaneEl) state.updatesPaneEl.style.display = rename ? "none" : "";
+  const size = state.rootEl?.querySelector("#cu-size");
+  if (size) size.style.visibility = rename ? "hidden" : "";
+  renderViewSwitch();
+  if (rename && state.renameView) state.renameView.refresh();
+}
+
+/* Start a job for the Rename view through the shared progress and pause/stop
+   controls. Returns the route's reply; a reply without a jobId started no job
+   (the naming model was already there). */
+async function startPanelJob(endpoint, type, payload, statusText) {
+  if (state.currentJobId) throw new Error("A job is already running.");
+  const data = await postJson(endpoint, payload || {});
+  if (!data || !data.jobId) return data || {};
+  state.currentJobId = data.jobId;
+  state.currentJobType = type;
+  state.currentJobStatus = "queued";
+  state.currentSummary = null;
+  state.currentMessage = "";
+  state.currentProgress = 0;
+  state.currentTotal = 0;
+  state.currentItemCount = 0;
+  state.lastStatus = "";
+  state.lastItemCount = -1;
+  resetEta();
+  updateProgress(0, 0, true);
+  updateControlButtons();
+  setStatus(statusText || "Working\u2026");
+  pollJob(data.jobId);
+  return data;
+}
+
+function setNamingModels(list) {
+  const names = Array.isArray(list) ? list.map(String) : [];
+  const current = String(getSetting(SETTINGS.namingModel, "") || "");
+  if (current && !names.includes(current)) names.push(current);
+  state.namingModels = names;
+}
+
+function namingModelOptions(value) {
+  const options = [{ value: "", text: "None" }];
+  const names = [...state.namingModels];
+  if (value && !names.includes(String(value))) names.push(String(value));
+  for (const name of names) options.push({ value: name, text: name });
+  return options;
+}
+
+/* The backend chose the naming model (a download, or an existing copy found):
+   take it into the setting, or the next settings save would post the old value. */
+function adoptNamingModel(name) {
+  const value = String(name || "");
+  if (!value) return;
+  if (!state.namingModels.includes(value)) state.namingModels.push(value);
+  state.syncedNamingModel = value;
+  setSetting(SETTINGS.namingModel, value);
+  state.namingModelDirty = false;
 }
 
 function countLabel(models, releases) {
@@ -1531,6 +1664,8 @@ function updateControlButtons() {
   if (!state.pauseEl || !state.stopEl || !state.jobControlsEl) return;
   const active = Boolean(state.currentJobId);
   state.pauseEl.textContent = active && state.currentJobStatus === "paused" ? "Resume" : "Pause";
+  // The server refuses to pause the naming-model download (it cannot resume).
+  state.pauseEl.style.display = state.currentJobType === "naming-model-download" ? "none" : "";
   state.jobControlsEl.style.display = active ? "flex" : "none";
 }
 
@@ -1657,6 +1792,10 @@ async function hydrateSettingsFromBackend() {
     setSetting(SETTINGS.customEmbedding, listToSettingString(custom.embedding));
     state.matureMode = String(cfg.matureMode || "show");
     setSetting(SETTINGS.matureMode, state.matureMode);
+    state.syncedNamingModel = String(cfg.namingModel || "");
+    if (state.syncedNamingModel && !state.namingModels.includes(state.syncedNamingModel)) state.namingModels.push(state.syncedNamingModel);
+    setSetting(SETTINGS.namingModel, state.syncedNamingModel);
+    state.namingModelDirty = false;
     state.roots = data.effectiveRoots || {};
     state.suspendSettingsSync = false;
     return true;
@@ -1698,9 +1837,19 @@ async function syncSettingsToBackend() {
   if (apiKeyVal !== "***HIDDEN***") {
     payload.apiKey = apiKeyVal;
   }
+  if (state.namingModelDirty) {
+    payload.namingModel = String(getSetting(SETTINGS.namingModel, "") || "");
+  }
   try {
     const data = await postJson("/civitai-updater/config", payload);
     state.treatSidecarsAsInstalled = treatSidecarsAsInstalled;
+    if ("namingModel" in payload) {
+      // A pick made while this save was in flight still needs its own save.
+      if (String(getSetting(SETTINGS.namingModel, "") || "") === payload.namingModel) state.namingModelDirty = false;
+      state.syncedNamingModel = payload.namingModel;
+      // The Rename view says whether the new naming model is usable.
+      if (state.renameView && state.resultMode === "rename") state.renameView.refresh();
+    }
     if (sidecarSettingChanged) {
       state.cacheFilesChanged = true;
     }
@@ -2438,7 +2587,8 @@ function injectStyles() {
 
     .cu-view-switch {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
       margin-bottom: 8px;
       border: 1px solid var(--cu-seam-strong);
       border-radius: var(--cu-radius);

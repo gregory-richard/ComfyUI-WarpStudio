@@ -1,14 +1,40 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+from dataclasses import asdict
 import functools
 from datetime import datetime, timezone
+import os
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from aiohttp import web
 
-from .constants import CACHE_SCHEMA_VERSION, SUPPORTED_MODEL_TYPES
+from .civitai_client import CivitaiClient
+from .comfy_queue import (
+    ComfyTextGenerator,
+    NamingModelError,
+    comfy_base_url,
+    has_text_generation,
+    list_naming_models,
+)
+from .constants import CACHE_SCHEMA_VERSION, INFO_SIDECAR_SUFFIX, SUPPORTED_MODEL_TYPES, USER_AGENT
 from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
-from .path_resolver import custom_path_problem, normalize_model_types
+from .naming_ai import SYSTEM_PROMPT
+from .naming_scheme import NameParts, assemble, format_part, parse_stem
+from .path_resolver import custom_path_problem, normalize_model_types, resolve_model_roots
+from .rename_apply import (
+    apply_steps,
+    plan,
+    recover,
+    refresh_sidecar_title,
+    rewrite_paths,
+    send2trash_available,
+    send_to_trash,
+    update_saved_paths,
+)
+from .renamer import RENAME_TYPES, _changed, _disk_stems, _parts_flags, run_dry_run
 from .request_guard import request_rejection
 from .sidecar import read_data_file, write_json
 from .updater_service import sidecar_seed_item
@@ -35,7 +61,17 @@ def _guarded(handler):
     return wrapper
 
 
-def register_routes(config_store, updater_service, job_manager, archive_store) -> None:
+def register_routes(
+    config_store,
+    updater_service,
+    job_manager,
+    archive_store,
+    *,
+    decisions=None,
+    base_codes=None,
+    answer_cache=None,
+    journal=None,
+) -> None:
     global _ROUTES_REGISTERED
     if _ROUTES_REGISTERED:
         return
@@ -308,6 +344,10 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
     @_guarded
     async def pause_job(request):
         job_id = request.match_info.get("job_id", "")
+        existing = job_manager.get(job_id)
+        if existing is not None and existing.type == NAMING_MODEL_DOWNLOAD_JOB:
+            # A paused stream times out on the server's side and the download is lost.
+            return web.json_response({"error": DOWNLOAD_PAUSE_ERROR}, status=409)
         job = job_manager.pause(job_id)
         if not job:
             return web.json_response({"error": "job not found"}, status=404)
@@ -330,6 +370,11 @@ def register_routes(config_store, updater_service, job_manager, archive_store) -
         if not job:
             return web.json_response({"error": "job not found"}, status=404)
         return web.json_response(job.as_dict(include_items=False))
+
+    if None not in (decisions, base_codes, answer_cache, journal):
+        _register_rename_routes(routes, config_store, job_manager, decisions, base_codes, answer_cache, journal)
+    else:
+        print("Civitai updater: the renamer's stores are missing, so its routes were not registered.")
 
     _ROUTES_REGISTERED = True
     print("Civitai updater: routes registered")
@@ -380,6 +425,9 @@ def _normalize_config_payload(payload: dict) -> dict:
         incoming["treatSidecarsAsInstalled"] = bool(payload.get("treatSidecarsAsInstalled"))
     if "matureMode" in payload:
         incoming["matureMode"] = payload.get("matureMode")
+    if "namingModel" in payload:
+        naming_model = payload.get("namingModel")
+        incoming["namingModel"] = naming_model.strip() if isinstance(naming_model, str) else ""
 
     if "customPaths" in payload:
         custom = payload.get("customPaths")
@@ -532,3 +580,787 @@ def _normalize_archive_payload(payload: dict) -> tuple[str, list[str]]:
                 normalized.add(cleaned)
         version_ids = sorted(normalized)
     return model_id, version_ids
+
+
+# --- the model renamer ---------------------------------------------------------
+
+RENAME_DRY_RUN_JOB = "rename-dry-run"
+RENAME_APPLY_JOB = "rename-apply"
+NAMING_MODEL_DOWNLOAD_JOB = "naming-model-download"
+NAMING_MODEL_URL = (
+    "https://huggingface.co/Comfy-Org/Qwen3.5/resolve/main/text_encoders/qwen3.5_9b_int8_convrot.safetensors"
+)
+NAMING_MODEL_FILENAME = "qwen3.5_9b_int8_convrot.safetensors"
+RENAME_REASON_NO_TEXTGEN = "This ComfyUI has no Generate Text node. Update ComfyUI to use the renamer."
+RENAME_REASON_NO_MODEL = "Choose a naming model in the settings, or download one."
+JOURNAL_PENDING_ERROR = "An earlier rename was interrupted. Finish or undo it first."
+STALE_DRY_RUN_ERROR = "These rows were already applied. Run a new dry run."
+DRY_RUN_ACTIVE_ERROR = "Wait for the dry run to finish."
+JOB_RUNNING_ERROR = "A job is already running."
+RECOVERY_RUNNING_ERROR = "The interrupted rename is already being finished or undone."
+CHECK_JOB = "check-updates"
+DOWNLOAD_PAUSE_ERROR = "The naming model download cannot be paused. Stop it to cancel; it then starts over."
+ERROR_TEXT_LIMIT = 300
+_NAMED_STATUSES = ("change", "unchanged")
+_MB = 1024 * 1024
+
+
+def _register_rename_routes(routes, config_store, job_manager, decisions, base_codes, answer_cache, journal) -> None:
+    # Dry runs made before the last apply or recovery: their old stems may now name other files.
+    applied_jobs: set = set()
+    recovery_slot = ExclusiveSlot()
+
+    def busy():
+        return web.json_response({"error": JOB_RUNNING_ERROR}, status=409)
+
+    def refused(problem):
+        status, message = problem
+        return web.json_response({"error": message}, status=status)
+
+    def journal_pending():
+        return web.json_response(
+            {"error": JOURNAL_PENDING_ERROR, "journal": _journal_status(journal)}, status=409
+        )
+
+    def dry_run_job(job_id: str):
+        job = job_manager.get(job_id) if job_id else None
+        return job if job is not None and job.type == RENAME_DRY_RUN_JOB else None
+
+    @routes.get("/civitai-updater/rename/status")
+    @_guarded
+    async def get_rename_status(request):  # noqa: ARG001
+        # Reads every text encoder's header: off the event loop.
+        models = await asyncio.to_thread(list_naming_models)
+        return web.json_response(
+            rename_status(config_store.get(), has_text_generation(), models, journal, base_codes=base_codes)
+        )
+
+    @routes.post("/civitai-updater/jobs/rename-dry-run")
+    @_guarded
+    async def start_rename_dry_run(request):  # noqa: ARG001
+        if job_manager.get_active():
+            return busy()
+        if journal.pending() is not None:
+            return journal_pending()
+        config = config_store.get()
+        models = await asyncio.to_thread(list_naming_models)
+        status = rename_status(config, has_text_generation(), models, journal)
+        if not status["available"]:
+            return web.json_response({"error": status["reason"]}, status=409)
+        naming_model = _matching_model(config.get("namingModel", ""), models)
+
+        def runner(progress, emit, control):
+            roots = resolve_model_roots(config, list(RENAME_TYPES), include_custom_paths=True)
+            client = CivitaiClient(
+                api_key=config.get("apiKey", ""),
+                timeout_seconds=int(config.get("requestTimeoutSeconds", 30)),
+                max_retries=int(config.get("maxRetries", 4)),
+                should_stop=control.is_cancelled,
+            )
+            # Blocks on ComfyUI's own server: only ever called on this job thread.
+            generator = ComfyTextGenerator(
+                comfy_base_url(), naming_model, SYSTEM_PROMPT, should_stop=control.is_cancelled
+            )
+            try:
+                return run_dry_run(
+                    roots,
+                    client,
+                    generator,
+                    decisions=decisions,
+                    base_codes=base_codes,
+                    cache=answer_cache,
+                    clip_name=naming_model,
+                    progress=progress,
+                    emit=emit,
+                    control=control,
+                )
+            except NamingModelError as exc:
+                # ComfyUI's rejection lists every file it has; the panel gets the start.
+                raise RuntimeError(_short_error(str(exc))) from exc
+
+        job = job_manager.start(RENAME_DRY_RUN_JOB, runner)
+        if not job:
+            return busy()
+        return web.json_response({"jobId": job.id})
+
+    @routes.get("/civitai-updater/rename/rows")
+    @_guarded
+    async def get_rename_rows(request):
+        job = dry_run_job(request.query.get("jobId", "").strip())
+        if job is None:
+            return web.json_response({"error": "job not found"}, status=404)
+        return web.json_response(
+            {
+                "rows": list(job.items),
+                "status": job.status,
+                "progress": job.progress,
+                "total": job.total,
+                "summary": job.summary,
+                "errors": [_short_error(error) for error in job.errors],
+                "applied": job.id in applied_jobs,
+            }
+        )
+
+    @routes.post("/civitai-updater/rename/decision")
+    @_guarded
+    async def save_rename_decision(request):
+        payload = _normalize_decision_payload(await _read_json(request))
+        model_id = payload.get("modelId", "")
+        if not payload.get("jobId") or not model_id:
+            return web.json_response({"error": "jobId and modelId of a dry run are required"}, status=400)
+        job = job_manager.get(payload["jobId"])
+        # Any active job refuses: the dry run is still changing its rows, an apply is moving files.
+        problem = rename_job_problem(job, active_job=job_manager.get_active(), applied=applied_jobs)
+        if problem:
+            return refused(problem)
+        rows = job.items
+        model_rows = [row for row in rows if str(row.get("modelId")) == model_id]
+        if not model_rows:
+            return web.json_response({"error": "no rows of that model in this dry run"}, status=404)
+        problem_text = _decision_problem(payload, model_rows)
+        if problem_text:
+            return web.json_response({"error": problem_text}, status=400)
+
+        asked_again = payload.get("askAgain") is True
+        if asked_again:
+            decisions.ask_again(
+                model_id,
+                sorted({str(row.get("versionId")) for row in model_rows}),
+                sorted({str(row.get("fileKey")) for row in model_rows}),
+            )
+            answer_cache.drop_model(model_id)
+        else:
+            if "title" in payload or "creator" in payload:
+                decisions.set_model(model_id, title=payload.get("title"), creator=payload.get("creator"))
+            if "version" in payload:
+                if payload.get("fileKey"):
+                    decisions.set_file(payload["fileKey"], version=payload["version"])
+                else:
+                    decisions.set_version(payload["versionId"], payload["version"])
+            if "keep" in payload:
+                decisions.set_file(payload["fileKey"], keep=payload["keep"])
+
+        folders = sorted({str(row.get("folder") or "") for row in model_rows})
+        listing = await asyncio.to_thread(lambda: {folder.lower(): _disk_stems(Path(folder)) for folder in folders})
+        result = reassemble_rows(
+            rows, decisions, base_codes, listing, model_id=model_id, asked_again=asked_again
+        )
+        return web.json_response({"rows": result})
+
+    @routes.post("/civitai-updater/rename/base-code")
+    @_guarded
+    async def save_base_code(request):
+        payload = await _read_json(request)
+        base_model = payload.get("baseModel")
+        code = payload.get("code")
+        if not isinstance(base_model, str) or not base_model.strip() or not isinstance(code, str):
+            return web.json_response({"error": "baseModel and code are required"}, status=400)
+        code = format_part(code)
+        problem = _base_code_problem(code)
+        if problem:
+            return web.json_response({"error": problem}, status=400)
+        base_codes.set(base_model, code)
+        return web.json_response({"baseCodes": base_codes.all()})
+
+    @routes.post("/civitai-updater/jobs/rename-apply")
+    @_guarded
+    async def start_rename_apply(request):
+        payload = _normalize_apply_payload(await _read_json(request))
+        job = job_manager.get(payload["jobId"]) if payload["jobId"] else None
+        problem = rename_job_problem(job, active_job=job_manager.get_active(), applied=applied_jobs)
+        if problem:
+            return refused(problem)
+        if journal.pending() is not None:
+            return journal_pending()
+        # A copy: later edits to the job's rows must not reach what this apply locks.
+        rows = copy.deepcopy(list(job.items))
+        selected = set(payload["keys"])
+        remove = set(payload["removeDuplicates"])
+        data_dir = config_store.data_dir
+
+        def runner(progress, emit, control):  # noqa: ARG001
+            summary = run_apply(
+                rows, selected, remove, journal, data_dir=data_dir, decisions=decisions, base_codes=base_codes,
+                check_jobs=job_manager, progress=progress, control=control,
+            )
+            return summary, []
+
+        apply_job = job_manager.start(RENAME_APPLY_JOB, runner)
+        if not apply_job:
+            return busy()
+        # No await since the check above, so no second apply or edit slipped in between.
+        # Every dry run held (another tab's too) is stale once files move.
+        mark_dry_runs_stale(job_manager, applied_jobs)
+        return web.json_response({"jobId": apply_job.id})
+
+    @routes.post("/civitai-updater/rename/recover")
+    @_guarded
+    async def recover_rename(request):
+        payload = await _read_json(request)
+        action = payload.get("action")
+        if action not in ("finish", "undo"):
+            return web.json_response({"error": 'action must be "finish" or "undo"'}, status=400)
+        if job_manager.get_active():
+            return busy()
+        # Two tabs must not finish or undo one run at the same time.
+        if not recovery_slot.acquire():
+            return web.json_response({"error": RECOVERY_RUNNING_ERROR}, status=409)
+        try:
+            pending = journal.pending()
+            mark_dry_runs_stale(job_manager, applied_jobs)
+            try:
+                result = await asyncio.to_thread(recover, journal, action)
+                mapping = recovered_path_mapping(pending, result, action)
+                await asyncio.to_thread(update_saved_paths, config_store.data_dir, mapping)
+                update_check_job_paths(job_manager, mapping)
+            except (OSError, ValueError) as exc:
+                return web.json_response(
+                    {"error": _short_error(str(exc)), "journal": _journal_status(journal)}, status=500
+                )
+        finally:
+            recovery_slot.release()
+        return web.json_response(
+            {"done": result["done"], "skipped": result["skipped"], "journal": _journal_status(journal)}
+        )
+
+    @routes.post("/civitai-updater/jobs/download-naming-model")
+    @_guarded
+    async def start_naming_model_download(request):  # noqa: ARG001
+        if job_manager.get_active():
+            return busy()
+        models = await asyncio.to_thread(list_naming_models)
+        existing = _existing_naming_model(models)
+        if existing:
+            # Already somewhere in the text encoder folders: no second 9.75 GB download.
+            config_store.update({"namingModel": existing})
+            return web.json_response({"jobId": None, "namingModel": existing, "reused": True})
+        folders = _text_encoder_folders()
+        if not folders:
+            return web.json_response({"error": "ComfyUI has no text_encoders folder."}, status=409)
+        folder = folders[0]
+        if os.path.lexists(folder / NAMING_MODEL_FILENAME):
+            return web.json_response(
+                {"error": f"{NAMING_MODEL_FILENAME} is already in {folder}. Choose it in the settings."},
+                status=409,
+            )
+        if job_manager.get_active():
+            return busy()
+
+        def runner(progress, emit, control):  # noqa: ARG001
+            name = download_naming_model(folder, progress=progress, control=control)
+            if name:
+                config_store.update({"namingModel": name})
+            return {"namingModel": name, "path": str(folder / name) if name else ""}, []
+
+        job = job_manager.start(NAMING_MODEL_DOWNLOAD_JOB, runner)
+        if not job:
+            return busy()
+        return web.json_response({"jobId": job.id})
+
+
+class ExclusiveSlot:
+    """One holder at a time. Used only on the event loop, so a flag is enough (no loop-bound lock)."""
+
+    def __init__(self) -> None:
+        self._held = False
+
+    def acquire(self) -> bool:
+        if self._held:
+            return False
+        self._held = True
+        return True
+
+    def release(self) -> None:
+        self._held = False
+
+
+def mark_dry_runs_stale(job_manager, applied: set) -> None:
+    """Every dry run held now (up to five finished, any tab's) may name files that are about to move."""
+    applied.update(job_manager.job_ids(RENAME_DRY_RUN_JOB))
+
+
+def update_check_job_paths(job_manager, mapping: dict) -> None:
+    """Point the check results held in memory (cached and this session's) at the new paths."""
+    if mapping:
+        job_manager.edit_items(CHECK_JOB, lambda items: rewrite_paths(items, mapping))
+
+
+def run_apply(
+    rows: list[dict],
+    selected: set,
+    remove: set,
+    journal,
+    *,
+    data_dir,
+    decisions,
+    base_codes,
+    progress: Callable[[int, int, str], Any],
+    control,
+    check_jobs=None,
+    trash: Callable[[str], Any] = send_to_trash,
+) -> dict:
+    """The apply job body: plan, apply, then the follow-ups. Returns the job summary."""
+    progress(0, 0, "Planning the renames")
+    steps, planned_skips = plan(rows, selected, remove)
+    result = apply_steps(steps, journal, trash=trash, progress=progress, control=control)
+    result["skipped"] = planned_skips + list(result.get("skipped") or [])
+    return apply_followups(
+        rows, steps, result, data_dir=data_dir, decisions=decisions, base_codes=base_codes, check_jobs=check_jobs
+    )
+
+
+def rename_job_problem(job, *, active_job, applied: set) -> Optional[tuple]:
+    """Why this dry run's rows may not be edited or applied now, as (HTTP status, message)."""
+    if job is None or getattr(job, "type", None) != RENAME_DRY_RUN_JOB:
+        return 404, "job not found"
+    if job.id in applied:
+        return 409, STALE_DRY_RUN_ERROR
+    if active_job is not None:
+        if getattr(active_job, "id", None) == job.id:
+            return 409, DRY_RUN_ACTIVE_ERROR
+        return 409, JOB_RUNNING_ERROR
+    return None
+
+
+def _decision_problem(payload: dict, model_rows: list) -> str:
+    """A decision's ids must belong to that model's rows in the dry run."""
+    if payload.get("askAgain") is True:
+        return ""
+    file_keys = {str(row.get("fileKey")) for row in model_rows}
+    version_ids = {str(row.get("versionId")) for row in model_rows}
+    if "fileKey" in payload and payload["fileKey"] not in file_keys:
+        return "That fileKey is not one of this model's rows."
+    if "versionId" in payload and payload["versionId"] not in version_ids:
+        return "That versionId is not one of this model's rows."
+    if "version" in payload and not (payload.get("fileKey") or payload.get("versionId")):
+        return "A version needs a versionId or fileKey."
+    if "keep" in payload and not payload.get("fileKey"):
+        return "Keep needs a fileKey."
+    return ""
+
+
+def _existing_naming_model(models: list) -> str:
+    """A listed text encoder that already is the downloadable naming model (any subfolder)."""
+    for model in models:
+        if str(model).replace("\\", "/").rsplit("/", 1)[-1].lower() == NAMING_MODEL_FILENAME:
+            return model
+    return ""
+
+
+def _text_encoder_folders() -> list[Path]:
+    try:
+        import folder_paths  # type: ignore
+    except ImportError:
+        return []
+    try:
+        return [Path(path) for path in folder_paths.get_folder_paths("text_encoders")]
+    except Exception:  # noqa: BLE001 - an older ComfyUI without the folder key
+        return []
+
+
+def _short_error(text: str, limit: int = ERROR_TEXT_LIMIT) -> str:
+    """Error text cut to a readable length; ComfyUI's rejections list every file it has."""
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _model_key(name: str) -> str:
+    return str(name or "").replace("\\", "/").strip().lower()
+
+
+def _matching_model(name: str, models: list[str]) -> str:
+    """The listed spelling of the configured naming model (CLIPLoader checks it exactly)."""
+    key = _model_key(name)
+    return next((model for model in models if _model_key(model) == key), name)
+
+
+def _journal_status(journal) -> dict:
+    pending = journal.pending()
+    if pending is None:
+        return {"pending": False, "steps": 0}
+    return {"pending": True, "steps": sum(1 for step in pending.get("steps", []) if not step.get("done"))}
+
+
+def rename_status(config: dict, has_textgen: bool, models: list[str], journal, *, base_codes=None) -> dict:
+    """What the Rename view needs before a dry run: can it run, and why not."""
+    naming_model = str(config.get("namingModel") or "").strip()
+    if not has_textgen:
+        reason = RENAME_REASON_NO_TEXTGEN
+    elif not naming_model:
+        reason = RENAME_REASON_NO_MODEL
+    elif _model_key(naming_model) not in {_model_key(model) for model in models}:
+        reason = f"The naming model {naming_model} is not in your text encoder folders."
+    else:
+        reason = ""
+    return {
+        "available": not reason,
+        "reason": reason,
+        "namingModels": list(models),
+        "namingModel": naming_model,
+        "journal": _journal_status(journal),
+        "baseCodes": base_codes.all() if base_codes is not None else {},
+        "canRemoveDuplicates": send2trash_available(),
+    }
+
+
+def _clean_id(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _normalize_decision_payload(payload: dict) -> dict:
+    """Known keys only: ids as non-empty strings, name parts as strings, flags as booleans."""
+    cleaned: dict = {}
+    for key in ("jobId", "modelId", "versionId", "fileKey"):
+        value = _clean_id(payload.get(key))
+        if value:
+            cleaned[key] = value
+    for key in ("title", "creator", "version"):
+        # "" is a decision too (a version-less name).
+        if isinstance(payload.get(key), str):
+            cleaned[key] = payload[key]
+    for key in ("keep", "askAgain"):
+        if isinstance(payload.get(key), bool):
+            cleaned[key] = payload[key]
+    return cleaned
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return list(dict.fromkeys(items))
+
+
+def _normalize_apply_payload(payload: dict) -> dict:
+    return {
+        "jobId": _clean_id(payload.get("jobId")),
+        "keys": _string_list(payload.get("keys")),
+        "removeDuplicates": _string_list(payload.get("removeDuplicates")),
+    }
+
+
+def _base_code_problem(code: str) -> str:
+    if not code:
+        return "The base code is empty."
+    if _parts_flags(NameParts(creator="creator", title="title", base=code)):
+        return f'"{code}" cannot be used in a file name.'
+    return ""
+
+
+# Flags that come from the parts themselves and are recomputed on every re-assembly.
+_PARTS_FLAG_KINDS = {"empty", "forbidden", "separator", "non-ascii", "reserved", "trailing"}
+_FOLDER_FLAGS = {"exists", "collision"}
+_MAKER_FLAGS = {"maker-from-description", "maker-not-in-description"}
+_ASSEMBLED_KEYS = ("newStem", "parts", "changed", "flags", "status")
+
+
+def reassemble_rows(
+    rows: list[dict],
+    decisions,
+    base_codes,
+    folder_listing: dict,
+    *,
+    model_id: str,
+    asked_again: bool = False,
+) -> list[dict]:
+    """Rebuild one model's rows from their parts and the saved decisions; no AI.
+
+    ``rows`` is the whole dry run (its dicts are updated in place, so the job keeps
+    the result); ``folder_listing`` maps each lowercased folder of the model to the
+    lowercased stems on disk there. Collisions and existing names are rechecked for
+    every row in those folders. Returns the model's rows plus every other row whose
+name, flags or selection changed (other models' rows in the same folders).
+    """
+    model_id = str(model_id)
+    mine = [row for row in rows if str(row.get("modelId")) == model_id]
+    folders = {str(row.get("folder") or "").lower() for row in mine}
+    before = {id(row): _row_state(row) for row in rows if str(row.get("folder") or "").lower() in folders}
+    model_decision = decisions.model(model_id)
+    for row in mine:
+        status = row.get("status")
+        if status in _NAMED_STATUSES or (status == "kept" and row.get("reason") in ("kept-by-you", "dry-run-again")):
+            _reassemble_row(row, model_decision, decisions, base_codes)
+        if asked_again and row.get("status") in _NAMED_STATUSES and "ask-again" not in row["flags"]:
+            # The AI names it afresh on the next dry run.
+            row["flags"].append("ask-again")
+    _recheck_folders(rows, folders, folder_listing)
+    mine_ids = {id(row) for row in mine}
+    return [
+        row for row in rows
+        if id(row) in mine_ids or (id(row) in before and before[id(row)] != _row_state(row))
+    ]
+
+
+def _row_state(row: dict) -> tuple:
+    return (row.get("newStem"), row.get("status"), row.get("selected"), tuple(row.get("flags") or ()))
+
+
+def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> None:
+    file_decision = decisions.file(row.get("fileKey") or "")
+    old_stem = str(row.get("oldStem") or "")
+    if file_decision.get("keep") is True:
+        if row.get("status") != "kept":
+            # Remembered so "keep" can be undone without asking the AI again.
+            row["beforeKeep"] = {key: row.get(key) for key in _ASSEMBLED_KEYS}
+        row.update(
+            status="kept", reason="kept-by-you", newStem=old_stem, parts=asdict(parse_stem(old_stem)),
+            changed=[], flags=[], selected=False,
+        )
+        return
+    if row.get("status") == "kept":
+        before = row.pop("beforeKeep", None)
+        if not isinstance(before, dict):
+            # Kept before this dry run, so the AI never named it: the next run will.
+            row.update(reason="dry-run-again", selected=False)
+            return
+        row.update(before)
+        row["reason"] = ""
+
+    parts = dict(row.get("parts") or {})
+    decided = set()
+    for name in ("creator", "title"):
+        if name in model_decision:
+            parts[name] = format_part(model_decision[name])
+            decided.add(name)
+    version = file_decision.get("version")
+    if version is None:
+        version = decisions.version(row.get("versionId") or "")
+    if version is not None:
+        parts["version"] = format_part(version)
+        decided.add("version")
+    flags = list(row.get("flags") or [])
+    base_model = row.get("baseModel") or ""
+    code = base_codes.code(base_model) if base_model else None
+    if code is not None:
+        parts["base"] = format_part(code)
+        flags = [flag for flag in flags if flag != "new-base-code"]
+
+    undecided_words = set()
+    for name in ("title", "version"):
+        if name not in decided:
+            undecided_words.update(format_part(str(parts.get(name) or "")).split())
+    kept_flags = []
+    for flag in flags:
+        kind, _, word = flag.partition(":")
+        if kind in _PARTS_FLAG_KINDS or flag in _FOLDER_FLAGS:
+            continue
+        if flag in _MAKER_FLAGS and "creator" in decided:
+            continue
+        if kind == "invented" and word.lower() not in undecided_words:
+            continue
+        if flag == "unparsed" and {"title", "version"} <= decided:
+            continue
+        kept_flags.append(flag)
+
+    name_parts = NameParts(
+        creator=str(parts.get("creator") or ""),
+        title=str(parts.get("title") or ""),
+        version=str(parts.get("version") or ""),
+        precision=str(parts.get("precision") or ""),
+        base=str(parts.get("base") or ""),
+    )
+    kept_flags.extend(_parts_flags(name_parts))
+    new_stem = assemble(name_parts)
+    row.update(
+        newStem=new_stem,
+        parts=asdict(name_parts),
+        changed=_changed(old_stem, name_parts),
+        flags=list(dict.fromkeys(kept_flags)),
+        status="unchanged" if new_stem == old_stem else "change",
+        reason="",
+    )
+
+
+def _recheck_folders(rows: list[dict], folders: set, folder_listing: dict) -> None:
+    """Recompute "exists" and "collision" for the named rows in these folders, and their selection."""
+    named = [
+        row for row in rows
+        if row.get("status") in _NAMED_STATUSES and str(row.get("folder") or "").lower() in folders
+    ]
+    renamed_stems: dict = {}
+    by_new: dict = {}
+    for row in named:
+        folder = str(row.get("folder") or "").lower()
+        renamed_stems.setdefault(folder, set()).add(str(row.get("oldStem") or "").lower())
+        by_new.setdefault((folder, str(row.get("newStem") or "").lower()), []).append(row)
+    for row in named:
+        folder = str(row.get("folder") or "").lower()
+        new = str(row.get("newStem") or "").lower()
+        flags = [flag for flag in row.get("flags") or [] if flag not in _FOLDER_FLAGS]
+        on_disk = set(folder_listing.get(folder) or ()) - renamed_stems.get(folder, set())
+        if new in on_disk:
+            flags.append("exists")
+        if len(by_new[(folder, new)]) > 1:
+            flags.append("collision")
+        row["flags"] = flags
+        row["selected"] = row.get("status") == "change" and not flags
+
+
+def apply_followups(
+    rows: list[dict], steps: list[dict], result: dict, *, data_dir, decisions, base_codes, check_jobs=None
+) -> dict:
+    """After an apply: saved paths, sidecar titles, locked names, new base codes. Returns the job summary."""
+    done = set(result.get("done") or [])
+    rows_by_key = {row.get("key"): row for row in rows}
+    rename_steps = [step for step in steps if step.get("kind") == "rename" and step.get("entry") in done]
+    renamed = list(dict.fromkeys(step["entry"] for step in rename_steps))
+    removed = list(
+        dict.fromkeys(
+            step["entry"] for step in steps
+            if step.get("kind") == "trash" and step.get("entry") in done and step["entry"] not in renamed
+        )
+    )
+    warnings: list = []
+
+    def attempt(what: str, action: Callable[[], Any]) -> None:
+        try:
+            action()
+        except Exception as exc:  # noqa: BLE001 - the files are renamed; report, don't fail the job
+            warnings.append(_short_error(f"{what}: {exc}"))
+
+    # Only renames: a trash step's "to" is the survivor's path, not a new name.
+    mapping = {step["from"]: step["to"] for step in rename_steps}
+    attempt("Saved check results were not updated", lambda: update_saved_paths(Path(data_dir), mapping))
+    if check_jobs is not None:
+        attempt("The check results shown were not updated", lambda: update_check_job_paths(check_jobs, mapping))
+
+    for entry in renamed:
+        row = rows_by_key.get(entry) or {}
+        live_title = row.get("liveTitle")
+        if not isinstance(live_title, str) or not live_title:
+            continue  # Never fetched here: without the dry run's title the sidecar keeps its own.
+        for step in rename_steps:
+            if step["entry"] == entry and str(step["to"]).lower().endswith(INFO_SIDECAR_SUFFIX):
+                info_path = Path(step["to"])
+                attempt(
+                    f"The title in {info_path.name} was not updated",
+                    lambda path=info_path, title=live_title: refresh_sidecar_title(path, title),
+                )
+
+    # A version whose files carry different version parts is remembered per file.
+    versions_seen: dict = {}
+    for row in rows:
+        if row.get("status") in _NAMED_STATUSES:
+            versions_seen.setdefault(str(row.get("versionId")), set()).add((row.get("parts") or {}).get("version", ""))
+    by_model: dict = {}
+    for entry in renamed:
+        row = rows_by_key.get(entry)
+        if row and row.get("modelId"):
+            by_model.setdefault(str(row["modelId"]), []).append(row)
+    for model_id, model_rows in by_model.items():
+        parts = model_rows[0].get("parts") or {}
+        versions: dict = {}
+        files: dict = {}
+        for row in model_rows:
+            version = (row.get("parts") or {}).get("version", "")
+            version_id = str(row.get("versionId"))
+            if len(versions_seen.get(version_id, ())) > 1:
+                files[str(row.get("fileKey"))] = version
+            else:
+                versions[version_id] = version
+        attempt(
+            f"The names of model {model_id} were not remembered",
+            lambda m=model_id, p=parts, v=versions, f=files: decisions.lock_applied(
+                m, p.get("title", ""), p.get("creator", ""), versions=v, files=f
+            ),
+        )
+        for row in model_rows:
+            base_model = row.get("baseModel") or ""
+            code = (row.get("parts") or {}).get("base", "")
+            if "new-base-code" in (row.get("flags") or []) and base_model and code and base_codes.code(base_model) is None:
+                attempt(
+                    f"The base code for {base_model} was not saved",
+                    lambda b=base_model, c=code: base_codes.set(b, c),
+                )
+
+    return {
+        "renamed": len(renamed),
+        "removed": len(removed),
+        "skipped": list(result.get("skipped") or []),
+        "warnings": warnings,
+    }
+
+
+def recovered_path_mapping(pending: Optional[dict], result: dict, action: str) -> dict:
+    """Old -> new paths of the renames a "finish" completed, for the saved records."""
+    if action != "finish" or not pending:
+        return {}
+    steps = [step for step in pending.get("steps", []) if isinstance(step, dict)]
+    finished = set(result.get("done") or [])
+    by_entry: dict = {}
+    for step in steps:
+        by_entry.setdefault(step.get("entry"), []).append(step)
+    for entry, entry_steps in by_entry.items():
+        # Entries done before the interruption never reached the saved records either.
+        if all(step.get("done") for step in entry_steps):
+            finished.add(entry)
+    return {
+        step["from"]: step["to"]
+        for step in steps
+        if step.get("kind") == "rename" and step.get("entry") in finished and step.get("from") and step.get("to")
+    }
+
+
+def download_naming_model(
+    folder: Path,
+    *,
+    progress: Callable[[int, int, str], Any],
+    control,
+    http_get: Optional[Callable[..., Any]] = None,
+    url: str = NAMING_MODEL_URL,
+    filename: str = NAMING_MODEL_FILENAME,
+    chunk_size: int = 8 * _MB,
+) -> str:
+    """Stream the naming model into ``folder`` through a ``.part`` file.
+
+    Returns the file name, or "" when stopped. Never replaces an existing file.
+    """
+    folder = Path(folder)
+    target = folder / filename
+    part = folder / (filename + ".part")
+    if os.path.lexists(target):
+        raise FileExistsError(f"{target} already exists")
+    if http_get is None:
+        import requests
+
+        http_get = requests.get
+    folder.mkdir(parents=True, exist_ok=True)
+    stopped = False
+    try:
+        with http_get(url, stream=True, timeout=60, headers={"User-Agent": USER_AGENT}) as response:
+            if not response.ok:
+                raise OSError(f"The naming model download failed (HTTP {response.status_code} {response.reason}).")
+            try:
+                total = int(response.headers.get("Content-Length") or 0)
+            except ValueError:
+                total = 0
+            written = 0
+            with part.open("wb") as fh:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    # Never paused: a stalled stream times out and the download is lost.
+                    if control.is_cancelled():
+                        stopped = True
+                        break
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    written += len(chunk)
+                    progress(
+                        written // _MB,
+                        total // _MB,
+                        f"Downloading the naming model: {written // _MB} of {total // _MB} MB",
+                    )
+        if stopped:
+            part.unlink(missing_ok=True)
+            return ""
+        if total and written != total:
+            raise OSError(f"The naming model download stopped early ({written} of {total} bytes).")
+        if os.path.lexists(target):
+            raise FileExistsError(f"{target} already exists")
+        part.rename(target)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    return filename

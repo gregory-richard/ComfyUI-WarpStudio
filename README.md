@@ -7,9 +7,13 @@ Civitai releases, and tells you which ones have moved on without you.
 
 It reads what you already have — model files and their `.civitai.info`
 sidecars — identifies each one by SHA256 hash, and lists only the models with
-a newer release. No model is downloaded for you and no model file is touched:
-the panel links you to the release page and gets out of the way. It only
-writes `.civitai.info` and `.preview.png` sidecars next to your models.
+a newer release. Checking downloads no model and touches no model file: the
+panel links you to the release page and gets out of the way. It only writes
+`.civitai.info` and `.preview.png` sidecars next to your models.
+
+The panel can also rename your model files into one scheme, after their
+Civitai releases. Files are renamed only when you apply a list you have
+reviewed; see [Renaming your library](#renaming-your-library).
 
 ![The Civitai Updater panel in the ComfyUI sidebar](assets/docs/panel-sidebar.png)
 
@@ -66,8 +70,9 @@ $dst = "C:\path\to\ComfyUI\custom_nodes\civitai-updater"
 New-Item -ItemType Junction -Path $dst -Target $src
 ```
 
-Requires Python 3.9+. Pulls in `requests`, `Pillow`, and `imageio-ffmpeg`
-(the last one only to turn video previews into thumbnails).
+Requires Python 3.9+. Pulls in `requests`, `Pillow`, `imageio-ffmpeg` (only
+to turn video previews into thumbnails) and `send2trash` (only to move the
+renamer's extra copies to the Recycle Bin).
 
 ## Using it
 
@@ -91,6 +96,106 @@ Requires Python 3.9+. Pulls in `requests`, `Pillow`, and `imageio-ffmpeg`
   and any release you are not interested in can be hidden.
 - Click a thumbnail to compare your local preview against the new release.
 
+## Renaming your library
+
+The **Rename** view, next to **Updates** and **Issues**, renames your model
+files after their current Civitai releases, in one scheme:
+
+```
+creator - title - version [precision] (base)
+```
+
+All lowercase, for example `some_artist - watercolor style - v2 (sdxl)` for a
+LoRA or `some_studio - photo mix - v3 fp16 (sdxl)` for a checkpoint.
+
+- **creator** is the Civitai uploader. For a re-upload, a conversion or an
+  official model it is the model's maker, when the description credits one.
+- **title** and **version** come from Civitai's live data, cleaned up: no base
+  model names, no "lora", no taglines. A name the creator coined stays as
+  written.
+- **precision** (`int8`, `fp8`, `bf16`, `q8_0`, …) is given only to
+  checkpoints and UNets; LoRAs never get one. It is read from the model file
+  itself. A metadata-only entry (a `.civitai.info` with no weights) takes it
+  from Civitai's file info instead, and only when the release has a single
+  main model file.
+- **base** is a short code per base model, such as `sdxl` or `flux1d`. The
+  codes are a table, seeded once from the `(tag)` at the end of your existing
+  file names, and you can edit it in the Rename view (**Base codes**). A base
+  the table does not know gets a suggested code, saved when you apply.
+
+Checkpoints, LoRAs, UNets and embeddings are renamed where they are. Every
+file next to the model that shares its name goes along: the `.civitai.info`,
+the `.preview.png`, and anything another tool left there.
+
+### The naming model
+
+The cleaning is done by a local text model, run by ComfyUI's built-in
+**Generate Text** node. Nothing goes to the cloud and no other app is needed.
+Pick the model under **Settings → Civitai Updater → Rename → Naming model**:
+any Qwen3, Qwen3.5, Qwen3-VL or Gemma text encoder file in your
+`text_encoders` folders that ComfyUI can load. Until a usable naming model is
+set, the Rename view offers **Download naming model (9.75 GB)**, which fetches
+Comfy-Org's `qwen3.5_9b_int8_convrot.safetensors` into your first
+`text_encoders` folder. If that file is already in one of those folders, it is
+chosen instead of downloaded again.
+
+The renamer's work goes through ComfyUI's queue like any other prompt, so it
+takes turns with your own jobs and shows up in the queue history. A ComfyUI
+too old to have Generate Text cannot run the renamer; the view says so.
+
+### Dry run, review, apply
+
+1. **Start dry run.** It asks Civitai about every model and the naming model
+   about every title, and lists each old name next to its new name. Nothing on
+   disk changes yet. The answers are saved, so a second dry run only asks
+   about models that changed.
+2. **Review.** Rows that need a look come first: a word the naming model could
+   not find in Civitai's text, a maker taken from the description, two files
+   that would get the same name, an official file ComfyUI's templates may look
+   for, a new base code. Each row shows which parts changed. You can **Edit**
+   any part, **Keep this name**, or **Ask again** to let the naming model name
+   the model afresh on the next dry run. The same release saved twice in one
+   folder offers **Remove extra copy**.
+3. **Apply selected** renames the ticked rows. Extra copies you chose to remove
+   go to the Recycle Bin.
+
+The naming model gets roughly three in four names exactly right on models it
+has not seen before. Read the list before you apply it.
+
+Your edits are remembered per model and win over the naming model on every
+later dry run. Applied names are locked: a creator retitling the model on
+Civitai does not bring up a new name for files you already renamed, until you
+click **Ask again**.
+
+### What is not renamed
+
+The dry run lists these as kept, with the reason:
+
+- Models or releases Civitai no longer serves. Their sidecars do not hold
+  enough to rebuild a name from.
+- Files whose Civitai match is not the release's main model file, or whose
+  Civitai type does not fit the folder (a text encoder in `unet`, say).
+- Anything you marked **Keep this name**. **Undo keep** brings it back.
+
+Two kinds are left alone without being listed:
+
+- Files without Civitai metadata: no `.civitai.info` with a model and version
+  id, as with merges, conversions and your own trainings. Run **Fetch Missing
+  Metadata** first, so every file Civitai knows has one.
+- The VAE folder. One VAE serves several base models, and Civitai matches it by
+  hash to whoever attached it to their release.
+
+### Before you apply
+
+There is no backwards compatibility. Saved workflows, and images with their
+workflow, that use the old names show those LoRAs and models as missing.
+Re-pick them.
+
+If ComfyUI stops in the middle of a rename, a journal remembers where it got
+to, and the Rename view offers **Finish** or **Undo** on the next start. A file
+that already has the new name is never overwritten, and a file Windows has
+locked (a model loaded right now) is skipped and reported.
+
 ## Settings
 
 Under **Settings → Civitai Updater**:
@@ -109,6 +214,8 @@ Under **Settings → Civitai Updater**:
   left out rather than quietly shrinking the list.
 - **Path sources** — ComfyUI's own folders, `extra_model_paths.yaml`, and
   custom roots per model type (checkpoint, LoRA, VAE, UNet, embedding).
+- **Naming model** — the text encoder the renamer runs. See
+  [The naming model](#the-naming-model).
 
 ## Why civitai.red
 
@@ -134,9 +241,19 @@ POST /civitai-updater/jobs/{job_id}/pause | /resume | /stop
 GET  /civitai-updater/last-check
 POST /civitai-updater/archived-updates
 POST /civitai-updater/archived-updates/restore
+GET  /civitai-updater/rename/status
+POST /civitai-updater/jobs/rename-dry-run
+GET  /civitai-updater/rename/rows
+POST /civitai-updater/rename/decision
+POST /civitai-updater/rename/base-code
+POST /civitai-updater/jobs/rename-apply
+POST /civitai-updater/rename/recover
+POST /civitai-updater/jobs/download-naming-model
 ```
 
-See [wiki/API.md](wiki/API.md) for parameters and responses.
+See [wiki/API.md](wiki/API.md) for the parameters and responses of the
+update routes. The `rename` and `naming-model` routes serve the panel's Rename
+view and are not documented there yet.
 
 ## Credits
 
