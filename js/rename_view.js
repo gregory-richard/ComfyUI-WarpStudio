@@ -80,6 +80,19 @@ export function isBlockingFlag(flag) {
 }
 
 const lower = (text) => String(text ?? "").toLowerCase();
+
+/* Flags that mean the new name clashes with another file's (shown red); the others are warnings. */
+const CONFLICT_KINDS = new Set(["collision", "exists", "version-clash", "title-clash"]);
+
+const svg = (paths) =>
+  `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const ICONS = {
+  edit: svg('<path d="M11 2.5l2.5 2.5L6 12.5l-3.2.7.7-3.2z"/><path d="M9.5 4l2.5 2.5"/>'),
+  lock: svg('<rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7"/>'),
+  unlock: svg('<rect x="3.2" y="7" width="9.6" height="6.8" rx="1.4"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.4-1"/>'),
+  refresh: svg('<path d="M13.2 8a5.2 5.2 0 1 1-1.6-3.8"/><path d="M13.2 2.6v2.9h-2.9"/>'),
+  trash: svg('<path d="M2.6 4.4h10.8"/><path d="M6.2 4.4V2.8h3.6v1.6"/><path d="M4.1 4.4l.7 9h6.4l.7-9"/><path d="M6.7 6.9v4.2M9.3 6.9v4.2"/>'),
+};
 const quoted = (items) => items.map((item) => `"${item}"`).join(", ");
 
 /* The other named rows a clash flag is about, found in the dry run's rows. */
@@ -809,18 +822,6 @@ export function renderRenameView(container, deps) {
     else render();
   }
 
-  /* Keep or remove an extra copy on Apply; its line is drawn again in place. */
-  function toggleCopy(row, remove, target) {
-    if (!row || row.status !== "duplicate" || !canRemoveDuplicates(store) || locked()) return;
-    if (remove) store.removeDup.add(row.key);
-    else store.removeDup.delete(row.key);
-    saveSelection();
-    const host = target.closest("[data-rn-key]");
-    const card = cardsById.get(target.closest("[data-rn-card]")?.dataset.rnCard);
-    if (host && card) host.outerHTML = fileHtml(row, new Set(card.rows.map((r) => r.key)), locked());
-    updateSelectionUi();
-  }
-
   async function downloadModel() {
     if (store.busy || otherJob()) return;
     await request(async () => {
@@ -1205,33 +1206,36 @@ export function renderRenameView(container, deps) {
     }
     let role = row.metadataOnly ? "metadata" : "saved";
     let label = row.metadataOnly ? "Metadata" : "Saved";
-    if (dup) [role, label] = ["extra", "Extra copy"];
+    if (dup) [role, label] = ["duplicate", "Duplicate"];
     else if (row.status === "error") [role, label] = ["error", "Error"];
     const copyTitle = deps.copyPathTitle ? deps.copyPathTitle(row.modelPath || "") : row.modelPath || "";
     const old = `<span class="cu-ver-link cu-copy-path cu-rn-old" data-rn-action="copy-path" title="${esc(copyTitle)}">${esc(row.oldStem)}</span>`;
     // A file filed under another base's folder moves to its base's: "→ pony/name".
     const moveTo = row.status === "change" && row.newFolder ? fileName(row.newFolder) : "";
+    // A name that clashes with another file's is red; a mere warning leaves it as it is.
+    const conflict = (row.flags || []).some((flag) => CONFLICT_KINDS.has(flagParts(flag)[0]));
     const renamed = row.status === "change"
-      ? `<span class="cu-rn-new" title="${esc(moveTo ? `${row.newFolder}\n${row.newStem}` : row.newStem)}"><span class="cu-rn-arrow">→</span>${moveTo ? `<mark class="cu-rn-diff">${esc(moveTo)}/</mark>` : ""}${nameDiff(row.oldStem, row.newStem)
+      ? `<span class="cu-rn-new${conflict ? " is-conflict" : ""}" title="${esc(moveTo ? `${row.newFolder}\n${row.newStem}` : row.newStem)}"><span class="cu-rn-arrow">→</span>${moveTo ? `<mark class="cu-rn-diff">${esc(moveTo)}/</mark>` : ""}${nameDiff(row.oldStem, row.newStem)
         .map((piece) => (piece.changed ? `<mark class="cu-rn-diff">${esc(piece.text)}</mark>` : esc(piece.text))).join("")}</span>`
       : "";
+    const iconButton = (action, icon, title) =>
+      `<button class="cu-rn-icon-btn" data-rn-action="${action}"${disabledIf(isLocked)} title="${title}" aria-label="${title}">${ICONS[icon]}</button>`;
     const actions = [];
-    if (deleting) {
-      actions.push(`<button class="cu-inline-btn" data-rn-action="undelete"${disabledIf(isLocked)} title="Keep this file; Apply leaves it alone">Keep</button>`);
-    } else if (named) {
-      actions.push(`<button class="cu-inline-btn" data-rn-action="edit"${disabledIf(isLocked)}>Edit</button>`);
-      if (row.status === "change") actions.push(`<button class="cu-inline-btn" data-rn-action="keep"${disabledIf(isLocked)} title="Don't rename this file">Keep current name</button>`);
-      if (!(row.flags || []).includes("ask-again")) actions.push(`<button class="cu-inline-btn" data-rn-action="ask-again"${disabledIf(isLocked)} title="Forget the saved name; the naming model names this model again on the next dry run">Ask again</button>`);
-    } else if (dup && canRemove) {
-      actions.push(removing
-        ? `<button class="cu-inline-btn" data-rn-action="keep-copy"${disabledIf(isLocked)} title="Keep this copy; Apply leaves it alone">Keep</button>`
-        : `<button class="cu-inline-btn" data-rn-action="remove-copy"${disabledIf(isLocked)} title="Move this copy to the Recycle Bin on Apply">Remove</button>`);
-    } else if (row.status === "kept" && row.reason === "kept-by-you") {
-      actions.push(`<button class="cu-inline-btn" data-rn-action="unkeep"${disabledIf(isLocked)} title="Rename this file after all">Undo keep current name</button>`);
+    if (!removing && named) {
+      actions.push(iconButton("edit", "edit", "Edit the new name"));
+      if (row.status === "change") actions.push(iconButton("keep", "lock", "Keep current name (don't rename this file)"));
+      if (!(row.flags || []).includes("ask-again")) {
+        actions.push(iconButton("ask-again", "refresh", "Ask again (the naming model names this model afresh on the next dry run)"));
+      }
+    } else if (!removing && row.status === "kept" && row.reason === "kept-by-you") {
+      actions.push(iconButton("unkeep", "unlock", "Rename this file after all"));
     }
-    // Every file can go: to the Recycle Bin on Apply, with its info file and preview.
-    if (!dup && !deleting && canRemove) {
-      actions.push(`<button class="cu-inline-btn cu-rn-delete" data-rn-action="delete"${disabledIf(isLocked)} title="Move this file, its info file and preview to the Recycle Bin on Apply">Delete</button>`);
+    // One delete toggle for every file, on (red) for a duplicate from the start.
+    if (canRemove) {
+      const title = removing
+        ? "Goes to the Recycle Bin on Apply, with its info file and preview. Click to keep it."
+        : "Delete: move this file, its info file and preview to the Recycle Bin on Apply";
+      actions.push(`<button class="cu-rn-icon-btn cu-rn-trash" data-rn-action="toggle-delete" aria-pressed="${removing}"${disabledIf(isLocked)} title="${title}" aria-label="${title}">${ICONS.trash}</button>`);
     }
     const messages = [];
     if (named) {
@@ -1245,10 +1249,10 @@ export function renderRenameView(container, deps) {
     }
     const quiet = row.status === "unchanged" || row.status === "kept";
     // A line that needs a look shows its buttons; the others show them on hover.
-    const attention = messages.length > 0 || dup || store.editing === row.key;
+    const attention = messages.length > 0 || removing || store.editing === row.key;
     const base = row.parts?.base || "—";
     // The hints wait behind a (!) on the line, coloured by the most serious one.
-    const level = messages.some((html) => html.includes('data-level="block"')) ? "block"
+    const level = conflict || messages.some((html) => html.includes('data-level="block"')) ? "block"
       : messages.some((html) => html.includes('data-level="warn"')) ? "warn" : "info";
     const hintsOpen = store.openHints.has(row.key);
     const firstHint = messages.length ? messages[0].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim() : "";
@@ -1428,11 +1432,12 @@ export function renderRenameView(container, deps) {
       case "copy-path":
         if (row?.modelPath) deps.copyOrReveal?.(target, row.modelPath, store.jobId);
         break;
-      case "delete":
-      case "undelete":
+      case "toggle-delete":
         if (row && !locked() && canRemoveDuplicates(store)) {
-          if (action === "delete") store.deleteKeys.add(row.key);
-          else store.deleteKeys.delete(row.key);
+          // A duplicate's toggle is its "remove extra copy" choice; any other file's is a deletion.
+          const marks = row.status === "duplicate" ? store.removeDup : store.deleteKeys;
+          if (marks.has(row.key)) marks.delete(row.key);
+          else marks.add(row.key);
           saveSelection();
           redrawLine(row, target);
           updateSelectionUi();
@@ -1444,10 +1449,6 @@ export function renderRenameView(container, deps) {
           else store.openHints.add(row.key);
           redrawLine(row, target);
         }
-        break;
-      case "keep-copy":
-      case "remove-copy":
-        toggleCopy(row, action === "remove-copy", target);
         break;
       case "preview": openPreview(cardsById.get(target.closest("[data-rn-card]")?.dataset.rnCard)); break;
       case "base-link": openBaseCode(target.dataset.rnBase || ""); break;
@@ -1900,13 +1901,55 @@ const RENAME_CSS = `
     gap: 2px;
   }
 
-  .cu-rn .cu-ver-label[data-role="extra"] {
-    color: var(--cu-amber);
+  .cu-rn .cu-ver-label[data-role="duplicate"] {
+    color: var(--cu-red-soft);
   }
 
-  .cu-rn .cu-ver-label[data-role="extra"]::before {
+  .cu-rn .cu-ver-label[data-role="duplicate"]::before {
     border-style: dashed;
-    border-color: var(--cu-amber);
+    border-color: var(--cu-red-soft);
+  }
+
+  /* A new name that clashes with another file's. */
+  .cu-rn-new.is-conflict,
+  .cu-rn-new.is-conflict .cu-rn-diff {
+    color: var(--cu-red-soft);
+  }
+
+  /* Line buttons: small icons; the delete toggle is red while it is on. */
+  .cu-rn-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--cu-seam-strong);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--cu-ash);
+    cursor: pointer;
+  }
+
+  .cu-rn-icon-btn:hover {
+    color: var(--cu-bone);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .cu-rn-icon-btn:focus-visible {
+    outline: 1px solid var(--cu-bone);
+    outline-offset: 1px;
+  }
+
+  .cu-rn-trash[aria-pressed="true"] {
+    color: #1b1b20;
+    background: var(--cu-red-soft);
+    border-color: var(--cu-red-soft);
+  }
+
+  .cu-rn-trash[aria-pressed="true"]:hover {
+    color: #1b1b20;
+    background: #f59a91;
   }
 
   /* Messages sit under their line, after the checkbox and the label. */
