@@ -45,6 +45,7 @@ from .renamer import (
     _changed,
     _disk_stems,
     _mark_version_clashes,
+    _names_from_files,
     _parts_flags,
     run_dry_run,
     title_clash_models,
@@ -1401,6 +1402,13 @@ def reassemble_rows(
             # The AI names it afresh on the next dry run.
             row["flags"].append("ask-again")
     _mark_version_clashes(mine)
+
+    def decided(row: dict) -> bool:
+        file_version = decisions.file(row.get("fileKey") or "").get("version")
+        return bool(set(model_decision) & {"title", "creator"}) or file_version is not None             or decisions.version(row.get("versionId") or "") is not None
+
+    # Versions still alike: the user's own names, as on the dry run.
+    _names_from_files(mine, decided)
     _recheck_title_clashes(rows, decisions)
     _recheck_folders(rows, folders, folder_listing)
     mine_ids = {id(row) for row in mine}

@@ -882,6 +882,7 @@ def _group_rows(
     title = answer.title if title_from_answer else model_decision["title"]
     title_invented = invented_words(pending.source, [answer.title]) if title_from_answer and not answer.unparsed else []
 
+    decided_keys: Set[str] = set()  # rows whose version the user decided
     model_bases = list(dict.fromkeys(slot.base_model for slot, _members in pending.slot_members if slot.base_model))
     vocabulary = base_vocabulary(pending.base_names + list(answer.bases.values()))
     known_bases = base_codes.all()
@@ -902,6 +903,8 @@ def _group_rows(
             version_from_answer = version is None
             if version_from_answer:
                 version = answer.versions.get(slot.key, "")
+            else:
+                decided_keys.add(_entry_key(entry))
             if answer.unparsed and (title_from_answer or version_from_answer):
                 flags.append("unparsed")
             invented = list(title_invented)
@@ -967,21 +970,22 @@ def _group_rows(
                 }
             )
     _mark_version_clashes(rows)
-    _names_from_files(rows)
+    _names_from_files(rows, lambda row: bool(set(model_decision) & {"title", "creator"}) or row["key"] in decided_keys)
     for row in rows:
         row["selected"] = row["status"] == "change" and not row["flags"]
     return rows
 
 
-def _names_from_files(rows: List[dict]) -> None:
+def _names_from_files(rows: List[dict], decided: Optional[Callable[[dict], bool]] = None) -> None:
     """Versions the naming model could not tell apart keep the user's own names, put in the scheme's shape.
 
     Only when every clashing file's current name has a creator and a title and
     the names that come out differ from each other; otherwise the clash stays
-    flagged. The base code is still Civitai's.
+    flagged. The base code is still Civitai's. A name the user decided (a title,
+    creator or version) is never replaced: then the clash stays flagged.
     """
     clashing = [row for row in rows if "version-clash" in (row.get("flags") or [])]
-    if not clashing:
+    if not clashing or (decided is not None and any(decided(row) for row in clashing)):
         return
     named = []
     for row in clashing:

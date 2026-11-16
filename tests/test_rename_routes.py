@@ -225,6 +225,29 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.decisions.set_version("10", "v4")
         self.assertEqual([a, b], reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1"))
 
+    def test_a_recheck_gives_clashing_versions_the_users_own_names(self) -> None:
+        parts = {"creator": "maker", "title": "speed", "version": "v2.2", "precision": "", "base": "sdxl"}
+        high = _row(self.folder, "maker - speed - 4steps - high (sdxl)", "maker - speed - v2.2 (sdxl)", version_id="10",
+                    parts=parts, flags=["version-clash"], selected=False)
+        low = _row(self.folder, "maker - speed - 4steps - low (sdxl)", "maker - speed - v2.2 (sdxl)", version_id="11",
+                   parts=parts, flags=["version-clash"], selected=False)
+        reassemble_rows([high, low], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual("maker - speed - 4steps high (sdxl)", high["newStem"])
+        self.assertEqual("maker - speed - 4steps low (sdxl)", low["newStem"])
+        self.assertEqual("file", high["nameSource"])
+        self.assertTrue(high["selected"])
+
+    def test_a_decided_title_keeps_the_clash_flagged(self) -> None:
+        parts = {"creator": "maker", "title": "speed", "version": "v2.2", "precision": "", "base": "sdxl"}
+        high = _row(self.folder, "maker - speed - 4steps - high (sdxl)", "maker - speed - v2.2 (sdxl)", version_id="10",
+                    parts=parts, flags=["version-clash"])
+        low = _row(self.folder, "maker - speed - 4steps - low (sdxl)", "maker - speed - v2.2 (sdxl)", version_id="11",
+                   parts=parts, flags=["version-clash"])
+        self.decisions.set_model("1", title="Speed")
+        reassemble_rows([high, low], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertIn("version-clash", high["flags"])
+        self.assertNotIn("nameSource", high)
+
     def test_a_moving_row_stays_a_change_and_keep_cancels_the_move(self) -> None:
         target = self.root / "pony"
         moving = _row(self.folder, "maker - title - v1 (sdxl)", "maker - title - v1 (sdxl)")
