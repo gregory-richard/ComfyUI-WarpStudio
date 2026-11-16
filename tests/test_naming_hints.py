@@ -3,6 +3,7 @@ from pathlib import Path
 
 from comfy_updater.naming_ai import Slot
 from comfy_updater.naming_check import (
+    invented_words,
     base_numbers, base_vocabulary, creator_in_title, glued_names, name_check_flags, noise_words, title_in_version,
     type_words,
 )
@@ -85,6 +86,10 @@ class NameRepeatTests(unittest.TestCase):
         # On a Wan model a lone "h" / "l" is high / low noise; elsewhere it is just a letter.
         self.assertEqual(["h"], noise_words("0928 h", "Wan Video 2.2 T2V-A14B"))
         self.assertEqual([], noise_words("0928 h", "Krea 2"))
+
+    def test_high_and_low_written_out_are_not_invented(self) -> None:
+        self.assertEqual([], invented_words("2.2-Lightning-T2V-0928-H", ["0928 high"]))
+        self.assertEqual(["high"], invented_words("2.2 Lightning T2V", ["high"]))
 
 
 class BaseNumberTests(unittest.TestCase):

@@ -61,6 +61,8 @@ def invented_words(source: str, answer_parts: List[str]) -> List[str]:
             continue
         compact_word = _compact(word)
         if compact_word:
+            if compact_word in ("high", "low") and re.search(rf"(?<![a-z0-9]){compact_word[0]}n?(?![a-z0-9])", source.lower()):
+                continue  # "H" / "L" (or "HN" / "LN") written out as high / low
             if compact_word not in compact_source:
                 invented.append(word)
         elif any(ch.isalnum() for ch in word):
