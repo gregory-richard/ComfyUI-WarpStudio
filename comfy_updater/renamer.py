@@ -1162,9 +1162,9 @@ class _Named:
     cached: bool = False
 
 
-def _title_key(row: dict) -> Optional[Tuple[str, str, str, str]]:
-    """(creator, title, base code, model type) of a named row: two models clash only under the
-    same base and of the same kind.
+def _title_key(row: dict) -> Optional[Tuple[str, str, str, str, str]]:
+    """(creator, title, version, base code, model type) of a named row: two models clash only
+    when they would get the same name, under the same base and of the same kind.
 
     One idea released per base (the same title as "(ill)" and "(krea2)") is the
     user's naming: the base codes already keep those names apart. A checkpoint
@@ -1175,7 +1175,10 @@ def _title_key(row: dict) -> Optional[Tuple[str, str, str, str]]:
     parts = row.get("parts") or {}
     title = str(parts.get("title") or "")
     kind = str(row.get("modelType") or "")
-    return (str(parts.get("creator") or ""), title, str(parts.get("base") or ""), kind) if title else None
+    # Two models of one title clash only when their whole names come out the same:
+    # "smooth mix - v4" and "smooth mix - v3" are told apart by their versions.
+    version = " ".join(str(parts.get(name) or "") for name in ("version", "precision")).strip()
+    return (str(parts.get("creator") or ""), title, version, str(parts.get("base") or ""), kind) if title else None
 
 
 class _Namer:

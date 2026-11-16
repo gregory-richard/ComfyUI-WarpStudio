@@ -219,8 +219,9 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.assertEqual("maker - better - v3 (sdxl)", a["newStem"])
         self.assertNotIn("collision", a["flags"])
         self.assertNotIn("collision", other["flags"])
-        self.assertEqual(["title-clash"], a["flags"])
-        self.assertFalse(a["selected"])
+        # Same title, different versions: the names differ, so no title clash either.
+        self.assertEqual([], a["flags"])
+        self.assertTrue(a["selected"])
         # Nothing changed for the other row this time: only the model's rows come back.
         self.decisions.set_version("10", "v4")
         self.assertEqual([a, b], reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1"))
@@ -289,6 +290,14 @@ class RenameRouteHelperTests(unittest.TestCase):
                       flags=["title-clash"], selected=False, liveTitle="Towel 2", uploader="bolt",
                       parts={"creator": "bolt", "title": "towel", "version": "v1", "precision": "", "base": "sdxl"})
         return towel, towel2
+
+    def test_two_models_of_one_title_with_different_versions_do_not_clash(self) -> None:
+        towel, towel2 = self.towel_rows()
+        towel2["parts"]["version"] = "v4"
+        towel2["newStem"] = "bolt - towel - v4 (sdxl)"
+        reassemble_rows([towel, towel2], self.decisions, self.base_codes, {}, model_id="2")
+        self.assertNotIn("title-clash", towel["flags"])
+        self.assertNotIn("title-clash", towel2["flags"])
 
     def test_a_checkpoint_and_a_lora_of_one_title_do_not_clash(self) -> None:
         towel, towel2 = self.towel_rows()

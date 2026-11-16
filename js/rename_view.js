@@ -795,13 +795,47 @@ export function renderRenameView(container, deps) {
     for (const [id, cards] of Object.entries(shownSections || {})) {
       for (const card of cards) if (!store.pinnedSections.has(card.id)) store.pinnedSections.set(card.id, id);
     }
-    await request(async () => {
-      const data = await deps.postJson(`${ROUTE}/rename/decision`, payload);
-      replaceRows(store, data.rows);
-      saveSelection();
-      if (done) done();
-      notify(null);
-    });
+    // Only the cards whose rows changed are drawn again: the rest of the list (and its
+    // images) stays as it is, so nothing blinks or moves.
+    store.busy = true;
+    let data;
+    try {
+      data = await deps.postJson(`${ROUTE}/rename/decision`, payload);
+    } catch (error) {
+      store.busy = false;
+      notify(error?.message || String(error), "error");
+      render();
+      return;
+    }
+    // Not busy any more before the cards are drawn, or their buttons come out disabled.
+    store.busy = false;
+    replaceRows(store, data.rows);
+    saveSelection();
+    if (done) done();
+    notify(null);
+    redrawCards(new Set((data.rows || []).map((row) => String(row.modelId))));
+    updateSelectionUi();
+  }
+
+  /* The cards of these models drawn again in place, from the rows as they are now. */
+  function redrawCards(modelIds) {
+    const visible = filterRows(store.rows, deps.filter?.(), store.byKey);
+    for (const id of modelIds) {
+      const cardId = `m:${id}`;
+      const el = container.querySelector(`[data-rn-card="${cssEscape(cardId)}"]`);
+      if (!el) continue; // not on screen: a later render shows it
+      const card = modelCards(visible.filter((row) => String(row.modelId) === id))[0];
+      if (!card) {
+        el.remove();
+        continue;
+      }
+      el.outerHTML = cardHtml(card);
+      cardsById.set(card.id, card);
+      for (const list of Object.values(shownSections || {})) {
+        const index = list.findIndex((other) => other.id === card.id);
+        if (index >= 0) list[index] = card;
+      }
+    }
   }
 
   async function applySelected() {
