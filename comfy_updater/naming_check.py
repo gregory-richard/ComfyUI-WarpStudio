@@ -255,7 +255,9 @@ def version_format(text: str) -> List[str]:
     return list(dict.fromkeys(word for word in text.split() if _TRAILING_ZERO.fullmatch(word.lower())))
 
 
-def name_check_flags(title: str, version: str, vocabulary: FrozenSet[str], *, xl_base: bool = False) -> List[str]:
+def name_check_flags(
+    title: str, version: str, vocabulary: FrozenSet[str], *, xl_base: bool = False, base_model: str = ""
+) -> List[str]:
     """``base-word:<word>`` and ``version-format:<token>`` codes for a title and version.
 
     An official model's title (only base words and numbers) keeps its base name;
@@ -268,7 +270,26 @@ def name_check_flags(title: str, version: str, vocabulary: FrozenSet[str], *, xl
     flags = [f"base-word:{word}" for word in words]
     flags.extend(f"version-format:{token}" for token in version_format(f"{title} {version}"))
     flags.extend(f"type-word:{word}" for word in type_words(f"{title} {version}"))
+    flags.extend(f"base-number:{token}" for token in base_numbers(version, base_model))
     return list(dict.fromkeys(flags))
+
+
+def base_numbers(version: str, base_model: str) -> List[str]:
+    """Version numbers that are only the base model's own number: "v2.2" on Wan Video 2.2.
+
+    Only numbers with a dot count (2.2, 1.5, 2.3), and not x.0: a plain "v2" on
+    Krea 2 or "v1.0" on SDXL 1.0 is far more often a real version.
+    """
+    # "SDXL 1.0": an x.0 is as common in versions as it is in base names; it tells nothing.
+    own = {number for number in re.findall(r"\d+\.\d+", base_model or "") if not re.fullmatch(r"\d+\.0+", number)}
+    if not own:
+        return []
+    found = []
+    for token in (version or "").lower().split():
+        match = re.fullmatch(r"v?(\d+\.\d+)", token)
+        if match and match.group(1) in own and token not in found:
+            found.append(token)
+    return found
 
 
 # What kind of file it is, never part of its name (the naming rules say to drop them).

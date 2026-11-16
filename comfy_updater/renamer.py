@@ -632,6 +632,8 @@ def _flag_message(code: str, parts: NameParts) -> str:
         return f'write "{strip_zeros(part)}", not "{part}".'
     if kind == "type-word":
         return f'leave "{part}" out of the title and version.'
+    if kind == "base-number":
+        return f'"{part}" is the base model\'s number, not a version; leave it out.'
     value = getattr(parts, part, "") if part else ""
     if kind == "empty":
         return f"The {part} is empty."
@@ -681,7 +683,7 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
             base=format_part(answer.bases.get(slot.base_model, "")) or "base",
         )
         codes = _parts_flags(probe) + name_check_flags(
-            probe.title, probe.version, vocabulary, xl_base=xl_is_base(slot.base_model)
+            probe.title, probe.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model
         )
         problems.extend(_flag_message(code, probe) for code in codes)
     problems.extend(_version_clash_problems(pending, answer))
@@ -921,7 +923,9 @@ def _group_rows(
                 base=format_part(code),
             )
             flags.extend(_parts_flags(parts))
-            flags.extend(name_check_flags(parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model)))
+            flags.extend(name_check_flags(
+                parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model
+            ))
             # Civitai's base field is set by hand: a version named for another base may be listed wrong.
             conflict = base_conflict(_text(version_live.get("name")), slot.base_model, known_bases)
             if conflict:
@@ -963,9 +967,55 @@ def _group_rows(
                 }
             )
     _mark_version_clashes(rows)
+    _names_from_files(rows)
     for row in rows:
         row["selected"] = row["status"] == "change" and not row["flags"]
     return rows
+
+
+def _names_from_files(rows: List[dict]) -> None:
+    """Versions the naming model could not tell apart keep the user's own names, put in the scheme's shape.
+
+    Only when every clashing file's current name has a creator and a title and
+    the names that come out differ from each other; otherwise the clash stays
+    flagged. The base code is still Civitai's.
+    """
+    clashing = [row for row in rows if "version-clash" in (row.get("flags") or [])]
+    if not clashing:
+        return
+    named = []
+    for row in clashing:
+        own = parse_stem(str(row.get("oldStem") or ""))
+        if not own.creator or not own.title:
+            return
+        base = str((row.get("parts") or {}).get("base") or own.base)
+        parts = NameParts(
+            creator=format_part(own.creator), title=format_part(own.title), version=format_part(own.version), base=base,
+        )
+        if _parts_flags(parts):
+            return
+        named.append((row, parts))
+    stems = [assemble(parts).lower() for _row, parts in named]
+    if len(set(stems)) != len(stems):
+        return
+    for row, parts in named:
+        new_stem = assemble(parts)
+        row.update(
+            parts=asdict(parts),
+            newStem=new_stem,
+            changed=_changed(str(row["oldStem"]), parts),
+            status="unchanged" if new_stem == row["oldStem"] else "change",
+            nameSource="file",
+        )
+        # Hints about the naming model's answer no longer apply to the user's own name.
+        row["flags"] = [flag for flag in row["flags"] if flag.split(":", 1)[0] not in _ANSWER_FLAG_KINDS]
+
+
+# What a row's flags say about the naming model's answer (dropped when the user's own name is used).
+_ANSWER_FLAG_KINDS = {
+    "version-clash", "invented", "unparsed", "base-word", "version-format", "type-word", "base-number",
+    "maker-from-description", "maker-not-in-description", "maker-unknown", "creator-from-file-name",
+}
 
 
 def _disk_stems(folder: Path) -> Set[str]:

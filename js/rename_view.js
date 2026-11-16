@@ -155,6 +155,8 @@ export function flagInfo(flag, row, rows) {
       return { level: "warn", text: `“${arg}” is a base-model name — usually it doesn't belong here` };
     case "version-format":
       return { level: "warn", text: `Write ${arg.replace(/(\.0+)+$/, "")} instead of ${arg}` };
+    case "base-number":
+      return { level: "warn", text: `“${arg}” is the base model's number, not a version` };
     case "type-word":
       return { level: "warn", text: `“${arg}” says what kind of file it is; it doesn't belong in the name` };
     case "creator-from-file-name":
@@ -1238,6 +1240,9 @@ export function renderRenameView(container, deps) {
       actions.push(`<button class="cu-rn-icon-btn cu-rn-trash" data-rn-action="toggle-delete" aria-pressed="${removing}"${disabledIf(isLocked)} title="${title}" aria-label="${title}">${ICONS.trash}</button>`);
     }
     const messages = [];
+    if (named && row.nameSource === "file") {
+      messages.push(`<div class="cu-issue-msg">The naming model couldn't tell this model's versions apart, so this keeps your own name, in the scheme's shape.</div>`);
+    }
     if (named) {
       for (const flag of row.flags || []) messages.push(flagHtml(flag, row, isLocked));
     } else if (dup) {
