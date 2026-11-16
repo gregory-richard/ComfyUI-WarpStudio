@@ -31,6 +31,7 @@ from .naming_ai import (
 )
 from .naming_check import (
     base_conflict,
+    base_named_by,
     base_vocabulary,
     glued_names,
     invented_words,
@@ -938,9 +939,14 @@ def _group_rows(
                 invented.extend(invented_words(pending.source, [version]))
             flags.extend(f"invented:{word}" for word in invented)
             flags.extend(f"glued-name:{word}" for word in title_glued)
-            code = base_codes.code(slot.base_model) if slot.base_model else None
+            # Civitai's base field is set by hand: a version whose own name names another base
+            # ("krea2 v1.0" listed as Flux.1 D) takes the base its name gives.
+            conflict = base_conflict(_text(version_live.get("name")), slot.base_model, known_bases)
+            named_base = base_named_by(conflict, known_bases, exclude=slot.base_model) if conflict else ""
+            row_base = named_base or slot.base_model
+            code = base_codes.code(row_base) if row_base else None
             if code is None:
-                code = answer.bases.get(slot.base_model, "")
+                code = answer.bases.get(row_base, "")
                 flags.append("new-base-code")
             parts = NameParts(
                 creator=format_part(row_creator),
@@ -954,12 +960,11 @@ def _group_rows(
             )
             flags.extend(_parts_flags(parts))
             flags.extend(name_check_flags(
-                parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model,
+                parts.title, parts.version, vocabulary, xl_base=xl_is_base(row_base), base_model=row_base,
                 creator=parts.creator,
             ))
-            # Civitai's base field is set by hand: a version named for another base may be listed wrong.
-            conflict = base_conflict(_text(version_live.get("name")), slot.base_model, known_bases)
-            if conflict:
+            if conflict and not named_base:
+                # It names another base, but not one the table knows: the user decides.
                 flags.append(f"base-conflict:{conflict}")
             if _is_official_file(placed) and not maker_found:
                 # An official model re-uploaded: the uploader is rarely its maker.
@@ -986,7 +991,8 @@ def _group_rows(
                     "reason": "",
                     "selected": False,
                     # For re-assembling after an edit and for the sidecar title after apply.
-                    "baseModel": slot.base_model,
+                    "baseModel": row_base,
+                    **({"civitaiBaseModel": slot.base_model, "baseFrom": "version-name"} if named_base else {}),
                     # The model's other bases, for the base-word check after an edit.
                     "modelBaseModels": model_bases,
                     "liveTitle": pending.model_input.title,

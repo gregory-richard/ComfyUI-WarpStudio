@@ -3,6 +3,7 @@ from pathlib import Path
 
 from comfy_updater.naming_ai import Slot
 from comfy_updater.naming_check import (
+    base_named_by,
     invented_words,
     base_numbers, base_vocabulary, creator_in_title, glued_names, name_check_flags, noise_words, title_in_version,
     type_words,
@@ -91,6 +92,18 @@ class NameRepeatTests(unittest.TestCase):
     def test_high_and_low_written_out_are_not_invented(self) -> None:
         self.assertEqual([], invented_words("2.2-Lightning-T2V-0928-H", ["0928 high"]))
         self.assertEqual(["high"], invented_words("2.2 Lightning T2V", ["high"]))
+
+
+class BaseNamedByTests(unittest.TestCase):
+    CODES = {"Krea 2": "krea2", "Krea 2 Turbo": "krea2", "Flux.1 D": "flux1d", "ZImageTurbo": "zit", "ZImageBase": "zib"}
+
+    def test_a_word_names_one_base(self) -> None:
+        self.assertEqual("Krea 2", base_named_by("krea2", self.CODES, exclude="Flux.1 D"))  # one code for both Kreas
+        self.assertEqual("ZImageTurbo", base_named_by("zit", self.CODES))
+
+    def test_a_word_naming_no_base_or_several(self) -> None:
+        self.assertEqual("", base_named_by("speed", self.CODES))
+        self.assertEqual("", base_named_by("", self.CODES))
 
 
 class BaseNumberTests(unittest.TestCase):

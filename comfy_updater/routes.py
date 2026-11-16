@@ -27,7 +27,7 @@ from .comfy_queue import (
 from .constants import CACHE_SCHEMA_VERSION, INFO_SIDECAR_SUFFIX, SUPPORTED_MODEL_TYPES, USER_AGENT
 from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
 from .naming_ai import SYSTEM_PROMPT
-from .naming_check import base_vocabulary, name_check_flags, xl_is_base
+from .naming_check import base_named_by, base_vocabulary, name_check_flags, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
 from .path_resolver import custom_path_problem, normalize_model_types, resolve_model_roots
 from .rename_apply import (
@@ -1459,6 +1459,17 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
         parts["version"] = format_part(version)
         decided.add("version")
     flags = list(row.get("flags") or [])
+    # An older dry run flagged a version named for another base; it now takes that base.
+    for flag in list(flags):
+        kind, _, word = flag.partition(":")
+        if kind != "base-conflict":
+            continue
+        named = base_named_by(word, base_codes.all(), exclude=str(row.get("baseModel") or ""))
+        if named:
+            row["civitaiBaseModel"] = row.get("baseModel")
+            row["baseModel"] = named
+            row["baseFrom"] = "version-name"
+            flags.remove(flag)
     base_model = row.get("baseModel") or ""
     code = base_codes.code(base_model) if base_model else None
     if code is not None:

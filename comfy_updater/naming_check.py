@@ -124,6 +124,20 @@ def _words_of(*texts: str) -> Set[str]:
     return words
 
 
+def base_named_by(word: str, known_bases: dict, *, exclude: str = "") -> str:
+    """The known base model a word names ("krea2" -> "Krea 2"), or "" when it names none or several.
+
+    Base names that share one code (Krea 2, Krea 2 Turbo -> krea2) count as one.
+    """
+    matches = sorted(
+        (name for name, code in known_bases.items()
+         if isinstance(name, str) and name != exclude and word and word in _words_of(name, str(code or ""))),
+        key=len,
+    )
+    codes = {known_bases[name] for name in matches}
+    return matches[0] if len(codes) == 1 else ""
+
+
 def base_conflict(version_name: str, base_model: str, known_bases: dict) -> str:
     """A word of the version's own name that names another base, or "".
 

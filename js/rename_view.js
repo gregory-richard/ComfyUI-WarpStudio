@@ -1333,6 +1333,9 @@ export function renderRenameView(container, deps) {
       actions.push(`<button class="cu-rn-icon-btn cu-rn-trash" data-rn-action="toggle-delete" aria-pressed="${removing}"${disabledIf(isLocked)} title="${title}" aria-label="${title}">${ICONS.trash}</button>`);
     }
     const messages = [];
+    if (named && row.baseFrom === "version-name") {
+      messages.push(`<div class="cu-issue-msg">${esc(`Civitai lists this version as ${row.civitaiBaseModel || "another base"}, but its own name says ${row.parts?.base || "otherwise"}, so the name uses ${row.parts?.base || "that"}.`)}</div>`);
+    }
     if (named && row.nameSource === "file") {
       messages.push(`<div class="cu-issue-msg">The naming model couldn't tell this model's versions apart, so this keeps your own name, in the scheme's shape.</div>`);
     }

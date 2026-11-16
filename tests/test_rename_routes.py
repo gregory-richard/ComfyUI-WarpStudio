@@ -291,6 +291,18 @@ class RenameRouteHelperTests(unittest.TestCase):
                       parts={"creator": "bolt", "title": "towel", "version": "v1", "precision": "", "base": "sdxl"})
         return towel, towel2
 
+    def test_a_version_named_for_another_base_takes_that_base_on_a_recheck(self) -> None:
+        self.base_codes.set("Krea 2", "krea2")
+        self.base_codes.set("Flux.1 D", "flux1d")
+        row = _row(self.folder, "maker - swim - v1 (krea2)", "maker - swim - v1 (flux1d)", baseModel="Flux.1 D",
+                   flags=["base-conflict:krea2"], selected=False,
+                   parts={"creator": "maker", "title": "swim", "version": "v1", "precision": "", "base": "flux1d"})
+        reassemble_rows([row], self.decisions, self.base_codes, {}, model_id="1")
+        self.assertEqual("maker - swim - v1 (krea2)", row["newStem"])
+        self.assertEqual("Krea 2", row["baseModel"])
+        self.assertEqual("version-name", row["baseFrom"])
+        self.assertEqual([], row["flags"])
+
     def test_two_models_of_one_title_with_different_versions_do_not_clash(self) -> None:
         towel, towel2 = self.towel_rows()
         towel2["parts"]["version"] = "v4"
