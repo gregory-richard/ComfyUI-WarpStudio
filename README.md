@@ -151,11 +151,15 @@ too old to have Generate Text cannot run the renamer; the view says so.
    about models that changed. Each model is one card, as in **Updates**: its
    preview, Civitai title and uploader, and one line per file. Click a file's
    name to show it in its folder.
-2. **Review.** Rows that need a look come first: a word the naming model could
-   not find in Civitai's text, a maker taken from the description, two files
-   that would get the same name, two versions or two models by one creator
-   that would get the same name or title (the naming model is asked once more
-   first), a version whose own name names another base, a new base code. The new
+2. **Review.** Rows that need a look come first, unticked: a word the naming
+   model could not find in Civitai's text, two files that would get the same
+   name, two versions or two models by one creator that would get the same name
+   or title (the naming model is asked once more first), a version whose own
+   name names another base, a new base code. A maker taken from the
+   description, a creator taken from your file name, or a file that is not in
+   the Civitai release is only a hint: the row stays ticked. Some fixes have one
+   right answer and are made without asking: "v1.0" becomes "v1", "high noise"
+   becomes "high", and a version that only names the base is left out. The new
    name is under the current one, with the changed words marked. You can **Edit**
    any part, or **Ask again** to let the naming model name the model afresh on
    the next dry run. The checkbox decides whether a file is renamed: a file you

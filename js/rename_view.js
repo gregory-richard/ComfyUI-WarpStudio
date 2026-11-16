@@ -171,7 +171,7 @@ export function flagInfo(flag, row, rows) {
     case "type-word":
       return { level: "warn", text: `“${arg}” says what kind of file it is; it doesn't belong in the name` };
     case "creator-from-file-name":
-      return { level: "warn", text: "Civitai has no creator for this model; taken from your file name" };
+      return { level: "info", text: "Civitai has no creator for this model; taken from your file name" };
     case "maker-from-description": {
       const maker = parts.creator || "";
       // The card's header already says who uploaded it.
@@ -193,7 +193,7 @@ export function flagInfo(flag, row, rows) {
         text: `Civitai lists this version as ${row?.baseModel || "another base"}, but its name says "${arg}"; the base in the new name may be wrong`,
       };
     case "file-not-in-release":
-      return { level: "warn", text: "This file is not in the Civitai release (a conversion or a re-upload?)" };
+      return { level: "info", text: "This file is not in the Civitai release (a conversion or a re-upload?)" };
     case "collision": {
       const peers = collisionPeers(row, rows);
       if (!peers.length) return { level: "block", text: "Another file in this folder would get the same name" };

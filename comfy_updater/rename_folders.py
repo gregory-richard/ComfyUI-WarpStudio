@@ -15,6 +15,7 @@ import os
 from collections import Counter
 from typing import Dict, Iterable, List, Set, Tuple
 
+from .naming_check import needs_review
 from .naming_scheme import parse_stem
 
 NAMED = ("change", "unchanged")
@@ -85,7 +86,7 @@ def plan_moves(rows: List[dict], *, skip_flags: Iterable[str] = ("base-conflict"
             row["newFolder"] = target
             if row.get("status") == "unchanged":
                 row["status"] = "change"
-                row["selected"] = not row.get("flags")
+                row["selected"] = not needs_review(row.get("flags"))
             changed = list(row.get("changed") or [])
             if "folder" not in changed:
                 changed.append("folder")
@@ -130,7 +131,7 @@ def recheck_folder_flags(rows: List[dict], folders: Set[str], listing: Dict[str,
             if len(by_new[(target, new)]) > 1:
                 flags.append("collision")
         row["flags"] = flags
-        row["selected"] = row.get("status") == "change" and not flags
+        row["selected"] = row.get("status") == "change" and not needs_review(flags)
 
 
 def move_target_folders(rows: Iterable[dict]) -> Set[str]:

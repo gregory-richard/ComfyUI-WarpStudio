@@ -89,7 +89,7 @@ GENERIC_BASE_WORDS = frozenset({
 # Base families whose models are SDXL-based, where a standalone "xl" names the base.
 XL_FAMILIES = frozenset({"SDXL", "Pony", "Illustrious", "NoobAI"})
 
-_PIECE_SPLIT = re.compile(r"[\s\-_/+()\[\],]+")
+_PIECE_SPLIT = re.compile(r"[\s\-_/+()\[\],（）【】「」『』]+")
 _WORD_PIECES = re.compile(r"[-_/+]")
 _CAMEL = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 # A version or size number: "v2", "1.5", "14b". Never a base word.
@@ -296,6 +296,34 @@ def name_check_flags(
     return list(dict.fromkeys(flags))
 
 
+# Hints that only tell where a part of the name came from: the file stays ticked.
+INFO_FLAG_KINDS = frozenset({"maker-from-description", "creator-from-file-name", "file-not-in-release"})
+
+
+def needs_review(flags) -> bool:
+    """Whether any flag asks the user to look before the file is renamed (information does not)."""
+    return any(str(flag).split(":", 1)[0] not in INFO_FLAG_KINDS for flag in flags or [])
+
+
+def tidy_version(version: str, vocabulary: FrozenSet[str], *, base_model: str = "", xl_base: bool = False) -> str:
+    """The mechanical fixes with one right answer, done by code instead of asking again:
+    "v1.0" -> "v1", "high noise" -> "high" (on Wan a lone "h" too), and a version
+    made only of base-model names ("illustrious", "z-image turbo") -> no version.
+    """
+    text = _NOISE.sub(lambda match: match.group(1), (version or "").lower())
+    tokens = text.split()
+    if "wan" in (base_model or "").lower():
+        short = {"h": "high", "hn": "high", "l": "low", "ln": "low"}
+        tokens = [short.get(token, token) for token in tokens]
+    tidied = []
+    for token in tokens:
+        number = re.fullmatch(r"v?(\d+(?:\.\d+)*\.0+)", token)
+        tidied.append("v" + strip_zeros(number.group(1)) if number else token)
+    if tidied and all(token in GENERIC_BASE_WORDS or base_words(token, vocabulary, xl_base=xl_base) for token in tidied):
+        return ""
+    return " ".join(tidied)
+
+
 def creator_in_title(title: str, creator: str) -> List[str]:
     """The creator's name standing as a word of the title ("xlabs - xlabs flux realism")."""
     name = _compact(creator or "")
@@ -351,6 +379,13 @@ def glued_names(source_title: str, answer_title: str, vocabulary: FrozenSet[str]
     for piece in _PIECE_SPLIT.split(source_title or ""):
         word = _compact(piece)
         if len(word) < 6 or word in vocabulary or word in answer:
+            continue
+        if re.search(r"[a-z][A-Z]", piece):
+            # Written in CamelCase: glued only when a part is itself a base name
+            # ("KreaCore" yes; "AnimagineXL" no, "anima" only starts "Animagine").
+            parts = [part.lower() for part in _CAMEL.findall(piece)]
+            if any(part in vocabulary and len(part) >= 4 for part in parts) and not all(part in vocabulary for part in parts):
+                found.append(piece)
             continue
         for base in vocabulary:
             if len(base) < 4 or base == word:

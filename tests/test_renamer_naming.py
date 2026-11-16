@@ -250,7 +250,7 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(row["parts"]["creator"], "fernwick")
         self.assertEqual(row["newStem"], "fernwick - qsd speed - 4step (sdxl)")
         self.assertIn("maker-from-description", row["flags"])
-        self.assertFalse(row["selected"])
+        self.assertTrue(row["selected"])  # information only: stays ticked
 
         self.decisions.set_model(200, creator="fernwick")
         self.emitted = []
@@ -612,7 +612,7 @@ class NamingTests(unittest.TestCase):
             live_version(9001, "v1.0 Anima", "Anima", [live_file(1, "g9")]),
         ], description=description)}
 
-    def test_base_word_and_version_format_get_one_retry_then_flags(self) -> None:
+    def test_base_word_gets_one_retry_then_flags_and_code_writes_v1(self) -> None:
         models = self.glide()
         answer = "title: deep glide\noriginal:\nversion 1: v1.0 anima"
         generator = FakeGenerator({"Deep Glide": [answer, answer]})
@@ -620,11 +620,11 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(len(generator.messages), 2)
         retry = generator.messages[1]
         self.assertIn('"anima" is a base model name; leave it out of the title and version.', retry)
-        self.assertIn('write "v1", not "v1.0".', retry)
+        self.assertNotIn('"v1.0"', retry)  # code writes "v1" itself
         row = self.row(rows, "brightfern")
-        self.assertEqual(row["newStem"], "brightfern - deep glide - v1.0 anima (anima)")
+        self.assertEqual(row["newStem"], "brightfern - deep glide - v1 anima (anima)")
         self.assertIn("base-word:anima", row["flags"])
-        self.assertIn("version-format:v1.0", row["flags"])
+        self.assertNotIn("version-format:v1.0", row["flags"])
         self.assertFalse(row["selected"])
         self.assertEqual(self.cache._answers, {})
 

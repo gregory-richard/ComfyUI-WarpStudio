@@ -520,7 +520,7 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.decisions.set_model("1", title="Title")
         reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
         self.assertEqual(["creator-from-file-name"], a["flags"])
-        self.assertFalse(a["selected"])
+        self.assertTrue(a["selected"])  # information only: stays ticked
         self.decisions.set_model("1", title="Title", creator="maker")
         reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
         self.assertEqual([], a["flags"])

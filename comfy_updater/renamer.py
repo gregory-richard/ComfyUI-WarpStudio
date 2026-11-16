@@ -30,6 +30,8 @@ from .naming_ai import (
     split_group_answer,
 )
 from .naming_check import (
+    needs_review,
+    tidy_version,
     base_conflict,
     base_named_by,
     base_vocabulary,
@@ -689,7 +691,10 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
         probe = NameParts(
             creator=original or "creator",
             title=format_part(answer.title),
-            version=format_part(answer.versions.get(slot.key, "")),
+            version=tidy_version(
+                format_part(answer.versions.get(slot.key, "")), vocabulary,
+                base_model=slot.base_model, xl_base=xl_is_base(slot.base_model),
+            ),
             precision="",
             base=format_part(answer.bases.get(slot.base_model, "")) or "base",
         )
@@ -930,6 +935,9 @@ def _group_rows(
             version_from_answer = version is None
             if version_from_answer:
                 version = answer.versions.get(slot.key, "")
+                version = tidy_version(
+                    format_part(version), vocabulary, base_model=slot.base_model, xl_base=xl_is_base(slot.base_model)
+                )
             else:
                 decided_keys.add(_entry_key(entry))
             if answer.unparsed and (title_from_answer or version_from_answer):
@@ -1006,7 +1014,7 @@ def _group_rows(
     _mark_version_clashes(rows)
     _names_from_files(rows, lambda row: bool(set(model_decision) & {"title", "creator"}) or row["key"] in decided_keys)
     for row in rows:
-        row["selected"] = row["status"] == "change" and not row["flags"]
+        row["selected"] = row["status"] == "change" and not needs_review(row["flags"])
     return rows
 
 
@@ -1141,7 +1149,7 @@ class _FolderCheck:
         if len(peers) == 1 and "collision" in peers[0]["flags"]:
             peer = peers[0]
             peer["flags"] = [flag for flag in peer["flags"] if flag != "collision"]
-            peer["selected"] = peer["status"] == "change" and not peer["flags"]
+            peer["selected"] = peer["status"] == "change" and not needs_review(peer["flags"])
 
 
 def _error_rows(group: ModelGroup, exc: Exception) -> List[dict]:

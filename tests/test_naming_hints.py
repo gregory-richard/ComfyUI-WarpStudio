@@ -5,6 +5,8 @@ from comfy_updater.naming_ai import Slot
 from comfy_updater.naming_check import (
     base_named_by,
     invented_words,
+    needs_review,
+    tidy_version,
     base_numbers, base_vocabulary, creator_in_title, glued_names, name_check_flags, noise_words, title_in_version,
     type_words,
 )
@@ -64,6 +66,14 @@ class GluedNameTests(unittest.TestCase):
         self.assertEqual([], glued_names("KreaCore", "kreacore", self.VOCAB))
         self.assertEqual([], glued_names("Pony Realism", "realism", self.VOCAB))  # a base tag in its own word
         self.assertEqual([], glued_names("Krea2 Glow", "glow", self.VOCAB))
+
+    def test_full_width_brackets_split_words(self) -> None:
+        self.assertEqual([], glued_names("0149 TIFA BUNNY（pony and 1.5）", "0149 tifa bunny", self.VOCAB))
+        self.assertEqual([], glued_names("0156 bubble bath（sd1.5,pdxl,sdxl）", "0156 bubble bath", self.VOCAB))
+
+    def test_a_longer_name_that_only_starts_with_a_base_passes(self) -> None:
+        vocab = base_vocabulary(["Anima", "anima", "Pony", "pony"])
+        self.assertEqual([], glued_names("Oversized breast cup (AnimagineXL V3 & Pony)", "oversized breast cup", vocab))
 
 
 class NameRepeatTests(unittest.TestCase):
@@ -147,6 +157,37 @@ class NamesFromFilesTests(unittest.TestCase):
         rows = [clash_row("1", "speed_high"), clash_row("2", "maker - speed - low (wan)")]
         _names_from_files(rows)
         self.assertEqual(["version-clash"], rows[1]["flags"])
+
+
+class InformationHintTests(unittest.TestCase):
+    def test_hints_that_only_inform_need_no_review(self) -> None:
+        self.assertFalse(needs_review([]))
+        self.assertFalse(needs_review(["maker-from-description", "creator-from-file-name", "file-not-in-release"]))
+
+    def test_any_other_hint_needs_review(self) -> None:
+        self.assertTrue(needs_review(["creator-from-file-name", "invented:foo"]))
+        self.assertTrue(needs_review(["collision"]))
+
+
+class TidyVersionTests(unittest.TestCase):
+    VOCAB = base_vocabulary(["Illustrious", "illustrious", "ill", "ZImageTurbo", "zit", "Pony", "pony"])
+
+    def test_trailing_zeros_go(self) -> None:
+        self.assertEqual("v1", tidy_version("v1.0", self.VOCAB))
+        self.assertEqual("v2.5", tidy_version("2.5.0", self.VOCAB))
+        self.assertEqual("v2.5 nsfw", tidy_version("v2.5 nsfw", self.VOCAB))
+
+    def test_noise_is_written_high_or_low(self) -> None:
+        self.assertEqual("0928 high", tidy_version("0928 high noise", self.VOCAB))
+        self.assertEqual("low", tidy_version("lownoise", self.VOCAB))
+        self.assertEqual("v2 high", tidy_version("v2 h", self.VOCAB, base_model="Wan Video 2.2 T2V-A14B"))
+        self.assertEqual("v2 h", tidy_version("v2 h", self.VOCAB, base_model="Pony"))
+
+    def test_a_version_of_only_base_names_is_no_version(self) -> None:
+        self.assertEqual("", tidy_version("illustrious", self.VOCAB))
+        self.assertEqual("", tidy_version("pony", self.VOCAB))
+        self.assertEqual("pony v2", tidy_version("pony v2", self.VOCAB))
+        self.assertEqual("", tidy_version("", self.VOCAB))
 
 
 if __name__ == "__main__":
