@@ -694,21 +694,25 @@ lists** (the backend caches a model list for an hour).
 | `ReasoningEffort` | `none` … `max`, sent as `reasoning_effort`; empty (the default) sends nothing |
 | `SystemPromptDir` | Settings → WarpPipe → Prompt Writer |
 
-**Chats and versions:** the left rail lists the chats, newest first. Each write
-is one card `v2` with what it changed (`edit of v1`), its status, e.g.
-`Finished · 0.3 ¢ · 8 s · 1,812 → 640 tokens`, the request with its images and any
-questions on the way, and the prompt, then two folded lines: **LoRAs** and
-**Written with** (model, system prompt, temperature, thinking level, LoRA choice,
-server, and the system prompt's text as the server read it, kept once per chat in
-`systemPrompts`). The newest version is editable (saved on blur); older ones are one
-line and can be expanded, with their buttons shown on hover. **Send to ComfyUI** writes
-the text unchanged into the Prompt + LoRAs chosen under **For**, as one undo step,
-flashes the node and closes the pop-up. **Use as input** only chooses the version
-under **Edit …** for the next request (**✓ Input** marks the chosen one). **Retry**
-writes a version the AI wrote again at once and replaces it in place (not once others
-were made from it); **Recreate** sends the same request as a new version beside it;
-both use the settings chosen now. **Delete** removes a version and those made from it,
-after asking. Version numbers are saved, so a deleted one leaves a gap.
+**Chats and versions:** the left rail lists the chats, newest first. Each version is
+one line, `v2` and its title (named by the title model while it is written: what it
+shows for a new prompt, what it changes for an edit, `"kind": "edit"` in
+`POST /warppipe/llm/title`, which answers with the `kind` it named; the request until then;
+versions from before titles are named once when the pop-up opens, only by a server that
+answers with that `kind`). One version is open at a time,
+and the line you click stays where it is on the screen. An open version has
+**Changes** (`+38 −12`) and **LoRAs** above its prompt and **Send to ComfyUI (Group)**
+under it, which writes the text unchanged into the Prompt + LoRAs chosen under **For**,
+as one undo step, flashes the node and closes the pop-up. The newest version, when
+open, is editable (saved on blur). A version's **⋮** has **Generation info** (made
+from, model, temperature, thinking level, LoRAs offered, server, cost, time, tokens,
+the request and questions, the prompt it edited, the system prompt's text as the
+server read it, kept once per chat in `systemPrompts`, and the thinking), **Use as
+input** (also a click on its dot in the graph; the chosen dot has a ring),
+**Retry** (writes it again at once and replaces it in place, not once others were made
+from it), **Recreate** (the same request as a new version beside it; both use the
+settings chosen now), **Change the request** and **Delete** (with those made from it,
+after asking). Version numbers are saved, so a deleted one leaves a gap.
 
 **Questions:** the LLM is told to start a reply that asks instead of writing with
 `===QUESTION===`. That reply is a **Question** card, not a version; the send button then
@@ -723,12 +727,12 @@ chips under the version. Nothing is added by itself: **+** on a chip switches on
 commented line that holds the tag, or appends the tag to the `loras` box, and puts
 its trigger words on the first line of that version; pressing it again undoes both.
 
-**Writing:** the input is one box with its tools under the text: an image button
+**Writing:** the input is one box, lined up with the versions, with its tools as a bar on top: an image button
 (up to 8 images, also by drag and drop or Ctrl+V, uploaded to `input/`, left out with a
 notice when the model has no vision), what the next request does, sent as
-`previous_result` (**Edit v3 · newest** or an older version, **Edit current prompt**,
-the text of the **For** node read when you send, or **New prompt**), the LoRA choice and
-a round send button that stays the same size and turns into a yellow stop button while
+`previous_result` (**Edit v3 (newest)** or the version chosen by its dot, **Edit current prompt**,
+the text of the **For** node read when you send, or **New prompt**) and the LoRA choice;
+a round send button in the corner of the text stays the same size and turns into a yellow stop button while
 it runs. Ctrl+Enter sends.
 Writes are held per chat outside the pop-up, so several run at once and survive
 closing it. The **✨ AI Prompt Writer** button on the node is yellow while a chat opened from

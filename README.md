@@ -57,9 +57,10 @@ list can feed `model_2` for two-pass setups.
 
 Click **✨ AI Prompt Writer** above any prompt box and say what you want, with
 reference images if you like. Every answer becomes a version. Edit it, use it as
-the input for the next one, retry or recreate it, or **Send to ComfyUI**. **Show
-changes** marks what is new and puts the word it replaced small above it, and
-**Written with** shows the model, settings and system prompt each version came from.
+the input for the next one, retry or recreate it, or **Send to ComfyUI**.
+**Changes** marks what is new and puts the word it replaced small above it, and
+each version's **Generation info** shows its request, the prompt it edited, the
+model and settings, the system prompt, the cost and the thinking.
 
 - Works with NanoGPT out of the box, or any OpenAI-compatible server (LM Studio, Ollama, llama.cpp).
 - The API key stays on the ComfyUI server (`user/warppipe_llm_keys.json` or `NANOGPT_API_KEY`). It never reaches the browser, a workflow or an image.
