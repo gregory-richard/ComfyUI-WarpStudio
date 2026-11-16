@@ -897,6 +897,26 @@ class RevealRouteTests(unittest.TestCase):
         self.assertEqual(400, status)  # not a duplicate row: it has no survivor
         self.assertEqual([], self.launched)
 
+    def test_reveals_a_listed_path(self) -> None:
+        status, body = self.reveal({"jobId": "dry", "path": str(self.keep)})
+        self.assertEqual(200, status, body)
+        self.assertEqual([["explorer", "/select,", str(self.keep)]], self.launched)
+
+    def test_reveals_a_checked_file_of_an_update_check(self) -> None:
+        import asyncio
+
+        model = self.folder / "model.safetensors"
+        model.write_text("x", encoding="utf-8")
+        check = JobRecord(id="check", type="check-updates", status="completed", items=[{"modelPath": str(model)}])
+        response = asyncio.run(
+            reveal_response(
+                _RevealRequest({"jobId": "check", "path": str(model)}),
+                lambda job_id: check if job_id == "check" else None, launch=self.launched.append, platform="win32",
+            )
+        )
+        self.assertEqual(200, response.status)
+        self.assertEqual([["explorer", "/select,", str(model)]], self.launched)
+
     def test_unknown_job_and_missing_fields(self) -> None:
         self.assertEqual(404, self.reveal({"jobId": "other", "key": str(self.copy).lower()})[0])
         self.assertEqual(400, self.reveal({"jobId": "dry"})[0])

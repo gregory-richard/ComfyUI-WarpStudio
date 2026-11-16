@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 from typing import Any, Callable, Optional
 
 from aiohttp import web
@@ -864,6 +866,12 @@ def _register_rename_routes(
     async def reveal_rename_file(request):
         return await reveal_response(request, dry_run_job)
 
+    @routes.post("/civitai-updater/reveal")
+    @_guarded
+    async def reveal_job_file(request):
+        # Any job's results: a checked file in Updates or Issues, or a dry run row.
+        return await reveal_response(request, job_manager.get)
+
     @routes.post("/civitai-updater/jobs/download-naming-model")
     @_guarded
     async def start_naming_model_download(request):  # noqa: ARG001
@@ -925,37 +933,160 @@ def reveal_command(path: Path, platform: str) -> list:
 
 
 def _launch_detached(command: list) -> None:
-    """Start the file manager and don't wait for it."""
-    subprocess.Popen(  # noqa: S603 - fixed program, path from the dry run's own rows
+    """Start the file manager and don't wait for it; on Windows, bring its window to the front."""
+    before = _explorer_windows() if sys.platform.startswith("win") else None
+    subprocess.Popen(  # noqa: S603 - fixed program, path from the job's own results
         command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
+    if before is not None and len(command) >= 3:
+        folder = Path(command[-1]).parent.name
+        threading.Thread(target=_focus_explorer, args=(before, folder), daemon=True).start()
+
+
+def _explorer_windows() -> Optional[dict]:
+    """Explorer's open folder windows, {hwnd: title}; None where that can't be read."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        found: dict = {}
+        enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def visit(hwnd, _param):
+            name = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(hwnd, name, 64)
+            if name.value == "CabinetWClass":
+                length = user32.GetWindowTextLengthW(hwnd)
+                title = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, title, length + 1)
+                found[int(hwnd or 0)] = title.value
+            return True
+
+        user32.EnumWindows(enum_proc(visit), 0)
+        return found
+    except Exception:  # noqa: BLE001 - focusing is a nicety; the folder opens anyway
+        return None
+
+
+def _focus_explorer(before: dict, folder: str, timeout: float = 3.0) -> None:
+    """Bring the Explorer window that just opened ``folder`` to the front.
+
+    Windows keeps a window started by a background process (ComfyUI) behind the
+    browser; joining the foreground window's input for a moment lets this one
+    take the focus. Explorer may also reuse a window it already had open.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        for name in ("SetForegroundWindow", "BringWindowToTop", "IsIconic"):
+            getattr(user32, name).argtypes = [wintypes.HWND]
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+
+        # "anima - File Explorer", or "anima and 2 more tabs - File Explorer".
+        wanted = folder.lower()
+
+        def names_folder(title: str) -> bool:
+            title = title.lower()
+            return title == wanted or title.startswith(wanted + " - ") or title.startswith(wanted + " and ")
+
+        # A new window starts as an empty "File Explorer" frame; it can only take
+        # the focus once it shows the folder.
+        deadline = time.monotonic() + timeout
+        target = None
+        fallback = None
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            now = _explorer_windows() or {}
+            fresh = [hwnd for hwnd in now if hwnd not in before]
+            named = [hwnd for hwnd in fresh if names_folder(now[hwnd]) and user32.IsWindowVisible(hwnd)]
+            if named:
+                target = named[0]
+                break
+            fallback = fallback or (fresh[0] if fresh else None)
+        if target is None:
+            # No new window: Explorer may have opened the folder in a window it had open.
+            now = _explorer_windows() or {}
+            target = fallback or next((hwnd for hwnd, title in now.items() if names_folder(title)), None)
+        if target is None:
+            return
+        for _attempt in range(5):
+            foreground = user32.GetForegroundWindow()
+            if foreground and int(foreground) == int(target):
+                return
+            other = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+            this = kernel32.GetCurrentThreadId()
+            attached = bool(other and other != this and user32.AttachThreadInput(this, other, True))
+            try:
+                if user32.IsIconic(target):
+                    user32.ShowWindow(target, 9)  # SW_RESTORE
+                user32.BringWindowToTop(target)
+                user32.SetForegroundWindow(target)
+            finally:
+                if attached:
+                    user32.AttachThreadInput(this, other, False)
+            time.sleep(0.2)
+    except Exception:  # noqa: BLE001 - focusing is a nicety; the folder is open anyway
+        return
+
+
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def _job_file(job, wanted: str) -> Optional[str]:
+    """``wanted`` when the job's own results list it (a checked file, a dry run row or its kept copy)."""
+    for item in job.items:
+        if not isinstance(item, dict):
+            continue
+        for field in ("modelPath", "survivorPath"):
+            value = item.get(field)
+            if isinstance(value, str) and value and _same_path(value, wanted):
+                return value
+    return None
 
 
 async def reveal_response(request, get_job, *, launch=_launch_detached, platform: str = sys.platform):
-    """Show a dry run row's file (or its survivor's) in the file manager.
+    """Show a file from a job's results in the file manager.
 
-    Only paths the dry run itself listed are shown, never one from the request,
-    and only for a browser on the machine ComfyUI runs on.
+    The file is named by ``path`` (it must be one the job itself listed) or by a
+    dry run row's ``key`` (with ``survivor`` for its kept copy). Only for a
+    browser on the machine ComfyUI runs on.
     """
     if not is_loopback(getattr(request, "remote", None)):
         return web.json_response({"error": REVEAL_REMOTE_ERROR}, status=403)
     payload = await _read_json(request)
     job_id = payload.get("jobId")
     key = payload.get("key")
-    if not isinstance(job_id, str) or not job_id.strip() or not isinstance(key, str) or not key:
-        return web.json_response({"error": "jobId and key of a dry run row are required"}, status=400)
+    wanted = payload.get("path")
+    by_path = isinstance(wanted, str) and bool(wanted)
+    if not isinstance(job_id, str) or not job_id.strip() or not (by_path or (isinstance(key, str) and key)):
+        return web.json_response({"error": "jobId and the path or key of a listed file are required"}, status=400)
     job = get_job(job_id.strip())
     if job is None:
         return web.json_response({"error": "job not found"}, status=404)
-    row = next((item for item in job.items if isinstance(item, dict) and item.get("key") == key), None)
-    if row is None:
-        return web.json_response({"error": "That file is not in this dry run."}, status=400)
-    if payload.get("survivor") is True:
-        target = row.get("survivorPath") if row.get("status") == "duplicate" else None
-        if not target:
-            return web.json_response({"error": "That row has no kept copy."}, status=400)
+    if by_path:
+        target = _job_file(job, wanted)
+        if target is None:
+            return web.json_response({"error": "That file is not in these results."}, status=400)
     else:
-        target = row.get("modelPath")
+        row = next((item for item in job.items if isinstance(item, dict) and item.get("key") == key), None)
+        if row is None:
+            return web.json_response({"error": "That file is not in this dry run."}, status=400)
+        if payload.get("survivor") is True:
+            target = row.get("survivorPath") if row.get("status") == "duplicate" else None
+            if not target:
+                return web.json_response({"error": "That row has no kept copy."}, status=400)
+        else:
+            target = row.get("modelPath")
     if not isinstance(target, str) or not target:
         return web.json_response({"error": "That row has no file."}, status=400)
     path = Path(target)
@@ -1036,6 +1167,7 @@ def rename_rows_payload(job, applied: set) -> dict:
         "summary": job.summary,
         "errors": [_short_error(error) for error in job.errors],
         "applied": job.id in applied,
+        "finishedAt": job.finishedAt,
         # When it came back from disk after a restart: the finish time, else None.
         "restoredFrom": job.restoredFrom,
     }

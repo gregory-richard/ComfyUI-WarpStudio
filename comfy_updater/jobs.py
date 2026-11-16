@@ -186,9 +186,11 @@ class JobManager:
         if mode in RESULT_MODES:
             grouped = [g for g in grouped if _in_mode(g, mode, show_hidden)]
 
+        # The filter menus serve every view (Updates, Issues, Rename): their
+        # options come from all of the check's models, not just this view's.
         available_types: set[str] = set()
         available_bases: set[str] = set()
-        for group in grouped:
+        for group in all_groups:
             model_type = group.get("modelType", "")
             if model_type:
                 available_types.add(model_type)

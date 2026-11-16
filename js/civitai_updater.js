@@ -259,14 +259,16 @@ async function renderTab(el) {
         <h3>Results</h3>
         <select id="cu-size" title="Results per page">${PAGE_SIZES.map((v) => `<option value="${v}">${v}</option>`).join("")}</select>
       </div>
+      <div id="cu-shared-filters" class="cu-filters" style="display:none">
+        <div id="cu-filter-type" class="cu-filter-slot"></div>
+        <div id="cu-filter-base" class="cu-filter-slot"></div>
+      </div>
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
       <div id="cu-rename-pane" style="display:none"></div>
       <div id="cu-updates-pane">
       <div id="cu-scan-report" class="cu-scan-report"></div>
       <div id="cu-check-summary" class="cu-summary">No update check has run yet.</div>
       <div class="cu-filters">
-        <div id="cu-filter-type" class="cu-filter-slot"></div>
-        <div id="cu-filter-base" class="cu-filter-slot"></div>
         <div id="cu-arrange-slot" class="cu-filter-slot"></div>
         <label class="cu-toggle" title="Show versions you previously hid">
           <input id="cu-show-hidden" type="checkbox">
@@ -294,6 +296,7 @@ async function renderTab(el) {
   state.scanReportEl = root.querySelector("#cu-scan-report");
   state.checkSummaryEl = root.querySelector("#cu-check-summary");
   state.viewSwitchEl = root.querySelector("#cu-view-switch");
+  state.sharedFiltersEl = root.querySelector("#cu-shared-filters");
   state.filterTypeEl = root.querySelector("#cu-filter-type");
   state.filterBaseEl = root.querySelector("#cu-filter-base");
   state.arrangeEl = root.querySelector("#cu-arrange-slot");
@@ -322,6 +325,11 @@ async function renderTab(el) {
     reloadResults: reloadCheckResults,
     matureMode: () => state.matureMode,
     openPreview: openLightbox,
+    copyOrReveal,
+    copyPathTitle,
+    filter: renameFilter,
+    onFacets: onRenameFacets,
+    onCount: () => renderViewSwitch(),
   });
   bindEvents(root);
   state.statusEl.textContent = state.statusText;
@@ -336,6 +344,8 @@ async function renderTab(el) {
   root.querySelector("#cu-size").value = String(state.pageSize);
   el.appendChild(root);
   applyResultMode();
+  // The saved dry run loads in the background, so the Rename tab shows its count.
+  if (state.resultMode !== "rename") state.renameView.refresh().catch(() => {});
 
   if (!state.currentJobId && !state.checkJobId) {
     loadCachedResults();
@@ -398,9 +408,8 @@ async function loadCachedResults() {
       : null;
     renderCacheInfo();
     state.pageOffset = 0;
-    state.filterTypes = null;
-    state.filterBases = null;
-    applyFacets({ modelTypes: [], baseModels: [] });
+    state.checkFacets = { modelTypes: [], baseModels: [] };
+    applyFacets(mergedFacets());
     await loadResultPage(true);
   } catch (_) {
     // cache load is best-effort
@@ -546,9 +555,7 @@ function bindEvents(root) {
     if (target.checked) selected.add(value);
     else selected.delete(value);
     state[key] = [...selected];
-    state.pageOffset = 0;
-    renderFilters();
-    await loadResultPage(true);
+    await onFiltersChanged();
   });
   root.addEventListener("click", async (ev) => {
     const target = ev.target;
@@ -560,12 +567,8 @@ function bindEvents(root) {
       state.resultMode = mode;
       applyResultMode();
       if (mode === "rename") return;
+      // The filters stay: they serve all three views.
       state.pageOffset = 0;
-      // The views list different models, so their filter options differ too.
-      state.filterTypes = null;
-      state.filterBases = null;
-      state.facets = { modelTypes: [], baseModels: [] };
-      renderFilters();
       await loadResultPage(true);
       return;
     }
@@ -574,9 +577,7 @@ function bindEvents(root) {
       const key = target.dataset.filterKind === "type" ? "filterTypes" : "filterBases";
       const facetKey = target.dataset.filterKind === "type" ? "modelTypes" : "baseModels";
       state[key] = filterAction === "all" ? [...(state.facets[facetKey] || [])] : [];
-      state.pageOffset = 0;
-      renderFilters();
-      await loadResultPage(true);
+      await onFiltersChanged();
       return;
     }
     if (target.dataset.archiveAction) {
@@ -623,9 +624,8 @@ async function startJob(endpoint, type) {
       // Cache is still fresh — load the cached results without re-running.
       state.checkJobId = state.cachedJobId;
       state.pageOffset = 0;
-      state.filterTypes = null;
-      state.filterBases = null;
-      state.facets = { modelTypes: [], baseModels: [] };
+      state.checkFacets = { modelTypes: [], baseModels: [] };
+      state.facets = mergedFacets();
       renderFilters();
       await loadResultPage(true);
       renderCacheInfo();
@@ -656,9 +656,8 @@ async function startJob(endpoint, type) {
       state.resultItems = [];
       state.resultTotal = 0;
       state.resultOffset = 0;
-      state.filterTypes = null;
-      state.filterBases = null;
-      state.facets = { modelTypes: [], baseModels: [] };
+      state.checkFacets = { modelTypes: [], baseModels: [] };
+      state.facets = mergedFacets();
       renderFilters();
     }
     renderResults();
@@ -844,8 +843,12 @@ function pollJob(jobId) {
 
 async function loadResultPage(force) {
   const requestSeq = ++state.resultRequestSeq;
-  // The Rename view has no result pages; switching back loads them.
-  if (state.resultMode === "rename") return;
+  // The Rename view has no result pages; switching back loads them. The
+  // Updates and Issues counts (and their filter options) still load.
+  if (state.resultMode === "rename") {
+    await loadModeCounts();
+    return;
+  }
   if (!state.checkJobId) {
     renderResults();
     return;
@@ -884,7 +887,8 @@ async function loadResultPage(force) {
     state.matureHidden = Number(data.matureHidden || 0);
     if (data.modeCounts) state.modeCounts = data.modeCounts;
     if (data.facets) {
-      applyFacets(data.facets);
+      state.checkFacets = data.facets;
+      applyFacets(mergedFacets());
       renderFilters();
     }
     // When every selected type or base drops out of the options (say, the
@@ -1103,15 +1107,7 @@ function buildResultCard(item, cardIndex) {
       </div>
     </div>`;
   for (const el of card.querySelectorAll(".cu-copy-path")) {
-    el.addEventListener("click", (e) => {
-      const target = e.currentTarget;
-      const path = target.dataset.path || "";
-      const original = target.textContent;
-      copyToClipboard(path).then((copied) => {
-        target.textContent = copied ? "Copied!" : "Copy failed";
-        setTimeout(() => { target.textContent = original; }, 1500);
-      });
-    });
+    el.addEventListener("click", (e) => copyOrReveal(e.currentTarget, e.currentTarget.dataset.path || "", state.checkJobId));
   }
   card.querySelector(".cu-thumb").addEventListener("click", () => openLightbox(item));
   // A removed model's preview URL is dead too; show the empty tile instead of
@@ -1146,7 +1142,7 @@ function renderLocalVersionRow(v, showMessage = true) {
         <span class="cu-ver-date">${escapeHtml(date || "\u2014")}</span>
         <span class="cu-ver-base">${escapeHtml(v.baseModel || "\u2014")}</span>
         <span class="cu-ver-main">
-          <span class="cu-ver-link cu-copy-path" data-path="${escapeHtml(filePath)}" title="Click to copy file path">${escapeHtml(name)}</span>
+          <span class="cu-ver-link cu-copy-path" data-path="${escapeHtml(filePath)}" title="${escapeHtml(copyPathTitle(filePath))}">${escapeHtml(name)}</span>
         </span>
       </div>${message}`;
 }
@@ -1316,7 +1312,11 @@ function renderViewSwitch() {
   const checkTabs = state.checkJobId
     ? tab("updates", "Updates", "Models with a newer release") + tab("issues", "Issues", "Models Civitai could not match or check")
     : tab("updates", "Updates", "Run Check for Updates to list newer releases", false);
-  state.viewSwitchEl.innerHTML = checkTabs + tab("rename", "Rename", "Rename your model files after their Civitai releases", false);
+  // Rename counts the models with a new name to apply, under the same filters.
+  const renameCount = state.renameView?.count?.();
+  counts.rename = renameCount;
+  state.viewSwitchEl.innerHTML = checkTabs
+    + tab("rename", "Rename", "Rename your model files after their Civitai releases", renameCount != null);
 }
 
 /* Show the selected view's pane; the Rename view loads its state when shown. */
@@ -1458,8 +1458,69 @@ function onMatureModeChanged() {
   state.renameView?.render();
 }
 
+/* The filter menus serve all three views: the check's models plus the dry run's. */
+function mergedFacets() {
+  const check = state.checkFacets || {};
+  const rename = state.renameFacets || {};
+  const union = (a, b) => [...new Set([...(a || []), ...(b || [])])].sort();
+  return {
+    modelTypes: union(check.modelTypes, rename.modelTypes),
+    baseModels: union(check.baseModels, rename.baseModels),
+  };
+}
+
+function onRenameFacets(facets) {
+  state.renameFacets = {
+    modelTypes: Array.isArray(facets?.modelTypes) ? facets.modelTypes : [],
+    baseModels: Array.isArray(facets?.baseModels) ? facets.baseModels : [],
+  };
+  applyFacets(mergedFacets());
+  renderFilters();
+}
+
+/* The Rename view's filter: null for a menu that shows everything. */
+function renameFilter() {
+  const pick = (selection, options) => (selection === null || selectsAll(selection, options) ? null : [...(selection || [])]);
+  return { types: pick(state.filterTypes, state.facets.modelTypes), bases: pick(state.filterBases, state.facets.baseModels) };
+}
+
+async function onFiltersChanged() {
+  state.pageOffset = 0;
+  renderFilters();
+  // The Rename list (and so its tab count) follows the filters even while hidden.
+  state.renameView?.render();
+  if (state.resultMode === "rename") await loadModeCounts();
+  else await loadResultPage(true);
+}
+
+/* The Updates and Issues counts under the filters, while Rename is shown. */
+async function loadModeCounts() {
+  if (!state.checkJobId) return;
+  const query = new URLSearchParams({
+    offset: "0", limit: "1", mode: "updates",
+    showHidden: state.showHidden ? "1" : "0", mature: state.matureMode || "show",
+  });
+  for (const [key, value] of filterParams()) query.append(key, value);
+  try {
+    const data = await getJson(`/civitai-updater/jobs/${state.checkJobId}/items?${query.toString()}`);
+    if (data.modeCounts) state.modeCounts = data.modeCounts;
+    if (data.facets) {
+      state.checkFacets = data.facets;
+      applyFacets(mergedFacets());
+      renderFilters();
+    }
+  } catch (_) {
+    // the counts stay as they were
+  }
+  renderViewSwitch();
+}
+
 function renderFilters() {
   if (!state.filterTypeEl || !state.filterBaseEl) return;
+  if (state.sharedFiltersEl) {
+    const any = state.facets.modelTypes.length || state.facets.baseModels.length;
+    state.sharedFiltersEl.style.display = any ? "" : "none";
+  }
   syncFacetSelection("filterTypes", "modelTypes");
   syncFacetSelection("filterBases", "baseModels");
   // Re-rendering replaces the <details> menus; keep them open across a
@@ -1947,6 +2008,48 @@ async function copyToClipboard(text) {
     return copied;
   } catch (_) {
     return false;
+  }
+}
+
+const COPIED_MS = 2500;
+
+function copyPathTitle(path) {
+  return `${path}\nClick to copy the path; click again to show it in its folder.`;
+}
+
+/* A file name link: the first click copies its path ("Copied ✓"); a second
+   click while that shows opens the folder with the file selected. */
+async function copyOrReveal(target, path, jobId) {
+  if (!target || !path || target.dataset.cuPending) return; // a copy or an open is on its way
+  // The link's own text, kept once: the temporary texts never replace it.
+  if (target.dataset.cuName === undefined) target.dataset.cuName = target.textContent;
+  const name = target.dataset.cuName;
+  const show = (text, state) => {
+    clearTimeout(target._cuCopiedTimer);
+    target.textContent = text;
+    target.dataset.cuCopied = state;
+    target._cuCopiedTimer = setTimeout(() => {
+      target.textContent = name;
+      delete target.dataset.cuCopied;
+    }, COPIED_MS);
+  };
+  const again = Boolean(target.dataset.cuCopied); // "Copied ✓" (or "Copy failed") still shows
+  clearTimeout(target._cuCopiedTimer);
+  target.textContent = name;
+  delete target.dataset.cuCopied;
+  target.dataset.cuPending = "1";
+  try {
+    if (again) {
+      if (jobId) await postJson("/civitai-updater/reveal", { jobId, path });
+    } else {
+      const copied = await copyToClipboard(path);
+      show(copied ? "Copied ✓" : "Copy failed", copied ? "1" : "error");
+    }
+  } catch (error) {
+    setStatus(error?.message || String(error));
+    show("Can't open the folder", "error");
+  } finally {
+    delete target.dataset.cuPending;
   }
 }
 

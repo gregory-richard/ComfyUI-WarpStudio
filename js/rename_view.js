@@ -158,7 +158,7 @@ export function flagInfo(flag, row, rows) {
     case "new-base-code":
       return { level: "info", text: `New base code "${parts.base || ""}"${row?.baseModel ? ` for ${row.baseModel}` : ""}`, action: "base-link" };
     case "official-file":
-      return { level: "warn", text: "Official file: ComfyUI templates may look for the original name" };
+      return { level: "warn", text: "Official ComfyUI file: templates and workflows look for this exact name, so it isn't ticked" };
     case "file-not-in-release":
       return { level: "warn", text: "This file is not in the Civitai release (a conversion or a re-upload?)" };
     case "collision": {
@@ -341,8 +341,36 @@ export function canSelect(row) {
   return Boolean(row && row.status === "change" && !(row.flags || []).some(isBlockingFlag));
 }
 
+/* Whether a row is shown under the panel's Types/Bases filters (store.visibleKeys,
+   set on every render; none set shows everything). Apply acts on shown rows only. */
+function shown(store, row) {
+  return !store.visibleKeys || store.visibleKeys.has(row.key);
+}
+
+/* The rows the filters let through: {types, bases} are lists, or null for all.
+   An extra copy without a base model of its own takes its kept copy's. */
+export function filterRows(rows, filter, byKey) {
+  const types = filter?.types ?? null;
+  const bases = filter?.bases ?? null;
+  if (!types && !bases) return rows;
+  const baseOf = (row) => row.baseModel || (row.survivorKey ? byKey?.get(row.survivorKey)?.baseModel : "") || "";
+  return rows.filter((row) => (!types || types.includes(row.modelType || ""))
+    && (!bases || bases.includes(baseOf(row))));
+}
+
+/* The filter options the rows offer: their model types and base models. */
+export function rowFacets(rows) {
+  const types = new Set();
+  const bases = new Set();
+  for (const row of rows || []) {
+    if (row?.modelType) types.add(String(row.modelType));
+    if (row?.baseModel) bases.add(String(row.baseModel));
+  }
+  return { modelTypes: [...types].sort(), baseModels: [...bases].sort() };
+}
+
 export function selectedKeys(store) {
-  return store.rows.filter((row) => canSelect(row) && store.selected.get(row.key)).map((row) => row.key);
+  return store.rows.filter((row) => shown(store, row) && canSelect(row) && store.selected.get(row.key)).map((row) => row.key);
 }
 
 /* Removing a copy needs the send2trash package, which a symlinked install may lack.
@@ -367,7 +395,7 @@ export function defaultRemoveDup(store) {
 
 export function duplicateKeys(store) {
   if (!canRemoveDuplicates(store)) return [];
-  return store.rows.filter((row) => row.status === "duplicate" && store.removeDup.has(row.key)).map((row) => row.key);
+  return store.rows.filter((row) => shown(store, row) && row.status === "duplicate" && store.removeDup.has(row.key)).map((row) => row.key);
 }
 
 export function applyPayload(store) {
@@ -614,6 +642,7 @@ export function renderRenameView(container, deps) {
       store.runStatus = data.status || "";
       store.applied = Boolean(data.applied);
       store.restoredFrom = data.restoredFrom || null;
+      store.finishedAt = data.finishedAt || data.restoredFrom || null;
       store.loadedJobId = store.jobId;
       if (store.applied) {
         // Read-only: nothing is left to choose for this dry run.
@@ -746,16 +775,16 @@ export function renderRenameView(container, deps) {
     });
   }
 
-  /* Show a row's file in the file manager; an error shows on the row's line. */
-  async function reveal(row) {
-    if (!row || !store.jobId) return;
-    try {
-      await deps.postJson(`${ROUTE}/rename/reveal`, { jobId: store.jobId, key: row.key });
-      if (store.revealError?.key === row.key) store.revealError = null;
-    } catch (error) {
-      store.revealError = { key: row.key, text: error?.message || String(error) };
-    }
-    render();
+  /* Keep or remove an extra copy on Apply; its line is drawn again in place. */
+  function toggleCopy(row, remove, target) {
+    if (!row || row.status !== "duplicate" || !canRemoveDuplicates(store) || locked()) return;
+    if (remove) store.removeDup.add(row.key);
+    else store.removeDup.delete(row.key);
+    saveSelection();
+    const host = target.closest("[data-rn-key]");
+    const card = cardsById.get(target.closest("[data-rn-card]")?.dataset.rnCard);
+    if (host && card) host.outerHTML = fileHtml(row, new Set(card.rows.map((r) => r.key)), locked());
+    updateSelectionUi();
   }
 
   async function downloadModel() {
@@ -822,8 +851,10 @@ export function renderRenameView(container, deps) {
       if (store.baseCodesEmptyBeforeRun && codes) store.baseOpen = true;
       store.baseCodesEmptyBeforeRun = null;
       if (job.status === "completed") {
+        // The summary line above the list says it; the status line says it too.
         const look = groupCards(store.rows).look.length;
-        notify(`Dry run done: ${plural(store.rows.length, "entry", "entries")}, ${lookText(look)}.`);
+        notify(null);
+        deps.setStatus?.(`Dry run done: ${plural(store.rows.length, "file")}, ${lookText(look)}.`);
       } else if (job.status === "cancelled") {
         notify("Dry run stopped. The entries named so far are listed.");
       } else {
@@ -866,11 +897,30 @@ export function renderRenameView(container, deps) {
   let shownSections = null;
   let cardsById = new Map();
 
+  // The rows the panel's filter menus were last given options for.
+  let facetRows = null;
+  let facetCount = -1;
+
   function render() {
+    if (facetRows !== store.rows || facetCount !== store.rows.length) {
+      facetRows = store.rows;
+      facetCount = store.rows.length;
+      deps.onFacets?.(rowFacets(store.rows));
+    }
     shownSections = null;
     cardsById = new Map();
     container.innerHTML = buildHtml();
+    deps.onCount?.();
   }
+
+  /* Models with a new name to apply (Needs a look and Changes), under the filters;
+     null before a dry run is loaded. */
+  function modelCount() {
+    if (!store.rows.length || !shownSections) return null;
+    return shownSections.look.length + shownSections.change.length;
+  }
+
+  const isOpen = (id) => store.open[id] ?? (id === "look" || id === "change");
 
   function buildHtml() {
     const status = store.status;
@@ -906,28 +956,28 @@ export function renderRenameView(container, deps) {
       </div>`);
     }
 
+    const visible = filterRows(store.rows, deps.filter?.(), store.byKey);
+    store.visibleKeys = visible === store.rows ? null : new Set(visible.map((row) => row.key));
+    if (store.rows.length) {
+      shownSections = groupCards(visible);
+      cardsById = new Map(Object.values(shownSections).flat().map((card) => [card.id, card]));
+    }
+
+    html.push(headHtml());
     html.push(messageHtml());
-    html.push(runBarHtml());
     html.push(resultHtml());
 
     if (store.rows.length) {
-      const sections = groupCards(store.rows);
-      shownSections = sections;
-      cardsById = new Map(Object.values(sections).flat().map((card) => [card.id, card]));
-      html.push(headHtml());
-      if (store.applied) {
-        html.push(`<div class="cu-rn-banner" data-level="info"><div class="cu-rn-banner-text">These names were applied. Run a new dry run to see your files as they are now.</div></div>`);
-      } else if (store.restoredFrom) {
-        html.push(`<div class="cu-rn-banner" data-level="info"><div class="cu-rn-banner-text">Dry run from ${esc(formatTime(store.restoredFrom))}, restored after a restart. Files changed since are skipped when you apply.</div></div>`);
-      }
+      const sections = shownSections;
       if (store.confirming) html.push(confirmHtml());
-      if (!canRemoveDuplicates(store) && store.rows.some((row) => row.status === "duplicate")) {
+      if (!canRemoveDuplicates(store) && visible.some((row) => row.status === "duplicate")) {
         html.push(`<div class="cu-rn-hint">${esc(NO_SEND2TRASH)}</div>`);
       }
-      html.push(sectionHtml("look", "Needs a look", sections.look, true));
-      html.push(sectionHtml("change", "Changes", sections.change, true));
-      html.push(sectionHtml("unchanged", "Unchanged", sections.unchanged, store.open.unchanged));
-      html.push(sectionHtml("kept", "Kept, not renamed", sections.kept, store.open.kept));
+      html.push(sectionHtml("look", "Needs a look", sections.look));
+      html.push(sectionHtml("change", "Changes", sections.change));
+      html.push(sectionHtml("unchanged", "Unchanged", sections.unchanged));
+      html.push(sectionHtml("kept", "Kept, not renamed", sections.kept));
+      if (!visible.length) html.push(`<div class="cu-empty">No files match the Types and Bases filters.</div>`);
     } else if (store.jobId && !store.runActive && store.loadedJobId === store.jobId && store.runStatus === "completed") {
       html.push(`<div class="cu-empty">This dry run found nothing to rename.</div>`);
     }
@@ -948,28 +998,45 @@ export function renderRenameView(container, deps) {
       <button class="cu-text-btn" data-rn-action="dismiss" title="Dismiss">\u00d7</button></div>`;
   }
 
-  function runBarHtml() {
+  /* The top of the view, laid out like Updates: one summary line, then the
+     controls (a new dry run, and Apply saying what it will do). */
+  function headHtml() {
     const status = store.status;
     const job = otherJob();
     const running = store.runActive || (job && RENAME_JOB_TYPES.includes(job.type));
-    const label = store.rows.length || store.applied ? "Run a new dry run" : "Start dry run";
-    const blockedBy = job && !RENAME_JOB_TYPES.includes(job.type) ? "Another job is running." : "";
-    return `<div class="cu-rn-runbar">
-      <button class="cu-btn cu-btn-sm${store.rows.length ? "" : " cu-btn-primary"}" data-rn-action="dry-run"${disabledIf(!status?.available || store.busy || job)}>${label}</button>
-      <span class="cu-rn-run" data-rn-run>${esc(running ? store.runLine : blockedBy)}</span>
-    </div>
-    <div class="cu-rn-hint">The dry run only proposes names; nothing on disk changes until you apply.</div>`;
-  }
-
-  function headHtml() {
-    const sections = shownSections || groupCards(store.rows);
-    const changes = store.rows.filter((row) => row.status === "change").length;
-    const keys = selectedKeys(store);
-    const removals = duplicateKeys(store);
-    const n = keys.length + removals.length;
+    const hasRows = store.rows.length > 0;
+    const runLabel = hasRows || store.applied ? "Run a new dry run" : "Start dry run";
+    const run = `<button class="cu-btn cu-btn-sm${hasRows ? "" : " cu-btn-primary"}" data-rn-action="dry-run"${disabledIf(!status?.available || store.busy || job)}>${runLabel}</button>`;
+    let summary;
+    let apply = "";
+    if (running) {
+      summary = esc(store.runLine || "Dry run\u2026");
+    } else if (job && !RENAME_JOB_TYPES.includes(job.type)) {
+      summary = "Another job is running.";
+    } else if (!hasRows) {
+      summary = "No dry run yet. A dry run proposes new names; nothing changes on disk until you apply.";
+    } else {
+      const shownRows = store.visibleKeys ? store.rows.filter((row) => store.visibleKeys.has(row.key)) : store.rows;
+      const changes = shownRows.filter((row) => row.status === "change").length;
+      const extras = shownRows.filter((row) => row.status === "duplicate").length;
+      const look = shownSections?.look.length || 0;
+      const when = store.finishedAt ? `Dry run ${esc(formatTime(store.finishedAt))}` : "Dry run";
+      const parts = [when, plural(shownRows.length, "file"), `${count(changes)} to rename`];
+      if (extras) parts.push(plural(extras, "extra copy", "extra copies"));
+      if (store.applied) parts.push("<b>applied</b>");
+      else if (look) parts.push(`<b>${count(look)} need${look === 1 ? "s" : ""} a look</b>`);
+      summary = parts.join(" \u00b7 ");
+      if (!store.applied) {
+        const renames = selectedKeys(store).length;
+        const removals = duplicateKeys(store).length;
+        const what = [renames || !removals ? `Rename ${count(renames)}` : "", removals ? `remove ${count(removals)}` : ""]
+          .filter(Boolean).join(" \u00b7 ");
+        apply = `<button class="cu-btn cu-btn-sm cu-btn-primary" data-rn-action="confirm"${disabledIf(!(renames + removals) || locked() || store.confirming)}>${what.charAt(0).toUpperCase() + what.slice(1)}</button>`;
+      }
+    }
     return `<div class="cu-rn-head" data-rn-head>
-      <div class="cu-rn-counts">Rename · ${plural(store.rows.length, "entry", "entries")} · ${count(changes)} change · <b>${lookText(sections.look.length)}</b></div>
-      ${store.applied ? "" : `<button class="cu-btn cu-btn-sm cu-btn-primary" data-rn-action="confirm"${disabledIf(!n || locked() || store.confirming)}>Apply ${count(n)} selected</button>`}
+      <div class="cu-summary cu-rn-summary" data-rn-run>${summary}</div>
+      <div class="cu-rn-controls">${run}${apply}</div>
     </div>`;
   }
 
@@ -1029,21 +1096,23 @@ export function renderRenameView(container, deps) {
     return `<button class="cu-text-btn" data-rn-action="select-all" data-rn-section="${id}" data-rn-on="${allOn ? "0" : "1"}"${disabledIf(locked())}>${allOn ? "Select none" : "Select all"}</button>`;
   }
 
-  function sectionHtml(id, title, cards, open) {
+  function sectionHtml(id, title, cards) {
     if (!cards.length) return "";
+    const open = isOpen(id);
     const limit = store.limits[id] || PAGE;
     const shown = cards.slice(0, limit);
-    const hideable = id === "unchanged" || id === "kept";
     const body = open
       ? `<div class="cu-rn-cards">${shown.map(cardHtml).join("")}</div>
         ${cards.length > limit ? `<button class="cu-text-btn cu-rn-more" data-rn-action="more" data-rn-section="${id}">Show ${count(Math.min(PAGE, cards.length - limit))} more of ${count(cards.length - limit)}</button>` : ""}`
       : "";
     return `<section class="cu-rn-section" data-rn-id="${id}">
-      <div class="cu-rn-section-head">
-        ${hideable
-          ? `<button class="cu-rn-section-toggle" data-rn-action="toggle-section" data-rn-section="${id}" aria-expanded="${open}"><span class="cu-group-caret">${open ? "▾" : "▸"}</span>${esc(title)} <span class="cu-rn-section-count">${count(cards.length)}${open ? "" : " · hidden"}</span></button>`
-          : `<span class="cu-rn-section-title">${esc(title)} <span class="cu-rn-section-count">${count(cards.length)}</span></span>`}
-        ${open ? `<span data-rn-toggle="${id}">${toggleHtml(id, cards)}</span>` : ""}
+      <div class="cu-group-head-wrap cu-rn-section-head">
+        <button class="cu-group-head" data-rn-action="toggle-section" data-rn-section="${id}" data-collapsed="${open ? "false" : "true"}" aria-expanded="${open}">
+          <span class="cu-group-caret" aria-hidden="true">\u25be</span>
+          <span class="cu-group-name">${esc(title)}</span>
+          <span class="cu-group-count">${plural(cards.length, "model")}</span>
+        </button>
+        ${open ? `<span class="cu-rn-section-tools" data-rn-toggle="${id}">${toggleHtml(id, cards)}</span>` : ""}
       </div>
       ${body}
     </section>`;
@@ -1094,14 +1163,13 @@ export function renderRenameView(container, deps) {
       const selectable = canSelect(row);
       const on = selectable && store.selected.get(row.key);
       check = `<input type="checkbox" data-rn-select${on ? " checked" : ""}${disabledIf(!selectable || isLocked)} title="${selectable ? "Rename this file on Apply" : "Fix the problems below first"}">`;
-    } else if (dup) {
-      check = `<input type="checkbox" data-rn-dup${removing ? " checked" : ""}${disabledIf(isLocked || !canRemove)} title="${canRemove ? "Remove this extra copy on Apply" : esc(NO_SEND2TRASH)}">`;
     }
     let role = row.metadataOnly ? "metadata" : "saved";
     let label = row.metadataOnly ? "Metadata" : "Saved";
     if (dup) [role, label] = ["extra", "Extra copy"];
     else if (row.status === "error") [role, label] = ["error", "Error"];
-    const old = `<span class="cu-ver-link cu-copy-path cu-rn-old" data-rn-action="reveal" title="${esc(`${row.modelPath || ""}\nClick to show in folder`)}">${esc(row.oldStem)}</span>`;
+    const copyTitle = deps.copyPathTitle ? deps.copyPathTitle(row.modelPath || "") : row.modelPath || "";
+    const old = `<span class="cu-ver-link cu-copy-path cu-rn-old" data-rn-action="copy-path" title="${esc(copyTitle)}">${esc(row.oldStem)}</span>`;
     const renamed = row.status === "change"
       ? `<span class="cu-rn-new" title="${esc(row.newStem)}"><span class="cu-rn-arrow">→</span>${nameDiff(row.oldStem, row.newStem)
         .map((piece) => (piece.changed ? `<mark class="cu-rn-diff">${esc(piece.text)}</mark>` : esc(piece.text))).join("")}</span>`
@@ -1111,6 +1179,10 @@ export function renderRenameView(container, deps) {
       actions.push(`<button class="cu-inline-btn" data-rn-action="edit"${disabledIf(isLocked)}>Edit</button>`);
       if (row.status === "change") actions.push(`<button class="cu-inline-btn" data-rn-action="keep"${disabledIf(isLocked)} title="Don't rename this file">Keep current name</button>`);
       if (!(row.flags || []).includes("ask-again")) actions.push(`<button class="cu-inline-btn" data-rn-action="ask-again"${disabledIf(isLocked)} title="Forget the saved name; the naming model names this model again on the next dry run">Ask again</button>`);
+    } else if (dup && canRemove) {
+      actions.push(removing
+        ? `<button class="cu-inline-btn" data-rn-action="keep-copy"${disabledIf(isLocked)} title="Keep this copy; Apply leaves it alone">Keep</button>`
+        : `<button class="cu-inline-btn" data-rn-action="remove-copy"${disabledIf(isLocked)} title="Move this copy to the Recycle Bin on Apply">Remove</button>`);
     } else if (row.status === "kept" && row.reason === "kept-by-you") {
       actions.push(`<button class="cu-inline-btn" data-rn-action="unkeep"${disabledIf(isLocked)} title="Rename this file after all">Undo keep current name</button>`);
     }
@@ -1124,10 +1196,9 @@ export function renderRenameView(container, deps) {
     } else {
       messages.push(`<div class="cu-issue-msg"${row.status === "error" ? ' data-level="block"' : ""}>${esc(reasonText(row, store.byKey))}</div>`);
     }
-    if (store.revealError?.key === row.key) messages.push(`<div class="cu-issue-msg" data-level="block">${esc(store.revealError.text)}</div>`);
     const quiet = row.status === "unchanged" || row.status === "kept";
     // A line that needs a look shows its buttons; the others show them on hover.
-    const attention = messages.length > 0 || store.editing === row.key;
+    const attention = messages.length > 0 || dup || store.editing === row.key;
     const base = row.parts?.base || "—";
     return `<div class="cu-rn-file${quiet ? " is-quiet" : ""}" data-rn-key="${esc(row.key)}" data-status="${esc(row.status)}"${removing ? " data-removing" : ""}${attention ? " data-attention" : ""}>
       <div class="cu-ver-row cu-rn-line">
@@ -1258,7 +1329,7 @@ export function renderRenameView(container, deps) {
       case "apply": applySelected(); break;
       case "toggle-section": {
         const id = target.dataset.rnSection;
-        store.open[id] = !store.open[id];
+        store.open[id] = !isOpen(id);
         render();
         break;
       }
@@ -1270,7 +1341,7 @@ export function renderRenameView(container, deps) {
       }
       case "select-all": {
         const on = target.dataset.rnOn === "1";
-        const cards = groupCards(store.rows)[target.dataset.rnSection] || [];
+        const cards = (shownSections || groupCards(store.rows))[target.dataset.rnSection] || [];
         for (const card of cards) for (const r of card.rows) if (canSelect(r)) store.selected.set(r.key, on);
         saveSelection();
         render();
@@ -1299,7 +1370,13 @@ export function renderRenameView(container, deps) {
       case "use-uploader":
         if (row && row.uploader) decide({ jobId: store.jobId, modelId: row.modelId, creator: row.uploader });
         break;
-      case "reveal": reveal(row); break;
+      case "copy-path":
+        if (row?.modelPath) deps.copyOrReveal?.(target, row.modelPath, store.jobId);
+        break;
+      case "keep-copy":
+      case "remove-copy":
+        toggleCopy(row, action === "remove-copy", target);
+        break;
       case "preview": openPreview(cardsById.get(target.closest("[data-rn-card]")?.dataset.rnCard)); break;
       case "base-link": openBaseCode(target.dataset.rnBase || ""); break;
       case "save-base": saveBaseCode(target.dataset.rnBase || ""); break;
@@ -1340,12 +1417,6 @@ export function renderRenameView(container, deps) {
     if (target.hasAttribute("data-rn-select")) {
       if (!canSelect(row)) return;
       store.selected.set(row.key, target.checked);
-    } else if (target.hasAttribute("data-rn-dup")) {
-      if (row.status !== "duplicate" || !canRemoveDuplicates(store)) return;
-      if (target.checked) store.removeDup.add(row.key);
-      else store.removeDup.delete(row.key);
-      // Struck through while it is to be removed.
-      target.closest("[data-rn-key]")?.toggleAttribute("data-removing", target.checked);
     } else {
       return;
     }
@@ -1397,7 +1468,7 @@ export function renderRenameView(container, deps) {
   }
 
   render();
-  return { refresh, onJob, render };
+  return { refresh, onJob, render, count: modelCount };
 }
 
 function cssEscape(text) {
@@ -1431,13 +1502,6 @@ const RENAME_CSS = `
     font-family: var(--cu-mono);
     font-size: 10.5px;
     overflow-wrap: anywhere;
-  }
-
-  .cu-rn-runbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
   }
 
   .cu-rn-run {
@@ -1490,25 +1554,32 @@ const RENAME_CSS = `
     color: var(--cu-amber);
   }
 
-  .cu-rn-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding-top: 8px;
-    border-top: 1px solid var(--cu-seam);
+  /* The top of Rename: the Updates summary line, then two controls side by side
+     like the Updates filter row. */
+  .cu-rn .cu-rn-summary {
+    margin-bottom: 0;
+    overflow-wrap: anywhere;
   }
 
-  .cu-rn-counts {
-    font-family: var(--cu-mono);
-    font-size: 10.5px;
-    color: var(--cu-ash);
-  }
-
-  .cu-rn-counts b {
+  .cu-rn-summary b {
     color: var(--cu-amber);
     font-weight: 500;
+  }
+
+  .cu-rn-head {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .cu-rn-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .cu-rn-controls > .cu-btn:only-child {
+    grid-column: 1 / -1;
   }
 
   .cu-rn-result {
@@ -1546,17 +1617,30 @@ const RENAME_CSS = `
     gap: 6px;
   }
 
-  .cu-rn-section-head {
+  /* Section heads are the Updates group band; Select all sits at its end. */
+  .cu-rn .cu-rn-section-head {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0 2px;
-    border-bottom: 1px solid var(--cu-seam);
+    align-items: flex-end;
+    gap: 10px;
+    margin: 6px 0 0;
+    border-bottom: 1px solid var(--cu-seam-strong);
   }
 
-  .cu-rn-section-title,
-  .cu-rn-section-toggle,
+  .cu-rn .cu-rn-section-head .cu-group-head {
+    flex: 1 1 auto;
+    min-width: 0;
+    border-bottom: 0;
+  }
+
+  .cu-rn-section-tools {
+    padding-bottom: 5px;
+    white-space: nowrap;
+  }
+
+  .cu-rn-section-tools .cu-text-btn {
+    font-size: 9.5px;
+  }
+
   .cu-rn-bases > summary {
     font-family: var(--cu-mono);
     font-size: 9.5px;
@@ -1564,20 +1648,6 @@ const RENAME_CSS = `
     text-transform: uppercase;
     letter-spacing: 0.12em;
     color: var(--cu-ash);
-  }
-
-  .cu-rn-section-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: none;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-  }
-
-  .cu-rn-section-toggle:hover {
-    color: var(--cu-bone);
   }
 
   .cu-rn-section-count {

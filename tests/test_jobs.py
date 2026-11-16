@@ -223,6 +223,9 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual("m2", result["items"][0]["modelId"])
         self.assertEqual(["checkpoint", "lora"], result["facets"]["modelTypes"])
         self.assertEqual(["Flux.1 D", "SDXL 1.0"], result["facets"]["baseModels"])
+        # The menus serve every view: Issues offers the same options as Updates.
+        issues = self.manager.get_items("job-1", mode="issues")
+        self.assertEqual(result["facets"], issues["facets"])
 
     def test_start_refuses_second_concurrent_job(self) -> None:
         import threading
