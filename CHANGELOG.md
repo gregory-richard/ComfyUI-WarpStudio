@@ -18,8 +18,8 @@
   (9.75 GB) from the view. A ComfyUI without Generate Text cannot run the
   renamer, and the view says so.
 - A dry run lists every old name next to its new one and changes nothing. You
-  review it (flags, edits, **Keep current name**, **Ask again**, **Remove extra
-  copy**) and then **Apply selected**. Edits and applied names are remembered
+  review it, one card per model as in **Updates** (flags, edits, **Keep current
+  name**, **Ask again**, extra copies to remove) and then **Apply selected**. Edits and applied names are remembered
   per model; applied names stay locked until **Ask again**.
 - Kept, not renamed: models Civitai no longer serves, the VAE folder, files
   whose Civitai match is not the release's main model file or whose type does

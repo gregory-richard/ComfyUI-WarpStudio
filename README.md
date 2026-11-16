@@ -148,12 +148,15 @@ too old to have Generate Text cannot run the renamer; the view says so.
 1. **Start dry run.** It asks Civitai about every model and the naming model
    about every title, and lists each old name next to its new name. Nothing on
    disk changes yet. The answers are saved, so a second dry run only asks
-   about models that changed.
+   about models that changed. Each model is one card, as in **Updates**: its
+   preview, Civitai title and uploader, and one line per file. Click a file's
+   name to show it in its folder.
 2. **Review.** Rows that need a look come first: a word the naming model could
    not find in Civitai's text, a maker taken from the description, two files
    that would get the same name, two versions or two models by one creator
    that would get the same name or title (the naming model is asked once more
-   first), an official file ComfyUI's templates may look for, a new base code. Each row shows which parts changed. You can **Edit**
+   first), an official file ComfyUI's templates may look for, a new base code. The new
+   name is under the current one, with the changed words marked. You can **Edit**
    any part, **Keep current name**, or **Ask again** to let the naming model name
    the model afresh on the next dry run.
 3. **Apply selected** renames the ticked rows and moves the extra copies to the
@@ -162,12 +165,12 @@ too old to have Generate Text cannot run the renamer; the view says so.
 The same Civitai file saved twice in one folder is listed once as an extra
 copy. The copy kept is one with weights, if any, and then the one whose name
 matches its Civitai info; a copy saved under the wrong name long ago is the
-extra one. The row says why, shows both files with **Show in folder**, and
-starts with **Remove extra copy** ticked when the copies are the same Civitai
-file or have the same stored hash; untick it to keep both. An extra copy goes to
+extra one. It is the line under the copy kept, and starts ticked (its name
+struck through) when the copies are the same Civitai file or have the same
+stored hash; untick it to keep both. An extra copy goes to
 the Recycle Bin with its `.civitai.info` and `.preview.png`, and its weights
 only when they are byte-identical to the kept copy's. Any other file of its name
-(an archive, a backup) stays where it is. The row lists the files that go.
+(an archive, a backup) stays where it is.
 
 The naming model gets roughly three in four names exactly right on models it
 has not seen before. Read the list before you apply it.

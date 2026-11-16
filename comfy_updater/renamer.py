@@ -48,6 +48,7 @@ from .naming_scheme import (
 )
 from .path_resolver import list_model_files
 from .rename_apply import assign_siblings, file_identity, removable_copy_files
+from .updater_service import _first_preview
 from .rename_store import AnswerCache, BaseCodeStore, DecisionStore
 from .sidecar import read_json
 from .updater_service import _dedupe_model_files, _stored_sha256
@@ -167,7 +168,34 @@ def _match_file(version: dict, sha256: str) -> Optional[dict]:
     return next((item for item in files if item.get("type") in MAIN_FILE_TYPES), None)
 
 
-def _finished_row(entry: Entry, file_key: str, status: str, reason: str) -> dict:
+def _preview_fields(entry: Entry, model: Optional[dict] = None) -> dict:
+    """What the panel's card shows for a row: a preview, the mature flag and the folder's type.
+
+    The preview is the info file's first image (else video), else the live version's.
+    Mature is the live model's flag, else the info file's model flag.
+    """
+    model = model if isinstance(model, dict) else {}
+    url, kind = _safe_preview(entry.info)
+    if not url:
+        try:
+            version = _find_version(model, entry.version_id) or {}
+        except TypeError:  # malformed live data: its error row still gets the fields
+            version = {}
+        url, kind = _safe_preview(version)
+    live_nsfw = model.get("nsfw")
+    if isinstance(live_nsfw, bool):
+        nsfw = live_nsfw
+    else:
+        nsfw = bool(_as_dict(entry.info.get("model")).get("nsfw"))
+    return {"previewUrl": url, "previewType": kind, "nsfw": nsfw, "modelType": entry.model_type}
+
+
+def _safe_preview(data: dict) -> Tuple[str, str]:
+    images = data.get("images")
+    return _first_preview(data) if isinstance(images, list) else ("", "image")
+
+
+def _finished_row(entry: Entry, file_key: str, status: str, reason: str, model: Optional[dict] = None) -> dict:
     return {
         "key": _entry_key(entry),
         "modelId": entry.model_id,
@@ -184,6 +212,7 @@ def _finished_row(entry: Entry, file_key: str, status: str, reason: str) -> dict
         "reason": reason,
         "selected": False,
         "metadataOnly": entry.metadata_only,
+        **_preview_fields(entry, model),
         **entry.identity,
     }
 
@@ -301,7 +330,7 @@ def _split_duplicates(placed: List[Placed], model: Optional[dict] = None) -> Tup
                 continue
             duplicates[id(item)] = survivor
             live = names[id(item)]
-            row = _finished_row(item.entry, item.file_key, "duplicate", "duplicate")
+            row = _finished_row(item.entry, item.file_key, "duplicate", "duplicate", model)
             row["survivorKey"] = _entry_key(survivor.entry)
             row["survivorPath"] = str(survivor.entry.path)
             row.update(live)
@@ -377,7 +406,7 @@ def _classify_model(
         return _sort_model(model_id, model, model_entries, decisions)
     except Exception as exc:  # noqa: BLE001 - one model's odd live data must not end the run
         reason = str(exc) or type(exc).__name__
-        return None, [_finished_row(entry, path_file_key(entry.path), "error", reason) for entry in model_entries]
+        return None, [_finished_row(entry, path_file_key(entry.path), "error", reason, model) for entry in model_entries]
 
 
 def classify(
@@ -418,20 +447,20 @@ def _sort_model(
     for entry in model_entries:
         version = _find_version(model, entry.version_id)
         if version is None:
-            rows.append(_finished_row(entry, path_file_key(entry.path), "kept", "release-gone"))
+            rows.append(_finished_row(entry, path_file_key(entry.path), "kept", "release-gone", model))
             continue
         matched = _match_file(version, entry.sha256)
         file_key = f"file:{_identifier(matched.get('id'))}" if matched and _identifier(matched.get("id")) else ""
         if not file_key:
             file_key = path_file_key(entry.path)
         if live_type not in TYPE_FIT.get(entry.model_type, set()):
-            rows.append(_finished_row(entry, file_key, "kept", "type-mismatch"))
+            rows.append(_finished_row(entry, file_key, "kept", "type-mismatch", model))
             continue
         if matched is not None and matched.get("type") not in MAIN_FILE_TYPES:
-            rows.append(_finished_row(entry, file_key, "kept", "not-main-file"))
+            rows.append(_finished_row(entry, file_key, "kept", "not-main-file", model))
             continue
         if decisions.file(file_key).get("keep") is True:
-            rows.append(_finished_row(entry, file_key, "kept", "kept-by-you"))
+            rows.append(_finished_row(entry, file_key, "kept", "kept-by-you", model))
             continue
         placed.append(Placed(entry=entry, file=matched, file_key=file_key))
 
@@ -874,6 +903,7 @@ def _group_rows(
                     # The live Civitai uploader, whoever the name credits.
                     "uploader": pending.model_input.creator,
                     "metadataOnly": entry.metadata_only,
+                    **_preview_fields(entry, group.model),
                     **entry.identity,
                 }
             )
@@ -971,7 +1001,7 @@ class _FolderCheck:
 
 
 def _error_rows(group: ModelGroup, exc: Exception) -> List[dict]:
-    return [_finished_row(p.entry, p.file_key, "error", str(exc) or type(exc).__name__) for p in group.placed]
+    return [_finished_row(p.entry, p.file_key, "error", str(exc) or type(exc).__name__, group.model) for p in group.placed]
 
 
 # Models per Generate Text call: the long system prompt is read once for all of them.

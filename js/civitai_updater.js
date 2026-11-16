@@ -320,6 +320,8 @@ async function renderTab(el) {
     adoptNamingModel,
     setNamingModels,
     reloadResults: reloadCheckResults,
+    matureMode: () => state.matureMode,
+    openPreview: openLightbox,
   });
   bindEvents(root);
   state.statusEl.textContent = state.statusText;
@@ -1453,6 +1455,7 @@ function onMatureModeChanged() {
   state.matureMode = next;
   state.pageOffset = 0;
   loadResultPage(true);
+  state.renameView?.render();
 }
 
 function renderFilters() {
