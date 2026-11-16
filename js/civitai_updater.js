@@ -368,6 +368,10 @@ async function loadCachedResults() {
   // meanwhile owns the results view; binding to the cached record after that
   // would pin the list to the previous check's results for the whole run.
   const superseded = () => Boolean(state.currentJobId || state.checkJobId);
+  // Until the last check is back, the list shows that it is loading, not that it is empty.
+  state.startupLoading = true;
+  setLoading("startup", true);
+  renderResults();
   try {
     // Reconnect to any job that is still running server-side (scan or
     // check) so a page reload keeps progress and the pause/stop controls.
@@ -416,6 +420,11 @@ async function loadCachedResults() {
     await loadResultPage(true);
   } catch (_) {
     // cache load is best-effort
+  } finally {
+    state.startupLoading = false;
+    setLoading("startup", false);
+    state.lastRenderSignature = null;
+    renderResults();
   }
 }
 
@@ -1198,8 +1207,15 @@ function renderResults() {
     state.checkSummaryEl.textContent = state.resultItems.length
       ? "Check in progress \u2014 previous results are shown until each model is re-checked."
       : "Check in progress\u2026";
+  } else if (state.startupLoading) {
+    state.checkSummaryEl.textContent = "Loading the last check…";
   } else {
     state.checkSummaryEl.textContent = "No update check has run yet.";
+  }
+  if (state.startupLoading && !state.resultItems.length) {
+    state.lastRenderSignature = null;
+    state.resultsEl.innerHTML = `<div class="cu-loading-note"><span class="cu-spinner" aria-hidden="true"></span>Loading results…</div>`;
+    return;
   }
   // A check job polls every 800ms; without this the whole list is torn down
   // and rebuilt each tick, which replays the entry animation and makes the
