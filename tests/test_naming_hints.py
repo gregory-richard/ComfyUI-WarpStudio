@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from comfy_updater.naming_ai import Slot
-from comfy_updater.naming_check import base_numbers, name_check_flags, type_words
+from comfy_updater.naming_check import base_numbers, base_vocabulary, glued_names, name_check_flags, type_words
 from comfy_updater.renamer import _names_from_files, _telling_hint
 
 
@@ -46,6 +46,19 @@ class TellingHintTests(unittest.TestCase):
     def test_nothing_to_tell_them_apart(self) -> None:
         pending = _Pending("source")
         self.assertEqual(".", _telling_hint(pending, (slot("1", "H"), "a.safetensors"), (slot("2", "H"), "a.safetensors"), frozenset()))
+
+
+class GluedNameTests(unittest.TestCase):
+    VOCAB = base_vocabulary(["Krea 2", "krea2", "Pony", "pony"])
+
+    def test_a_base_glued_into_the_models_own_name_must_stay(self) -> None:
+        self.assertEqual(["KreaCore"], glued_names("KreaCore", "kore", self.VOCAB))
+        self.assertEqual(["PonyRealism"], glued_names("PonyRealism", "realism", self.VOCAB))
+
+    def test_kept_whole_or_separate_words_pass(self) -> None:
+        self.assertEqual([], glued_names("KreaCore", "kreacore", self.VOCAB))
+        self.assertEqual([], glued_names("Pony Realism", "realism", self.VOCAB))  # a base tag in its own word
+        self.assertEqual([], glued_names("Krea2 Glow", "glow", self.VOCAB))
 
 
 class BaseNumberTests(unittest.TestCase):

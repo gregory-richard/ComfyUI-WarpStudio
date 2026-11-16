@@ -155,6 +155,8 @@ export function flagInfo(flag, row, rows) {
       return { level: "warn", text: `“${arg}” is a base-model name — usually it doesn't belong here` };
     case "version-format":
       return { level: "warn", text: `Write ${arg.replace(/(\.0+)+$/, "")} instead of ${arg}` };
+    case "glued-name":
+      return { level: "warn", text: `“${arg}” is the model's own name; the new title doesn't keep it whole` };
     case "base-number":
       return { level: "warn", text: `“${arg}” is the base model's number, not a version` };
     case "type-word":

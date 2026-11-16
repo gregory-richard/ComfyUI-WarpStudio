@@ -32,6 +32,7 @@ from .naming_ai import (
 from .naming_check import (
     base_conflict,
     base_vocabulary,
+    glued_names,
     invented_words,
     maker_in_description,
     name_check_flags,
@@ -674,6 +675,8 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
         if not format_part(answer.bases.get(name, "")):
             problems.append(f'There is no "base {name}:" line.')
     vocabulary = base_vocabulary(pending.base_names + list(answer.bases.values()))
+    for word in glued_names(pending.model_input.title, answer.title, vocabulary):
+        problems.append(f'"{word}" is the model\'s own name; keep it whole in the title.')
     for slot, _members in pending.slot_members:
         probe = NameParts(
             creator=original or "creator",
@@ -881,6 +884,10 @@ def _group_rows(
     title_from_answer = "title" not in model_decision
     title = answer.title if title_from_answer else model_decision["title"]
     title_invented = invented_words(pending.source, [answer.title]) if title_from_answer and not answer.unparsed else []
+    title_glued = (
+        glued_names(pending.model_input.title, answer.title, base_vocabulary(pending.base_names))
+        if title_from_answer and not answer.unparsed else []
+    )
 
     decided_keys: Set[str] = set()  # rows whose version the user decided
     model_bases = list(dict.fromkeys(slot.base_model for slot, _members in pending.slot_members if slot.base_model))
@@ -911,6 +918,7 @@ def _group_rows(
             if version_from_answer and not answer.unparsed:
                 invented.extend(invented_words(pending.source, [version]))
             flags.extend(f"invented:{word}" for word in invented)
+            flags.extend(f"glued-name:{word}" for word in title_glued)
             code = base_codes.code(slot.base_model) if slot.base_model else None
             if code is None:
                 code = answer.bases.get(slot.base_model, "")
@@ -1017,7 +1025,7 @@ def _names_from_files(rows: List[dict], decided: Optional[Callable[[dict], bool]
 
 # What a row's flags say about the naming model's answer (dropped when the user's own name is used).
 _ANSWER_FLAG_KINDS = {
-    "version-clash", "invented", "unparsed", "base-word", "version-format", "type-word", "base-number",
+    "version-clash", "invented", "unparsed", "base-word", "version-format", "type-word", "base-number", "glued-name",
     "maker-from-description", "maker-not-in-description", "maker-unknown", "creator-from-file-name",
 }
 

@@ -1477,6 +1477,8 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
             continue
         if flag in _MAKER_FLAGS and "creator" in decided:
             continue
+        if kind == "glued-name" and "title" in decided:
+            continue
         if kind == "invented" and word.lower() not in undecided_words:
             continue
         if flag == "unparsed" and {"title", "version"} <= decided:

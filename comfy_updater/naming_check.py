@@ -274,6 +274,29 @@ def name_check_flags(
     return list(dict.fromkeys(flags))
 
 
+def glued_names(source_title: str, answer_title: str, vocabulary: FrozenSet[str]) -> List[str]:
+    """Words of the Civitai title that glue a base name onto another word ("KreaCore") and that the
+    answer's title no longer holds whole.
+
+    Such a word is the creator's own name for the model, like "CleavageXL": the
+    base name in it is part of the name, not a base tag to take out.
+    """
+    answer = _compact(answer_title or "")
+    found = []
+    for piece in _PIECE_SPLIT.split(source_title or ""):
+        word = _compact(piece)
+        if len(word) < 6 or word in vocabulary or word in answer:
+            continue
+        for base in vocabulary:
+            if len(base) < 4 or base == word:
+                continue
+            rest = word[len(base):] if word.startswith(base) else word[: -len(base)] if word.endswith(base) else ""
+            if len(rest) >= 3 and rest.isalpha() and rest not in vocabulary:
+                found.append(piece)
+                break
+    return found
+
+
 def base_numbers(version: str, base_model: str) -> List[str]:
     """Version numbers that are only the base model's own number: "v2.2" on Wan Video 2.2.
 
