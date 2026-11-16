@@ -157,8 +157,9 @@ too old to have Generate Text cannot run the renamer; the view says so.
    that would get the same name or title (the naming model is asked once more
    first), a version whose own name names another base, a new base code. The new
    name is under the current one, with the changed words marked. You can **Edit**
-   any part, **Keep current name**, or **Ask again** to let the naming model name
-   the model afresh on the next dry run.
+   any part, or **Ask again** to let the naming model name the model afresh on
+   the next dry run. The checkbox decides whether a file is renamed: a file you
+   untick keeps its name, also in later dry runs, until you tick it again.
 3. **Apply selected** renames the ticked rows and moves the extra copies to the
    Recycle Bin.
 
@@ -188,7 +189,7 @@ The dry run lists these as kept, with the reason:
   enough to rebuild a name from.
 - Files whose Civitai match is not the release's main model file, or whose
   Civitai type does not fit the folder (a text encoder in `unet`, say).
-- Anything you marked **Keep current name**. **Undo keep current name** brings it back.
+- Files kept with **Keep current name** in an earlier version; ticking one renames it after all.
 
 Two kinds are left alone without being listed:
 

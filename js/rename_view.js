@@ -13,6 +13,8 @@ const NO_SEND2TRASH = "Removing extra copies needs the send2trash package. Insta
 const PAGE = 150;
 const LAST_JOB_KEY = "civitai-updater.rename.dryRunJob";
 const SELECTION_KEY = "civitai-updater.rename.selection";
+/* Files the user unticked: they keep their names in later dry runs too, until ticked again. */
+const UNTICKED_KEY = "civitai-updater.rename.unticked";
 const NAMED = new Set(["change", "unchanged"]);
 const PART_WORDS = { creator: "creator", title: "title", version: "version", precision: "precision", base: "base code" };
 
@@ -309,7 +311,7 @@ export function modelCards(rows) {
 }
 
 /* ``pinned`` (card id -> section) keeps cards where they were shown: a decision
-   ("Keep current name", an edit) must not send a card off to another section. */
+   (an edit, Ask again) must not send a card off to another section. */
 export function groupCards(rows, pinned) {
   const sections = { look: [], change: [], unchanged: [], kept: [] };
   for (const card of modelCards(rows)) sections[pinned?.get(card.id) || card.section].push(card);
@@ -595,6 +597,34 @@ function writeLastJob(jobId) {
   }
 }
 
+function readUnticked() {
+  try {
+    const list = JSON.parse(window.localStorage.getItem(UNTICKED_KEY) || "[]");
+    return new Set(Array.isArray(list) ? list.filter((key) => typeof key === "string") : []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function writeUnticked(set) {
+  try {
+    if (set.size) window.localStorage.setItem(UNTICKED_KEY, JSON.stringify([...set]));
+    else window.localStorage.removeItem(UNTICKED_KEY);
+  } catch (_) {
+    // per-browser convenience only
+  }
+}
+
+/* Remember one checkbox: unticked files stay unticked in later dry runs. */
+function rememberTick(row, on) {
+  const key = row?.fileKey || row?.key;
+  if (!key) return;
+  const unticked = readUnticked();
+  if (on) unticked.delete(key);
+  else unticked.add(key);
+  writeUnticked(unticked);
+}
+
 /* Checkbox and remove-copy choices of one dry run, so a reload or a ComfyUI restart keeps them. */
 function readSelection(jobId) {
   try {
@@ -608,7 +638,7 @@ function readSelection(jobId) {
 function writeSelection(jobId, state) {
   try {
     if (jobId && state) {
-      window.localStorage.setItem(SELECTION_KEY, JSON.stringify({ jobId, overrides: state.overrides, removeDup: state.removeDup }));
+      window.localStorage.setItem(SELECTION_KEY, JSON.stringify({ jobId, overrides: state.overrides, removeDup: state.removeDup, delete: state.delete || [] }));
     } else {
       window.localStorage.removeItem(SELECTION_KEY);
     }
@@ -681,6 +711,9 @@ export function renderRenameView(container, deps) {
       setRows(store, data.rows);
       store.removeDup = defaultRemoveDup(store);
       store.deleteKeys = new Set();
+      // Files unticked in an earlier dry run start unticked again.
+      const unticked = readUnticked();
+      for (const row of store.rows) if (canSelect(row) && unticked.has(row.fileKey || row.key)) store.selected.set(row.key, false);
       store.pinnedSections = new Map(); // a fresh load sorts every card again
       const saved = readSelection(store.jobId);
       if (saved) restoreSelection(store, saved);
@@ -1294,10 +1327,12 @@ export function renderRenameView(container, deps) {
     const deleting = canRemove && store.deleteKeys.has(row.key);
     const removing = (dup && canRemove && store.removeDup.has(row.key)) || deleting;
     let check = `<span class="cu-rn-nocheck"></span>`;
-    if (row.status === "change" && !deleting) {
+    if (row.status === "kept" && row.reason === "kept-by-you" && !deleting) {
+      check = `<input type="checkbox" data-rn-unkeep${disabledIf(isLocked)} title="Rename this file">`;
+    } else if (row.status === "change" && !deleting) {
       const selectable = canSelect(row);
       const on = selectable && store.selected.get(row.key);
-      check = `<input type="checkbox" data-rn-select${on ? " checked" : ""}${disabledIf(!selectable || isLocked)} title="${selectable ? "Rename this file on Apply" : "Fix the problems below first"}">`;
+      check = `<input type="checkbox" data-rn-select${on ? " checked" : ""}${disabledIf(!selectable || isLocked)} title="${selectable ? "Rename this file on Apply; unticked files keep their names, also in later dry runs" : "Fix the problems below first"}">`;
     }
     let role = row.metadataOnly ? "metadata" : "saved";
     let label = row.metadataOnly ? "Metadata" : "Saved";
@@ -1318,12 +1353,9 @@ export function renderRenameView(container, deps) {
     const actions = [];
     if (!removing && named) {
       actions.push(iconButton("edit", "edit", "Edit the new name"));
-      if (row.status === "change") actions.push(iconButton("keep", "lock", "Keep current name (don't rename this file)"));
       if (!(row.flags || []).includes("ask-again")) {
         actions.push(iconButton("ask-again", "refresh", "Ask again (the naming model names this model afresh on the next dry run)"));
       }
-    } else if (!removing && row.status === "kept" && row.reason === "kept-by-you") {
-      actions.push(iconButton("unkeep", "unlock", "Rename this file after all"));
     }
     // One delete toggle for every file, on (red) for a duplicate from the start.
     if (canRemove) {
@@ -1502,7 +1534,16 @@ export function renderRenameView(container, deps) {
       case "select-all": {
         const on = target.dataset.rnOn === "1";
         const cards = (shownSections || groupCards(store.rows))[target.dataset.rnSection] || [];
-        for (const card of cards) for (const r of card.rows) if (canSelect(r)) store.selected.set(r.key, on);
+        const unticked = readUnticked();
+        for (const card of cards) {
+          for (const r of card.rows) {
+            if (!canSelect(r)) continue;
+            store.selected.set(r.key, on);
+            if (on) unticked.delete(r.fileKey || r.key);
+            else unticked.add(r.fileKey || r.key);
+          }
+        }
+        writeUnticked(unticked);
         saveSelection();
         render();
         break;
@@ -1595,6 +1636,13 @@ export function renderRenameView(container, deps) {
     if (target.hasAttribute("data-rn-select")) {
       if (!canSelect(row)) return;
       store.selected.set(row.key, target.checked);
+      rememberTick(row, target.checked);
+    } else if (target.hasAttribute("data-rn-unkeep")) {
+      // A file kept with the old "keep current name": ticking renames it after all.
+      if (!target.checked) return;
+      rememberTick(row, true);
+      decide({ jobId: store.jobId, modelId: row.modelId, fileKey: row.fileKey, keep: false });
+      return;
     } else {
       return;
     }
