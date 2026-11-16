@@ -635,6 +635,13 @@ def _flag_message(code: str, parts: NameParts) -> str:
         return f'leave "{part}" out of the title and version.'
     if kind == "base-number":
         return f'"{part}" is the base model\'s number, not a version; leave it out.'
+    if kind == "creator-in-title":
+        return f'"{part}" is the creator\'s name; leave it out of the title.'
+    if kind == "title-in-version":
+        return f'the title and the version both say "{part}"; keep it in only one of them.'
+    if kind == "noise-word":
+        short = part.split()[0][:4] if part.startswith("high") else "low"
+        return f'write "{short}", not "{part}".'
     value = getattr(parts, part, "") if part else ""
     if kind == "empty":
         return f"The {part} is empty."
@@ -686,7 +693,8 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
             base=format_part(answer.bases.get(slot.base_model, "")) or "base",
         )
         codes = _parts_flags(probe) + name_check_flags(
-            probe.title, probe.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model
+            probe.title, probe.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model,
+            creator=original or pending.model_input.creator,
         )
         problems.extend(_flag_message(code, probe) for code in codes)
     problems.extend(_version_clash_problems(pending, answer))
@@ -935,7 +943,8 @@ def _group_rows(
             )
             flags.extend(_parts_flags(parts))
             flags.extend(name_check_flags(
-                parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model
+                parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model,
+                creator=parts.creator,
             ))
             # Civitai's base field is set by hand: a version named for another base may be listed wrong.
             conflict = base_conflict(_text(version_live.get("name")), slot.base_model, known_bases)
@@ -1026,6 +1035,7 @@ def _names_from_files(rows: List[dict], decided: Optional[Callable[[dict], bool]
 # What a row's flags say about the naming model's answer (dropped when the user's own name is used).
 _ANSWER_FLAG_KINDS = {
     "version-clash", "invented", "unparsed", "base-word", "version-format", "type-word", "base-number", "glued-name",
+    "creator-in-title", "title-in-version", "noise-word",
     "maker-from-description", "maker-not-in-description", "maker-unknown", "creator-from-file-name",
 }
 

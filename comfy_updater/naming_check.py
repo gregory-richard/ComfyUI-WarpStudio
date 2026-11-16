@@ -256,7 +256,8 @@ def version_format(text: str) -> List[str]:
 
 
 def name_check_flags(
-    title: str, version: str, vocabulary: FrozenSet[str], *, xl_base: bool = False, base_model: str = ""
+    title: str, version: str, vocabulary: FrozenSet[str], *, xl_base: bool = False, base_model: str = "",
+    creator: str = "",
 ) -> List[str]:
     """``base-word:<word>`` and ``version-format:<token>`` codes for a title and version.
 
@@ -271,7 +272,43 @@ def name_check_flags(
     flags.extend(f"version-format:{token}" for token in version_format(f"{title} {version}"))
     flags.extend(f"type-word:{word}" for word in type_words(f"{title} {version}"))
     flags.extend(f"base-number:{token}" for token in base_numbers(version, base_model))
+    if not is_official_title(title, vocabulary, xl_base=xl_base):
+        # An official model's name may carry its maker's ("qwen image 2.1").
+        flags.extend(f"creator-in-title:{word}" for word in creator_in_title(title, creator))
+    flags.extend(f"title-in-version:{phrase}" for phrase in title_in_version(title, version))
+    flags.extend(f"noise-word:{word}" for word in noise_words(version))
     return list(dict.fromkeys(flags))
+
+
+def creator_in_title(title: str, creator: str) -> List[str]:
+    """The creator's name standing as a word of the title ("xlabs - xlabs flux realism")."""
+    name = _compact(creator or "")
+    words = (title or "").split()
+    if len(name) < 3 or _compact(title or "") == name:
+        return []  # a model named after its creator ("donutsdelivery")
+    return [word for word in words if _compact(word) == name][:1]
+
+
+def title_in_version(title: str, version: str) -> List[str]:
+    """Two or more words of the title repeated in a row in the version ("amateur selfies")."""
+    title_words = (title or "").lower().split()
+    version_words = (version or "").lower().split()
+    found = []
+    for size in range(min(len(title_words), len(version_words)), 1, -1):
+        for start in range(len(version_words) - size + 1):
+            phrase = version_words[start:start + size]
+            if any(title_words[i:i + size] == phrase for i in range(len(title_words) - size + 1)):
+                return [" ".join(phrase)]
+    return found
+
+
+# Wan 2.2 ships every LoRA as a high-noise and a low-noise file: the names say "high" and "low".
+_NOISE = re.compile(r"\b(high|low)[ _-]?noise\b")
+
+
+def noise_words(version: str) -> List[str]:
+    """"high noise" / "highnoise" (and low) in a version, which the names write as "high" / "low"."""
+    return list(dict.fromkeys(match.group(0) for match in _NOISE.finditer((version or "").lower())))
 
 
 def glued_names(source_title: str, answer_title: str, vocabulary: FrozenSet[str]) -> List[str]:

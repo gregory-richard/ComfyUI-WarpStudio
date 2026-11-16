@@ -2,7 +2,10 @@ import unittest
 from pathlib import Path
 
 from comfy_updater.naming_ai import Slot
-from comfy_updater.naming_check import base_numbers, base_vocabulary, glued_names, name_check_flags, type_words
+from comfy_updater.naming_check import (
+    base_numbers, base_vocabulary, creator_in_title, glued_names, name_check_flags, noise_words, title_in_version,
+    type_words,
+)
 from comfy_updater.renamer import _names_from_files, _telling_hint
 
 
@@ -59,6 +62,26 @@ class GluedNameTests(unittest.TestCase):
         self.assertEqual([], glued_names("KreaCore", "kreacore", self.VOCAB))
         self.assertEqual([], glued_names("Pony Realism", "realism", self.VOCAB))  # a base tag in its own word
         self.assertEqual([], glued_names("Krea2 Glow", "glow", self.VOCAB))
+
+
+class NameRepeatTests(unittest.TestCase):
+    def test_the_creator_in_the_title(self) -> None:
+        self.assertEqual(["xlabs"], creator_in_title("xlabs flux realism", "xlabs"))
+        self.assertEqual([], creator_in_title("donutsdelivery", "donutsdelivery"))  # named after its creator
+        self.assertEqual([], creator_in_title("flux realism", "xlabs"))
+
+    def test_an_official_title_may_carry_its_maker(self) -> None:
+        vocab = base_vocabulary(["Qwen", "qwen"])
+        self.assertNotIn("creator-in-title:qwen", name_check_flags("qwen image 2.1", "turbo", vocab, creator="qwen"))
+
+    def test_the_title_repeated_in_the_version(self) -> None:
+        self.assertEqual(["amateur selfies"], title_in_version("ultra real amateur selfies", "amateur selfies v1"))
+        self.assertEqual([], title_in_version("high heels", "v1 high"))  # one word is not a repeat
+
+    def test_high_and_low_noise(self) -> None:
+        self.assertEqual(["high noise"], noise_words("v1 high noise"))
+        self.assertEqual(["lownoise"], noise_words("lownoise"))
+        self.assertEqual([], noise_words("v1 high"))
 
 
 class BaseNumberTests(unittest.TestCase):

@@ -155,6 +155,12 @@ export function flagInfo(flag, row, rows) {
       return { level: "warn", text: `“${arg}” is a base-model name — usually it doesn't belong here` };
     case "version-format":
       return { level: "warn", text: `Write ${arg.replace(/(\.0+)+$/, "")} instead of ${arg}` };
+    case "creator-in-title":
+      return { level: "warn", text: `“${arg}” is the creator's name; it doesn't belong in the title` };
+    case "title-in-version":
+      return { level: "warn", text: `The version repeats the title (“${arg}”)` };
+    case "noise-word":
+      return { level: "warn", text: `Write ${arg.startsWith("high") ? "high" : "low"} instead of ${arg}` };
     case "glued-name":
       return { level: "warn", text: `“${arg}” is the model's own name; the new title doesn't keep it whole` };
     case "base-number":
@@ -818,6 +824,13 @@ export function renderRenameView(container, deps) {
     });
   }
 
+  /* A file line drawn again by its key, wherever it is shown. */
+  function redrawKey(key) {
+    const host = container.querySelector(`[data-rn-key="${cssEscape(key)}"]`);
+    const row = store.byKey.get(key);
+    if (host && row) redrawLine(row, host);
+  }
+
   /* One file line drawn again in place (its card's images stay). */
   function redrawLine(row, target) {
     const host = target.closest("[data-rn-key]");
@@ -948,8 +961,44 @@ export function renderRenameView(container, deps) {
     }
     shownSections = null;
     cardsById = new Map();
+    const anchor = scrollAnchor();
     container.innerHTML = buildHtml();
+    keepAnchor(anchor);
     deps.onCount?.();
+  }
+
+  /* What the list scrolls in, and the line at its top: a redraw puts that line back where it was,
+     so the list does not jump (cards off screen only have an estimated height). */
+  function scrollParent() {
+    let el = container.parentElement;
+    while (el && el !== document.body) {
+      if (/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight) return el;
+      el = el.parentElement;
+    }
+    return document.scrollingElement;
+  }
+
+  function scrollAnchor() {
+    if (typeof document === "undefined" || !container.getBoundingClientRect || !container.isConnected) return null;
+    const scroller = scrollParent();
+    if (!scroller) return null;
+    const view = scroller === document.scrollingElement ? { top: 0, bottom: innerHeight } : scroller.getBoundingClientRect();
+    const box = container.getBoundingClientRect();
+    const y = Math.max(view.top, box.top) + 8;
+    if (y > Math.min(view.bottom, box.bottom)) return null;
+    const hit = document.elementFromPoint(box.left + Math.min(60, box.width / 2), y);
+    const line = hit?.closest?.("[data-rn-key]") || hit?.closest?.("[data-rn-card]");
+    if (!line || !container.contains(line)) return null;
+    const attr = line.dataset.rnKey !== undefined ? "data-rn-key" : "data-rn-card";
+    return { scroller, attr, value: line.getAttribute(attr), top: line.getBoundingClientRect().top };
+  }
+
+  function keepAnchor(anchor) {
+    if (!anchor) return;
+    const line = container.querySelector(`[${anchor.attr}="${cssEscape(anchor.value)}"]`);
+    if (!line) return;
+    const moved = line.getBoundingClientRect().top - anchor.top;
+    if (moved) anchor.scroller.scrollTop += moved;
   }
 
   /* Models with a new name to apply (Needs a look and Changes), under the filters;
@@ -1415,16 +1464,20 @@ export function renderRenameView(container, deps) {
       }
       case "edit":
         if (row) {
+          // Only this line and the one whose form closes are drawn again: the list stays put.
+          const before = store.editing;
           store.editing = store.editing === row.key ? null : row.key;
           if (store.editing) store.drafts.set(row.key, { creator: row.parts?.creator || "", title: row.parts?.title || "", version: row.parts?.version || "" });
-          render();
-          container.querySelector(`[data-rn-key="${cssEscape(row.key)}"] [data-rn-draft]`)?.focus();
+          if (before && before !== row.key) redrawKey(before);
+          redrawLine(row, target);
+          container.querySelector(`[data-rn-key="${cssEscape(row.key)}"] [data-rn-draft]`)?.focus({ preventScroll: true });
         }
         break;
       case "cancel-edit":
         if (row) store.drafts.delete(row.key);
         store.editing = null;
-        render();
+        if (row) redrawLine(row, target);
+        else render();
         break;
       case "save-edit": saveEdit(row); break;
       case "keep": if (row) decide({ jobId: store.jobId, modelId: row.modelId, fileKey: row.fileKey, keep: true }); break;

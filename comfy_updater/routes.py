@@ -1359,7 +1359,7 @@ def _base_code_problem(code: str) -> str:
 # Flags that come from the parts themselves and are recomputed on every re-assembly.
 _PARTS_FLAG_KINDS = {
     "empty", "forbidden", "separator", "non-ascii", "reserved", "trailing", "base-word", "version-format",
-    "type-word", "base-number",
+    "type-word", "base-number", "creator-in-title", "title-in-version", "noise-word",
 }
 _FOLDER_FLAGS = {"exists", "collision"}
 # Clashes with the model's other versions, or with another model's title: rechecked on every re-assembly.
@@ -1515,7 +1515,8 @@ def _name_check_flags(row: dict, parts: NameParts, base_codes) -> list:
     for known, code in base_codes.all().items():
         names.extend((known, code))
     return name_check_flags(
-        parts.title, parts.version, base_vocabulary(names), xl_base=xl_is_base(base_model), base_model=base_model
+        parts.title, parts.version, base_vocabulary(names), xl_base=xl_is_base(base_model), base_model=base_model,
+        creator=parts.creator,
     )
 
 
