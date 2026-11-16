@@ -65,6 +65,7 @@ export function createRenameStore() {
     revealError: null,
     openHints: new Set(),
     deleteKeys: new Set(),
+    pinnedSections: new Map(),
     restoredLastJob: false,
   };
 }
@@ -307,9 +308,11 @@ export function modelCards(rows) {
   });
 }
 
-export function groupCards(rows) {
+/* ``pinned`` (card id -> section) keeps cards where they were shown: a decision
+   ("Keep current name", an edit) must not send a card off to another section. */
+export function groupCards(rows, pinned) {
   const sections = { look: [], change: [], unchanged: [], kept: [] };
-  for (const card of modelCards(rows)) sections[card.section].push(card);
+  for (const card of modelCards(rows)) sections[pinned?.get(card.id) || card.section].push(card);
   // Errors and duplicates first: they need a decision before anything else.
   sections.look.sort((a, b) => a.rank - b.rank);
   return sections;
@@ -678,6 +681,7 @@ export function renderRenameView(container, deps) {
       setRows(store, data.rows);
       store.removeDup = defaultRemoveDup(store);
       store.deleteKeys = new Set();
+      store.pinnedSections = new Map(); // a fresh load sorts every card again
       const saved = readSelection(store.jobId);
       if (saved) restoreSelection(store, saved);
       else writeSelection(null); // choices of another dry run, if any, are dropped
@@ -787,6 +791,10 @@ export function renderRenameView(container, deps) {
 
   async function decide(payload, done) {
     if (locked()) return;
+    // Every card stays in the section it is shown in until the list is loaded again.
+    for (const [id, cards] of Object.entries(shownSections || {})) {
+      for (const card of cards) if (!store.pinnedSections.has(card.id)) store.pinnedSections.set(card.id, id);
+    }
     await request(async () => {
       const data = await deps.postJson(`${ROUTE}/rename/decision`, payload);
       replaceRows(store, data.rows);
@@ -799,7 +807,7 @@ export function renderRenameView(container, deps) {
   async function applySelected() {
     if (locked()) return;
     const payload = applyPayload(store);
-    if (!payload.keys.length && !payload.removeDuplicates.length) return;
+    if (!payload.keys.length && !payload.removeDuplicates.length && !payload.delete.length) return;
     await request(async () => {
       const data = await deps.startJob(`${ROUTE}/jobs/rename-apply`, APPLY_JOB, payload, "Applying the renames\u2026");
       // The server could not save that this dry run was applied (it deleted its saved copy instead).
@@ -1049,7 +1057,7 @@ export function renderRenameView(container, deps) {
     const visible = filterRows(store.rows, deps.filter?.(), store.byKey);
     store.visibleKeys = visible === store.rows ? null : new Set(visible.map((row) => row.key));
     if (store.rows.length) {
-      shownSections = groupCards(visible);
+      shownSections = groupCards(visible, store.pinnedSections);
       cardsById = new Map(Object.values(shownSections).flat().map((card) => [card.id, card]));
     }
 
