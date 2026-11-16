@@ -14,6 +14,8 @@ from comfy_updater.renamer import (
     ModelGroup,
     classify,
     collect_entries,
+    name_match_score,
+    name_matches_info,
 )
 
 
@@ -209,6 +211,14 @@ class ClassifyTests(unittest.TestCase):
         _entries, (groups, rows) = self.run_classify(client)
         self.assertEqual([p.entry.stem for p in groups[0].placed], ["model q8"])
         self.assertEqual([(row["oldStem"], row["status"]) for row in rows], [("model q8 typo", "duplicate")])
+        self.assertEqual("hash", rows[0]["sameFileBy"])
+
+    def test_twins_with_neither_a_file_nor_a_hash_say_so(self) -> None:
+        write_entry(self.unet, "model a", 7, 71, "")
+        write_entry(self.unet, "model b", 7, 71, "", weights=False)
+        client = FakeClient({"7": live_model(7, "Checkpoint", [{"id": 71, "files": []}])})
+        _entries, (_groups, rows) = self.run_classify(client)
+        self.assertEqual([("model b", "duplicate", "none")], [(r["oldStem"], r["status"], r["sameFileBy"]) for r in rows])
 
     def test_folder_registered_under_two_types_is_one_entry(self) -> None:
         shared = self.root / "diffusion"
@@ -332,6 +342,158 @@ class ClassifyTests(unittest.TestCase):
         # The local data is complete however early the run stopped: every base is seeded.
         self.assertEqual(client.calls, [])
         self.assertEqual({"SDXL 1.0": "sdxl", "Pony": "pony"}, base_codes.all())
+
+
+def named_model(model_id: int, name: str, uploader: str, versions: list[dict]) -> dict:
+    return {"id": model_id, "name": name, "type": "LORA", "creator": {"username": uploader}, "modelVersions": versions}
+
+
+class NameMatchTests(unittest.TestCase):
+    LIVE = ["sunnyart", "Lemon Tea / Drinking from Cup | Sunny Art", "v1.0 illustrious", "lemon_tea_ilxl_sunny.safetensors"]
+
+    def test_misnamed_stem_scores_below_the_right_one(self) -> None:
+        wrong = name_match_score("artmaker - pink rabbit (ill)", self.LIVE)
+        right = name_match_score("sunnyart - lemon tea drinking from cup (ill)", self.LIVE)
+        self.assertEqual(-3, wrong)  # artmaker, pink, rabbit: none in the live data
+        self.assertEqual(6, right)  # sunnyart, lemon, tea, drinking, from, cup
+
+    def test_words_shorter_than_three_do_not_count(self) -> None:
+        self.assertEqual(0, name_match_score("a - b - v1 - xl", ["a b v1 xl"]))
+
+    def test_tie(self) -> None:
+        self.assertEqual(
+            name_match_score("first copy", self.LIVE), name_match_score("second copy", self.LIVE)
+        )
+
+    def test_base_part_is_ignored(self) -> None:
+        self.assertEqual(-3, name_match_score("artmaker - pink rabbit (illustrious)", self.LIVE))
+        self.assertEqual(1, name_match_score("sunnyart (sdxl)", self.LIVE))
+        self.assertEqual(1, name_match_score("sunnyart (unknownbase)", self.LIVE))
+
+    def test_words_missing_from_the_live_data_count_against(self) -> None:
+        live = ["acme", "Wan2.2 Lightning 4steps T2V", "2.2-Lightning-T2V-0928-L", "Wan2.2-Lightning-T2V-0928-low.safetensors"]
+        # acme, lightning, 4steps match; 250928 and high do not.
+        self.assertEqual(1, name_match_score("acme - lightning - 4steps - 250928 - high - (wan2.2 14b t2v)", live))
+        self.assertEqual(3, name_match_score("acme - lightning - low (wan2.2 14b t2v)", live))
+        # Four match (acme, lightning, t2v, 4steps), two do not (high, noise).
+        self.assertEqual(2, name_match_score("acme - lightning t2v 4steps high noise (wan2.2 14b t2v)", live))
+
+    def test_words_are_found_inside_the_compacted_text(self) -> None:
+        # "lemontea" is inside "lemon_tea" once punctuation is dropped; "0928" inside "T2V-0928-L".
+        self.assertEqual(2, name_match_score("lemontea - 0928", ["lemon_tea", "Quick-T2V-0928-L"]))
+
+    def test_name_matches_info_compares_the_title_part(self) -> None:
+        live = self.LIVE[1:]
+        self.assertFalse(name_matches_info("artmaker - pink rabbit (ill)", live))
+        self.assertTrue(name_matches_info("sunnyart - lemon tea (ill)", live))
+        # No title part: the whole stem without its base.
+        self.assertTrue(name_matches_info("lemon tea (ill)", live))
+        self.assertFalse(name_matches_info("pink rabbit (ill)", live))
+        # The creator part alone does not count as a match.
+        self.assertFalse(name_matches_info("sunnyart - pink rabbit (ill)", ["Lemon Tea | Sunnyart", "v1.0", "lemon.safetensors"]))
+
+
+class DuplicateSurvivorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.lora = self.root / "loras"
+        self.roots = {"lora": [self.lora]}
+        self.decisions = DecisionStore(self.root)
+
+    def run_classify(self, models):
+        entries = collect_entries(self.roots)
+        return classify(entries, FakeClient(models), self.decisions, progress=no_progress, control=None)
+
+    def lemon_tea(self) -> dict:
+        version = {"id": 61, "name": "v1.0 illustrious", "files": [live_file(7, "F00D", name="lemon_tea_ilxl_sunny.safetensors")]}
+        return {"6": named_model(6, "Lemon Tea / Drinking from Cup | Sunny Art", "SunnyArt", [version])}
+
+    def test_misnamed_info_only_copy_is_the_extra_one(self) -> None:
+        write_entry(self.lora, "artmaker - pink rabbit (ill)", 6, 61, "f00d", weights=False)
+        right = write_entry(self.lora, "sunnyart - lemon tea drinking from cup (ill)", 6, 61, "f00d", weights=False)
+        groups, rows = self.run_classify(self.lemon_tea())
+        self.assertEqual([p.entry.stem for p in groups[0].placed], ["sunnyart - lemon tea drinking from cup (ill)"])
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(("duplicate", "artmaker - pink rabbit (ill)"), (row["status"], row["oldStem"]))
+        self.assertEqual(str(right).lower(), row["survivorKey"])
+        self.assertEqual(str(right), row["survivorPath"])
+        self.assertEqual("Lemon Tea / Drinking from Cup | Sunny Art", row["liveTitle"])
+        self.assertEqual("SunnyArt", row["uploader"])
+        self.assertEqual("v1.0 illustrious", row["versionName"])
+        self.assertEqual("lemon_tea_ilxl_sunny.safetensors", row["civitaiFileName"])
+        self.assertTrue(row["metadataOnly"])
+        self.assertFalse(row["nameMatchesInfo"])
+        self.assertEqual("file", row["sameFileBy"])
+
+    def test_duplicate_row_lists_the_files_its_removal_takes(self) -> None:
+        wrong = write_entry(self.lora, "artmaker - pink rabbit (ill)", 6, 61, "f00d", weights=False)
+        write_entry(self.lora, "sunnyart - lemon tea drinking from cup (ill)", 6, 61, "f00d", weights=False)
+        preview = self.lora / "artmaker - pink rabbit (ill).preview.png"
+        preview.write_bytes(b"png")
+        (self.lora / "artmaker - pink rabbit (ill).zip").write_bytes(b"zip")
+        _groups, rows = self.run_classify(self.lemon_tea())
+        self.assertEqual([str(wrong), str(preview)], rows[0]["removeFiles"])
+
+    def test_copy_named_high_that_holds_the_low_file_is_an_extra_copy(self) -> None:
+        for stem in ("lightco - quick - 4steps - high (wan)", "lightco - quick - 4steps - low (wan)",
+                     "lightco - quick - 4steps - low - v2 (wan)"):
+            write_entry(self.lora, stem, 8, 81, "beef", weights=False)
+        version = {"id": 81, "name": "Quick-T2V-0928-L", "files": [live_file(9, "BEEF", name="Quick-T2V-0928-low.safetensors")]}
+        groups, rows = self.run_classify({"8": named_model(8, "Quick Steps", "lightco", [version])})
+        self.assertEqual([p.entry.stem for p in groups[0].placed], ["lightco - quick - 4steps - low (wan)"])
+        self.assertEqual(
+            sorted(row["oldStem"] for row in rows),
+            ["lightco - quick - 4steps - high (wan)", "lightco - quick - 4steps - low - v2 (wan)"],
+        )
+        self.assertTrue(all(row["nameMatchesInfo"] for row in rows))  # "quick" is in the version name
+
+    def wan_lightning(self) -> dict:
+        version = {
+            "id": 81, "name": "2.2-Lightning-T2V-0928-L",
+            "files": [live_file(9, "BEEF", name="Wan2.2-Lightning-T2V-0928-low.safetensors")],
+        }
+        return {"8": named_model(8, "Wan2.2 Lightning 4steps T2V", "acme", [version])}
+
+    def test_the_right_copy_wins_with_the_shorter_name(self) -> None:
+        for stem in ("acme - lightning - 4steps - 250928 - high - (wan2.2 14b t2v)", "acme - lightning - low (wan2.2 14b t2v)"):
+            write_entry(self.lora, stem, 8, 81, "beef", weights=False)
+        groups, rows = self.run_classify(self.wan_lightning())
+        self.assertEqual([p.entry.stem for p in groups[0].placed], ["acme - lightning - low (wan2.2 14b t2v)"])
+        self.assertEqual(["acme - lightning - 4steps - 250928 - high - (wan2.2 14b t2v)"], [r["oldStem"] for r in rows])
+
+    def test_more_matching_words_lose_to_fewer_wrong_ones(self) -> None:
+        for stem in ("acme - lightning t2v 4steps high noise (wan2.2 14b t2v)", "acme - lightning - low (wan2.2 14b t2v)"):
+            write_entry(self.lora, stem, 8, 81, "beef", weights=False)
+        groups, _rows = self.run_classify(self.wan_lightning())
+        self.assertEqual([p.entry.stem for p in groups[0].placed], ["acme - lightning - low (wan2.2 14b t2v)"])
+
+    def test_weights_still_win_over_a_better_name(self) -> None:
+        weights = write_entry(self.lora, "artmaker - pink rabbit (ill)", 6, 61, "f00d")
+        write_entry(self.lora, "sunnyart - lemon tea drinking from cup (ill)", 6, 61, "f00d", weights=False)
+        groups, rows = self.run_classify(self.lemon_tea())
+        self.assertEqual([p.entry.stem for p in groups[0].placed], ["artmaker - pink rabbit (ill)"])
+        self.assertEqual(str(weights).lower(), rows[0]["survivorKey"])
+        self.assertTrue(rows[0]["metadataOnly"])
+        self.assertTrue(rows[0]["nameMatchesInfo"])
+
+    def test_equal_names_fall_back_to_alphabetical(self) -> None:
+        write_entry(self.lora, "b copy", 6, 61, "f00d", weights=False)
+        write_entry(self.lora, "a copy", 6, 61, "f00d", weights=False)
+        groups, rows = self.run_classify(self.lemon_tea())
+        self.assertEqual([p.entry.stem for p in groups[0].placed], ["a copy"])
+        self.assertEqual(["b copy"], [row["oldStem"] for row in rows])
+
+    def test_every_finished_row_says_whether_it_is_metadata_only(self) -> None:
+        write_entry(self.lora, "info only", 6, 99, "f00d", weights=False)
+        write_entry(self.lora, "with weights", 6, 98, "f00e")
+        _groups, rows = self.run_classify(self.lemon_tea())
+        by_stem = {row["oldStem"]: row for row in rows}
+        self.assertEqual("release-gone", by_stem["info only"]["reason"])
+        self.assertTrue(by_stem["info only"]["metadataOnly"])
+        self.assertFalse(by_stem["with weights"]["metadataOnly"])
 
 
 class RequestErrorStatusTests(unittest.TestCase):

@@ -3,6 +3,7 @@
 Every entry's weights file is renamed together with each file in its folder that
 shares its stem (``.civitai.info``, ``.preview.png``, anything another tool left).
 An existing target is never overwritten. A file Windows has locked is skipped.
+Every step that completes is appended to the rename log (``RenameLog``), if one is given.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any, Callable, Optional
 from .hashing import HashingCancelled, sha256_file
 from .constants import INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX, SUPPORTED_MODEL_EXTENSIONS
 from .naming_scheme import target_path
-from .rename_store import RenameJournal
+from .rename_store import RenameJournal, RenameLog
 from .sidecar import read_data_file, read_json, write_json
 
 TMP_MARKER = ".cu-tmp-"
@@ -88,6 +89,28 @@ def _ordered(files: list[Path], key: str) -> list[Path]:
         return (first, lower)
 
     return sorted(files, key=rank)
+
+
+def removable_copy_files(files: list[Path], stem: str, own: Any, keep: Any, *, shares_stem: bool) -> list[Path]:
+    """The files an extra copy's removal takes, in order: its own file first.
+
+    Only the kinds the plugin knows go: the ``.civitai.info``, the preview and
+    weights (checked byte-identical before removal). Anything else of that name
+    (an archive, a backup) stays. When the sidecars are shared with a model that
+    stays (the kept copy has the same name, or other weights share them), only
+    its own file goes. The kept copy's file never does.
+    """
+    lower = str(stem).lower()
+    known = {lower + suffix for suffix in _KNOWN_SUFFIXES}
+    own_key = _norm(own)
+    files = [path for path in files if _norm(path) == own_key or path.name.lower() in known]
+    files = _ordered(files, own_key)
+    other_weights = [path for path in files if _is_weights(path.name) and _norm(path) != own_key]
+    if shares_stem or other_weights:
+        files = [path for path in files if _norm(path) == own_key]
+    if keep:
+        files = [path for path in files if _norm(path) != _norm(keep)]
+    return files
 
 
 def file_identity(path: Any) -> dict:
@@ -176,16 +199,12 @@ def plan(
         files = checked_siblings(row)
         if files is None:
             continue
-        files = _ordered(files, _norm(key))
         # Exactly the survivor's own file; apply refuses the removal when it is gone.
         keep = _survivor_file(survivor) if survivor is not None and survivor is not row else ""
         shares_stem = survivor is not None and _norm(survivor.get("folder")) == _norm(row.get("folder")) and str(
             survivor.get("oldStem") or ""
         ).lower() == str(row.get("oldStem") or "").lower()
-        other_weights = [path for path in files if _is_weights(path.name) and _norm(path) != _norm(key)]
-        if shares_stem or other_weights:
-            # The sidecars are shared with a model that stays; only the copy's own file goes.
-            files = [path for path in files if _norm(path) == _norm(key)]
+        files = removable_copy_files(files, str(row.get("oldStem") or ""), key, "", shares_stem=shares_stem)
         if not keep:
             # Planned anyway so apply reports the refused removal instead of dropping it.
             trashes.append({"kind": "trash", "from": str(files[0]), "to": "", "entry": key})
@@ -352,8 +371,11 @@ def _undo_move(step: dict, run_id: str) -> bool:
     return False
 
 
-def _undo_entry(steps: list[dict], run_id: str) -> tuple[bool, list[dict]]:
-    """Undo an entry's rename steps in reverse. (anything restored, problems)."""
+def _undo_entry(steps: list[dict], run_id: str, moved: Optional[list] = None) -> tuple[bool, list[dict]]:
+    """Undo an entry's rename steps in reverse. (anything restored, problems).
+
+    ``moved`` collects the steps whose file was put back.
+    """
     restored = False
     problems: list[dict] = []
     for step in reversed(steps):
@@ -362,7 +384,10 @@ def _undo_entry(steps: list[dict], run_id: str) -> tuple[bool, list[dict]]:
                 problems.append({"entry": step.get("entry"), "path": step.get("from"), "reason": IN_RECYCLE_BIN})
             continue
         try:
-            restored = _undo_move(step, run_id) or restored
+            if _undo_move(step, run_id):
+                restored = True
+                if moved is not None:
+                    moved.append(step)
         except OSError as exc:
             problems.append({"entry": step.get("entry"), "path": step.get("to"), "reason": f"could not undo: {_reason(exc)}"})
     return restored, problems
@@ -391,6 +416,8 @@ def apply_steps(
     trash: Callable[[str], Any] = send_to_trash,
     progress: Optional[Callable[[int, int, str], Any]] = None,
     control: Any = None,
+    log: Optional[RenameLog] = None,
+    dry_run_job_id: str = "",
 ) -> dict:
     """Run planned steps entry by entry. ``{"done": [entry…], "skipped": [{"entry", "path", "reason"}]}``."""
     if journal.pending() is not None:
@@ -428,7 +455,8 @@ def apply_steps(
             rename_steps.extend(entry_steps)
     # Removals run first so the names they free are free when a survivor is renamed.
     steps = trash_steps + rename_steps
-    run_id = journal.begin(steps)
+    run_id = journal.begin(steps, dry_run_job_id)
+    record = _recorder(log, run_id, dry_run_job_id)
     groups = _group(steps)
     still_open: list[int] = []
     for position, (entry, indices) in enumerate(groups):
@@ -436,7 +464,7 @@ def apply_steps(
             control.wait_if_paused()
             if control.is_cancelled():
                 break
-        problem = _apply_entry(steps, indices, journal, run_id, trash, control)
+        problem = _apply_entry(steps, indices, journal, run_id, trash, control, record)
         if problem is None:
             done.append(entry)
         else:
@@ -450,6 +478,25 @@ def apply_steps(
     else:
         journal.clear()
     return {"done": done, "skipped": skipped}
+
+
+def _recorder(log: Optional[RenameLog], run_id: str, dry_run_job_id: str) -> Callable[..., None]:
+    """Appends completed steps to the rename log; does nothing without one.
+
+    A log that cannot be written is reported once per run, not once per entry.
+    """
+    warned = False
+
+    def record(steps: list[dict], kind: Optional[str] = None) -> None:
+        nonlocal warned
+        if log is None or not steps:
+            return
+        warning = log.append(run_id, dry_run_job_id, steps, kind)
+        if warning and not warned:
+            warned = True
+            print(warning)
+
+    return record
 
 
 def _survivor_problem(entry_steps: list[dict], trash_sources: set) -> Optional[dict]:
@@ -504,8 +551,9 @@ def _copy_problem(entry_steps: list[dict], should_stop: Optional[Callable[[], bo
     return None
 
 
-def _apply_entry(steps, indices, journal, run_id, trash, control=None) -> Optional[dict]:
+def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=None) -> Optional[dict]:
     entry = steps[indices[0]].get("entry")
+    record = record or _recorder(None, run_id, "")
 
     def give_up(path: Any, reason: str) -> dict:
         # The entry's steps are settled (not to be run by "finish"), except a file
@@ -531,14 +579,19 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None) -> Option
             problem = _copy_problem([steps[index] for index in indices], should_stop)
         if problem is not None:
             return give_up(problem["path"], problem["reason"])
+        trashed: list[dict] = []
         for index in indices:
             path = steps[index]["from"]
             if os.path.lexists(path):
                 try:
                     trash(str(path))
                 except OSError as exc:
-                    return give_up(path, f"could not move to the Recycle Bin ({exc})")
+                    problem = give_up(path, f"could not move to the Recycle Bin ({exc})")
+                    record(trashed)  # those are in the Recycle Bin all the same
+                    return problem
+                trashed.append(steps[index])
         journal.mark_done_many(indices)
+        record(trashed)
         return None
 
     # Checked again with nothing counted as freed: an earlier entry may have taken
@@ -558,6 +611,7 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None) -> Option
             return give_up(step["from"], _with_problems(_reason(exc), problems))
         finished.append(step)
     journal.mark_done_many(indices)
+    record(finished)
     return None
 
 
@@ -574,6 +628,7 @@ def recover(
     action: str,
     *,
     trash: Callable[[str], Any] = send_to_trash,
+    log: Optional[RenameLog] = None,
 ) -> dict:
     """Finish or undo an interrupted run, then clear the journal.
 
@@ -591,11 +646,15 @@ def recover(
         return {"done": done, "skipped": skipped}
     run_id = data["runId"]
     steps = data["steps"]
+    record = _recorder(log, run_id, str(data.get("dryRunJobId") or ""))
     retry: set = set()
     for entry, indices in _group(steps):
         entry_steps = [steps[index] for index in indices]
         if action == "undo":
-            restored, problems = _undo_entry(entry_steps, run_id)
+            moved: list[dict] = []
+            restored, problems = _undo_entry(entry_steps, run_id, moved)
+            # Only renames the log holds (done steps) are logged as reversed.
+            record([{"from": step["to"], "to": step["from"]} for step in moved if step.get("done")], "undo")
             skipped.extend(problems)
             if any(problem["reason"] != IN_RECYCLE_BIN for problem in problems):
                 # Half undone: its renames stay journaled so undo can run again.
@@ -605,7 +664,7 @@ def recover(
             continue
         if all(step.get("done") for step in entry_steps):
             continue
-        problem = _finish_entry(entry_steps, journal, indices, run_id, trash)
+        problem = _finish_entry(entry_steps, journal, indices, run_id, trash, record)
         if problem is None:
             done.append(entry)
         else:
@@ -630,11 +689,13 @@ def recover(
     return {"done": done, "skipped": skipped}
 
 
-def _finish_entry(entry_steps, journal, indices, run_id, trash) -> Optional[dict]:
+def _finish_entry(entry_steps, journal, indices, run_id, trash, record) -> Optional[dict]:
     entry = entry_steps[0].get("entry")
     problem = _copy_problem(entry_steps)
     if problem is not None:
         return problem
+    trashed: list[dict] = []
+    renamed: list[dict] = []
     for step in entry_steps:
         if step.get("done"):
             continue
@@ -644,19 +705,25 @@ def _finish_entry(entry_steps, journal, indices, run_id, trash) -> Optional[dict
                 trash_sources = {_norm(other["from"]) for other in entry_steps}
                 problem = _survivor_problem([step], trash_sources)
                 if problem is not None:
+                    record(trashed)
                     return problem
                 try:
                     trash(str(src))
                 except OSError as exc:
+                    record(trashed)
                     return {"entry": entry, "path": str(src), "reason": f"could not move to the Recycle Bin ({exc})"}
+                trashed.append(step)
             continue
         dst = Path(step["to"])
         try:
             _finish_move(step, run_id)
         except OSError as exc:
             _restored, problems = _undo_entry(entry_steps, run_id)
+            record(trashed)
             return {"entry": entry, "path": str(dst), "reason": _with_problems(_reason(exc), problems)}
+        renamed.append(step)
     journal.mark_done_many(indices)
+    record(trashed + renamed)
     return None
 
 

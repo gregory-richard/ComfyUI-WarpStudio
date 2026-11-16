@@ -62,6 +62,7 @@ export function createRenameStore() {
     message: null,
     result: null,
     recoverResult: null,
+    revealError: null,
     restoredLastJob: false,
   };
 }
@@ -220,11 +221,30 @@ export function reasonText(row, byKey) {
   if (!row) return "";
   if (row.status === "duplicate") {
     const survivor = byKey && row.survivorKey ? byKey.get(row.survivorKey) : null;
-    const name = survivor ? survivor.oldStem : fileName(row.survivorKey || "");
-    return name ? `Extra copy of "${name}"` : "Extra copy of another file";
+    const name = survivor ? survivor.oldStem : fileName(row.survivorPath || row.survivorKey || "");
+    if (!row.liveTitle) {
+      // A dry run made before duplicate rows carried the live names.
+      return name ? `Extra copy of "${name}"` : "Extra copy of another file";
+    }
+    const version = row.versionName ? ` \u00b7 ${row.versionName}` : "";
+    let text = `Same Civitai file as "${name || "another file"}": both info files describe "${row.liveTitle}"${version}.`;
+    if (row.metadataOnly) text += " Only the info file and preview are here; there is no model file.";
+    if (row.nameMatchesInfo === false) text += " This file's name doesn't match its info; it was probably saved under the wrong name.";
+    return text;
   }
   if (row.status === "error") return row.reason ? `Error: ${row.reason}` : "Error";
   return KEPT_REASONS[row.reason] || String(row.reason || "Kept");
+}
+
+/* The two copies of a duplicate row, each with a Show in folder button: the
+   copy that is kept, then this one with every file its removal takes (the
+   dry run lists them; an older dry run only has the row's own file). */
+export function duplicateFiles(row, removing) {
+  const files = [];
+  if (row?.survivorPath) files.push({ label: "Kept", paths: [row.survivorPath], survivor: true });
+  const own = Array.isArray(row?.removeFiles) && row.removeFiles.length ? row.removeFiles : row?.modelPath ? [row.modelPath] : [];
+  if (own.length) files.push({ label: removing ? "Removed" : "Extra copy", paths: own.map(String), survivor: false });
+  return files;
 }
 
 export function sectionOf(row) {
@@ -257,6 +277,20 @@ export function selectedKeys(store) {
    An older server that does not say counts as able. */
 export function canRemoveDuplicates(store) {
   return store.status?.canRemoveDuplicates !== false;
+}
+
+/* The dry run already chose which copy is the extra one: an extra copy starts
+   marked for removal when removing is possible at all, the dry run picked the
+   kept copy by its name (rows of older dry runs carry no survivorPath), and
+   the copies are known to be one file by a Civitai file id or a stored hash. */
+export function isSureDuplicate(row) {
+  return Boolean(row && row.status === "duplicate" && row.survivorPath
+    && (row.sameFileBy === "file" || row.sameFileBy === "hash"));
+}
+
+export function defaultRemoveDup(store) {
+  if (!canRemoveDuplicates(store)) return new Set();
+  return new Set(store.rows.filter(isSureDuplicate).map((row) => row.key));
 }
 
 export function duplicateKeys(store) {
@@ -338,16 +372,24 @@ export function selectionState(store) {
   return { overrides, removeDup };
 }
 
+/* Whether the choices are the defaults (nothing worth storing). */
+export function isDefaultSelection(store) {
+  const state = selectionState(store);
+  if (Object.keys(state.overrides).length) return false;
+  const defaults = defaultRemoveDup(store);
+  return state.removeDup.length === defaults.size && state.removeDup.every((key) => defaults.has(key));
+}
+
 /* Put saved choices back; a row that is gone or no longer selectable stays as it
-   is (unchecked), and only rows still listed as extra copies get marked. */
+   is (unchecked). The saved extra copies replace the default ticks: a copy the
+   user unticked stays unticked; only rows still listed as extra copies get marked. */
 export function restoreSelection(store, saved) {
   for (const [key, on] of Object.entries(saved?.overrides || {})) {
     const row = store.byKey.get(key);
     if (row && canSelect(row)) store.selected.set(key, Boolean(on));
   }
-  for (const key of saved?.removeDup || []) {
-    if (store.byKey.get(key)?.status === "duplicate") store.removeDup.add(key);
-  }
+  if (!saved) return;
+  store.removeDup = new Set((saved.removeDup || []).filter((key) => store.byKey.get(key)?.status === "duplicate"));
 }
 
 /* The saved choices if they belong to this dry run, else null (stored text may be anything). */
@@ -417,9 +459,10 @@ function readSelection(jobId) {
   }
 }
 
+/* A null state (the defaults) removes the stored choices. */
 function writeSelection(jobId, state) {
   try {
-    if (jobId && state && (Object.keys(state.overrides || {}).length || (state.removeDup || []).length)) {
+    if (jobId && state) {
       window.localStorage.setItem(SELECTION_KEY, JSON.stringify({ jobId, overrides: state.overrides, removeDup: state.removeDup }));
     } else {
       window.localStorage.removeItem(SELECTION_KEY);
@@ -486,6 +529,7 @@ export function renderRenameView(container, deps) {
     try {
       const data = await deps.getJson(`${ROUTE}/rename/rows?jobId=${encodeURIComponent(store.jobId)}`);
       setRows(store, data.rows);
+      store.removeDup = defaultRemoveDup(store);
       const saved = readSelection(store.jobId);
       if (saved) restoreSelection(store, saved);
       else writeSelection(null); // choices of another dry run, if any, are dropped
@@ -525,7 +569,7 @@ export function renderRenameView(container, deps) {
 
   function saveSelection() {
     if (store.jobId && store.loadedJobId === store.jobId && !store.applied) {
-      writeSelection(store.jobId, selectionState(store));
+      writeSelection(store.jobId, isDefaultSelection(store) ? null : selectionState(store));
     }
   }
 
@@ -574,6 +618,7 @@ export function renderRenameView(container, deps) {
       store.persistWarning = "";
       store.result = null;
       store.recoverResult = null;
+      store.revealError = null;
       store.editing = null;
       store.confirming = false;
       store.drafts.clear();
@@ -623,6 +668,18 @@ export function renderRenameView(container, deps) {
       // Finish moved files: the Updates view's results now carry the new paths.
       await deps.reloadResults?.();
     });
+  }
+
+  /* Show a duplicate row's file (or the kept copy) in the file manager; errors show on the row. */
+  async function reveal(row, survivor) {
+    if (!row || !store.jobId) return;
+    try {
+      await deps.postJson(`${ROUTE}/rename/reveal`, { jobId: store.jobId, key: row.key, survivor: Boolean(survivor) });
+      if (store.revealError?.key === row.key) store.revealError = null;
+    } catch (error) {
+      store.revealError = { key: row.key, text: error?.message || String(error) };
+    }
+    render();
   }
 
   async function downloadModel() {
@@ -924,6 +981,17 @@ export function renderRenameView(container, deps) {
     if (!named) {
       reason = `<div class="cu-rn-flag" data-level="${row.status === "error" ? "block" : "info"}">${esc(reasonText(row, store.byKey))}</div>`;
     }
+    if (row.status === "duplicate") {
+      const removing = canRemoveDuplicates(store) && store.removeDup.has(row.key);
+      const files = duplicateFiles(row, removing).map((file) => `<div class="cu-rn-dupfile">
+          <span class="cu-rn-dupfile-label">${esc(file.label)}:</span>
+          <span class="cu-rn-dupfile-paths">${file.paths.map((path) => `<span class="cu-rn-mono cu-rn-path">${esc(path)}</span>`).join("")}</span>
+          <button class="cu-inline-btn" data-rn-action="reveal"${file.survivor ? ' data-rn-survivor="1"' : ""}>Show in folder</button>
+        </div>`).join("");
+      const error = store.revealError?.key === row.key
+        ? `<div class="cu-rn-flag" data-level="block">${esc(store.revealError.text)}</div>` : "";
+      if (files) reason += `<div class="cu-rn-dupfiles">${files}</div>${error}`;
+    }
     const actions = [];
     if (named) {
       actions.push(`<button class="cu-inline-btn" data-rn-action="edit"${disabledIf(isLocked)}>Edit</button>`);
@@ -1087,6 +1155,7 @@ export function renderRenameView(container, deps) {
           render();
         }
         break;
+      case "reveal": reveal(row, target.dataset.rnSurvivor === "1"); break;
       case "base-link": openBaseCode(target.dataset.rnBase || ""); break;
       case "save-base": saveBaseCode(target.dataset.rnBase || ""); break;
       default: break;
@@ -1196,6 +1265,37 @@ const RENAME_CSS = `
     font-family: var(--cu-mono);
     font-size: 10.5px;
     overflow-wrap: anywhere;
+  }
+
+  .cu-rn-dupfiles {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+  }
+
+  .cu-rn-dupfile {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .cu-rn-dupfile-paths {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .cu-rn-dupfile-label {
+    color: var(--cu-dust);
+    font-size: 10.5px;
+  }
+
+  .cu-rn-path {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
   }
 
   .cu-rn-runbar {

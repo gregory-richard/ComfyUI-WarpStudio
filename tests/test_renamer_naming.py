@@ -187,6 +187,7 @@ class NamingTests(unittest.TestCase):
         # Carried for re-assembly after an edit and for the sidecar title after apply.
         self.assertEqual(row["baseModel"], "Krea 2")
         self.assertEqual(row["liveTitle"], LUMEGRID)
+        self.assertFalse(row["metadataOnly"])
         self.assertEqual(row["key"], str(self.lora / "tidemint - lumegrid (krea2).safetensors").lower())
         self.assertEqual(summary["entries"], 1)
         self.assertEqual(summary["change"], 1)
@@ -418,6 +419,7 @@ class NamingTests(unittest.TestCase):
         answer = "title: aura\noriginal:\nversion 1: v4 expanded"
         _summary, rows = self.dry_run(models, FakeGenerator({AURA: answer}))
         self.assertEqual(self.row(rows, "aura v4")["newStem"], "calm_ridge - aura - v4 expanded fp8 (krea2)")
+        self.assertTrue(self.row(rows, "aura v4")["metadataOnly"])
 
     def test_metadata_only_unet_with_two_main_files_gets_no_precision(self) -> None:
         write_entry(self.unet, "aura v4", 500, 5001, "ee", weights=False)

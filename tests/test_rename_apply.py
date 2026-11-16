@@ -16,9 +16,10 @@ from comfy_updater.rename_apply import (
     plan_steps,
     recover,
     refresh_sidecar_title,
+    removable_copy_files,
     update_saved_paths,
 )
-from comfy_updater.rename_store import RenameJournal
+from comfy_updater.rename_store import RenameJournal, RenameLog
 
 SIDECARS = (".safetensors", ".civitai.info", ".preview.png")
 
@@ -501,6 +502,35 @@ class ApplyTests(unittest.TestCase):
         self.assertIn(dup["key"], result["done"])
         self.assertIn(survivor["key"], result["done"])
 
+    def test_duplicate_removal_takes_only_known_files(self) -> None:
+        _make(self.folder, "keep")
+        info = self.folder / "copy.civitai.info"
+        preview = self.folder / "copy.preview.png"
+        others = [self.folder / ("copy" + s) for s in (".zip", ".7z", ".safetensors.bak", ".onnx", ".txt")]
+        for path in [info, preview] + others:
+            path.write_text(path.name, encoding="utf-8")
+        survivor = _row(self.folder, "keep", "keep", status="unchanged", modelPath=str(self.folder / "keep.safetensors"))
+        dup = _row(self.folder, "copy", "copy", status="duplicate", survivorKey=survivor["key"],
+                   key=str(info).lower(), modelPath=str(info))
+        trashed = []
+        result = self._run([survivor, dup], selected=set(), remove={dup["key"]}, trash=trashed.append)
+        self.assertEqual(sorted([str(info), str(preview)]), sorted(trashed))
+        self.assertIn(dup["key"], result["done"])
+        for path in others:
+            self.assertTrue(path.exists(), path.name)
+
+    def test_removable_copy_files(self) -> None:
+        names = ["copy.civitai.info", "copy.preview.png", "copy.safetensors", "copy.zip", "copy.safetensors.bak"]
+        files = [self.folder / name for name in names]
+        own = self.folder / "copy.safetensors"
+        keep = self.folder / "keep.safetensors"
+        self.assertEqual(
+            [own, self.folder / "copy.civitai.info", self.folder / "copy.preview.png"],
+            removable_copy_files(files, "copy", own, keep, shares_stem=False),
+        )
+        # Sharing its name with the kept copy: only its own file goes.
+        self.assertEqual([own], removable_copy_files(files, "copy", own, keep, shares_stem=True))
+
     def test_unselected_and_unchanged_rows_have_no_steps(self) -> None:
         _make(self.folder, "a")
         _make(self.folder, "b")
@@ -716,3 +746,127 @@ class ApplyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RenameLogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.folder = root / "loras"
+        self.folder.mkdir()
+        self.data_dir = root / "data"
+        self.data_dir.mkdir()
+        self.journal = RenameJournal(self.data_dir)
+        self.log = RenameLog(self.data_dir)
+
+    def lines(self) -> list:
+        path = self.data_dir / "rename_log.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def _apply(self, rows, selected, remove=(), **kwargs):
+        steps = plan_steps(rows, set(selected), set(remove))
+        kwargs.setdefault("trash", _NoTrash())
+        return apply_steps(steps, self.journal, log=self.log, dry_run_job_id="dry-1", **kwargs)
+
+    def test_each_renamed_file_gets_a_line(self) -> None:
+        _make(self.folder, "old")
+        self._apply([_row(self.folder, "old", "new")], {_row(self.folder, "old", "new")["key"]})
+        lines = self.lines()
+        self.assertEqual(
+            sorted((str(self.folder / ("old" + s)), str(self.folder / ("new" + s))) for s in SIDECARS),
+            sorted((line["from"], line["to"]) for line in lines),
+        )
+        for line in lines:
+            self.assertEqual({"time", "runId", "dryRunJobId", "kind", "from", "to"}, set(line))
+            self.assertEqual(("rename", "dry-1"), (line["kind"], line["dryRunJobId"]))
+            self.assertTrue(line["time"].endswith("+00:00"))
+        self.assertEqual(1, len({line["runId"] for line in lines}))
+        self.assertTrue(lines[0]["runId"])
+
+    def test_a_second_apply_appends(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        for old in ("a", "b"):
+            row = _row(self.folder, old, old + "2")
+            self._apply([row], {row["key"]})
+        lines = self.lines()
+        self.assertEqual(6, len(lines))
+        self.assertEqual(2, len({line["runId"] for line in lines}))
+
+    def test_removed_copy_lines_name_the_kept_file(self) -> None:
+        _make(self.folder, "copy")
+        _make(self.folder, "keep")
+        _same_weights(self.folder, "copy", "keep")
+        survivor = _row(self.folder, "keep", "keep", status="unchanged", modelPath=str(self.folder / "keep.safetensors"))
+        dup = _row(self.folder, "copy", "copy", status="duplicate", survivorKey=survivor["key"])
+        trashed = []
+        self._apply([survivor, dup], set(), {dup["key"]}, trash=trashed.append)
+        self.assertEqual(3, len(trashed))
+        lines = self.lines()
+        self.assertEqual({"trash"}, {line["kind"] for line in lines})
+        self.assertEqual(sorted(trashed), sorted(line["from"] for line in lines))
+        self.assertEqual({str(self.folder / "keep.safetensors")}, {line["to"] for line in lines})
+
+    def test_an_entry_that_failed_is_not_logged(self) -> None:
+        _make(self.folder, "old")
+        (self.folder / "new.civitai.info").write_text("taken", encoding="utf-8")
+        row = _row(self.folder, "old", "new")
+        self._apply([row], {row["key"]})
+        self.assertEqual([], self.lines())
+
+    def _crash_after_first_entry(self, rows):
+        def progress(current, total, message):
+            raise RuntimeError("ComfyUI stopped")
+
+        with self.assertRaises(RuntimeError):
+            self._apply(rows, {row["key"] for row in rows}, progress=progress)
+
+    def test_finish_logs_the_rest_with_the_same_run(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        rows = [_row(self.folder, "a", "a2"), _row(self.folder, "b", "b2")]
+        self._crash_after_first_entry(rows)
+        self.assertEqual({str(self.folder / ("a2" + s)) for s in SIDECARS}, {line["to"] for line in self.lines()})
+        recover(RenameJournal(self.data_dir), "finish", log=self.log)
+        lines = self.lines()
+        self.assertEqual(
+            {str(self.folder / (stem + s)) for stem in ("a2", "b2") for s in SIDECARS}, {line["to"] for line in lines}
+        )
+        self.assertEqual({"dry-1"}, {line["dryRunJobId"] for line in lines})
+        self.assertEqual(1, len({line["runId"] for line in lines}))
+
+    def test_undo_logs_the_renames_it_reverses(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        rows = [_row(self.folder, "a", "a2"), _row(self.folder, "b", "b2")]
+        self._crash_after_first_entry(rows)
+        recover(RenameJournal(self.data_dir), "undo", log=self.log)
+        undone = [line for line in self.lines() if line["kind"] == "undo"]
+        self.assertEqual(
+            sorted((str(self.folder / ("a2" + s)), str(self.folder / ("a" + s))) for s in SIDECARS),
+            sorted((line["from"], line["to"]) for line in undone),
+        )
+
+    def test_a_failing_log_write_does_not_fail_the_apply(self) -> None:
+        (self.data_dir / "rename_log.jsonl").mkdir()  # cannot be opened as a file
+        _make(self.folder, "old")
+        row = _row(self.folder, "old", "new")
+        with mock.patch("builtins.print") as printed:
+            result = self._apply([row], {row["key"]})
+        self.assertEqual([row["key"]], result["done"])
+        self.assertEqual({"new" + s for s in SIDECARS}, _names(self.folder))
+        self.assertIn("rename log", printed.call_args[0][0])
+
+    def test_a_failing_log_warns_once_per_apply(self) -> None:
+        (self.data_dir / "rename_log.jsonl").mkdir()
+        rows = []
+        for old in ("a", "b", "c"):
+            _make(self.folder, old)
+            rows.append(_row(self.folder, old, old + "2"))
+        with mock.patch("builtins.print") as printed:
+            result = self._apply(rows, {row["key"] for row in rows})
+        self.assertEqual(3, len(result["done"]))
+        self.assertEqual(1, printed.call_count)

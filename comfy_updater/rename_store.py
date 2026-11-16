@@ -1,4 +1,5 @@
-"""Persistence for the model renamer: remembered decisions, base codes, AI answers, rename journal, last dry run."""
+"""Persistence for the model renamer: remembered decisions, base codes, AI answers, rename journal,
+last dry run, rename log."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ BASE_CODES_FILENAME = "base_codes.json"
 NAMING_CACHE_FILENAME = "naming_cache.json"
 RENAME_JOURNAL_FILENAME = "rename_journal.json"
 LAST_DRY_RUN_FILENAME = "last_dry_run.json"
+RENAME_LOG_FILENAME = "rename_log.jsonl"
 
 _TRAILING_TAG = re.compile(r"\(([^()]*)\)\s*$")
 
@@ -322,10 +324,11 @@ class RenameJournal(_JsonStore):
             self._data = {
                 "runId": str(payload.get("runId") or ""),
                 "startedAt": str(payload.get("startedAt") or ""),
+                "dryRunJobId": str(payload.get("dryRunJobId") or ""),
                 "steps": steps,
             }
 
-    def begin(self, steps: list[dict]) -> str:
+    def begin(self, steps: list[dict], dry_run_job_id: str = "") -> str:
         with self._lock:
             if not self._writable:
                 # Renaming without a journal would leave no way to finish or undo a crashed run.
@@ -334,6 +337,8 @@ class RenameJournal(_JsonStore):
             self._data = {
                 "runId": run_id,
                 "startedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                # For the rename log, when "finish" completes the run after a restart.
+                "dryRunJobId": str(dry_run_job_id or ""),
                 "steps": [
                     {
                         "kind": step.get("kind"),
@@ -385,6 +390,51 @@ class RenameJournal(_JsonStore):
             self._data = None
             if self._writable:
                 self.path.unlink(missing_ok=True)
+
+
+class RenameLog:
+    """Every file the renamer moved, one JSON line per step, appended for good.
+
+    The journal is cleared after each run; this keeps the record, so copies of
+    the same files elsewhere (an archive disk) can be renamed to match. A line:
+    ``{"time", "runId", "dryRunJobId", "kind": "rename"|"trash"|"undo", "from", "to"}``
+    (a trash step's ``to`` is the kept copy's file). Writing it never fails a run.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self.path = Path(data_dir) / RENAME_LOG_FILENAME
+        self._lock = threading.Lock()
+
+    def append(self, run_id: str, dry_run_job_id: str, steps: list[dict], kind: Optional[str] = None) -> Optional[str]:
+        """One line per step (``kind`` overrides the steps' own). Never raises: returns the warning
+        for a failed write (printed by the caller, once per run), else None."""
+        if not steps:
+            return None
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        text = "".join(
+            json.dumps(
+                {
+                    "time": now,
+                    "runId": str(run_id or ""),
+                    "dryRunJobId": str(dry_run_job_id or ""),
+                    "kind": kind or step.get("kind"),
+                    "from": step.get("from"),
+                    "to": step.get("to"),
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+            for step in steps
+        )
+        try:
+            with self._lock:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.path, "a", encoding="utf-8") as handle:
+                    handle.write(text)
+                    handle.flush()
+        except Exception as exc:  # noqa: BLE001 - the files are moved; the log is a record only
+            return f"Civitai updater: could not write the rename log {self.path} ({exc})."
+        return None
 
 
 class DryRunStore(_JsonStore):

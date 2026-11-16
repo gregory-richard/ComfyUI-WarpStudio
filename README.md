@@ -155,10 +155,19 @@ too old to have Generate Text cannot run the renamer; the view says so.
    that would get the same name or title (the naming model is asked once more
    first), an official file ComfyUI's templates may look for, a new base code. Each row shows which parts changed. You can **Edit**
    any part, **Keep current name**, or **Ask again** to let the naming model name
-   the model afresh on the next dry run. The same release saved twice in one
-   folder offers **Remove extra copy**.
-3. **Apply selected** renames the ticked rows. Extra copies you chose to remove
-   go to the Recycle Bin.
+   the model afresh on the next dry run.
+3. **Apply selected** renames the ticked rows and moves the extra copies to the
+   Recycle Bin.
+
+The same Civitai file saved twice in one folder is listed once as an extra
+copy. The copy kept is one with weights, if any, and then the one whose name
+matches its Civitai info; a copy saved under the wrong name long ago is the
+extra one. The row says why, shows both files with **Show in folder**, and
+starts with **Remove extra copy** ticked when the copies are the same Civitai
+file or have the same stored hash; untick it to keep both. An extra copy goes to
+the Recycle Bin with its `.civitai.info` and `.preview.png`, and its weights
+only when they are byte-identical to the kept copy's. Any other file of its name
+(an archive, a backup) stays where it is. The row lists the files that go.
 
 The naming model gets roughly three in four names exactly right on models it
 has not seen before. Read the list before you apply it.
@@ -196,6 +205,14 @@ If ComfyUI stops in the middle of a rename, a journal remembers where it got
 to, and the Rename view offers **Finish** or **Undo** on the next start. A file
 that already has the new name is never overwritten, and a file Windows has
 locked (a model loaded right now) is skipped and reported.
+
+Every file the renamer moves is recorded in `.civitai_updater/rename_log.jsonl`
+in the extension's folder: one JSON line per file with the time, the kind
+(`rename`, `trash` for a removed copy, `undo` for a rename that **Undo** put
+back), the old and the new path (for a removed copy, the kept copy's file),
+and the run. The log
+is never cleared, so you can rename copies of the same files elsewhere (an
+archive disk, say) to match.
 
 ## Settings
 
@@ -249,6 +266,7 @@ POST /civitai-updater/rename/decision
 POST /civitai-updater/rename/base-code
 POST /civitai-updater/jobs/rename-apply
 POST /civitai-updater/rename/recover
+POST /civitai-updater/rename/reveal
 POST /civitai-updater/jobs/download-naming-model
 ```
 

@@ -10,7 +10,7 @@ from comfy_updater.config_store import ConfigStore
 from unittest import mock
 
 from comfy_updater.jobs import JobManager, JobRecord
-from comfy_updater.rename_store import BaseCodeStore, DecisionStore, DryRunStore, RenameJournal
+from comfy_updater.rename_store import BaseCodeStore, DecisionStore, DryRunStore, RenameJournal, RenameLog
 from comfy_updater.routes import (
     NAMING_MODEL_FILENAME,
     NAMING_MODEL_URL,
@@ -38,6 +38,8 @@ from comfy_updater.routes import (
     recovered_path_mapping,
     rename_job_problem,
     rename_status,
+    reveal_command,
+    reveal_response,
 )
 
 
@@ -671,6 +673,20 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.assertEqual([gone["key"]], [item["entry"] for item in summary["skipped"]])
         self.assertTrue((self.folder / (a["newStem"] + ".safetensors")).exists())
 
+    def test_run_apply_writes_the_rename_log(self) -> None:
+        (self.folder / "old a.safetensors").write_bytes(b"w")
+        a = _row(self.folder, "old a", "maker - title - v1 (sdxl)")
+        run_apply(
+            [a], {a["key"]}, set(), RenameJournal(self.data_dir), data_dir=self.data_dir,
+            decisions=self.decisions, base_codes=self.base_codes, progress=lambda *args: None, control=None,
+            log=RenameLog(self.data_dir), dry_run_job_id="dry-7",
+        )
+        lines = [json.loads(line) for line in (self.data_dir / "rename_log.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            [("rename", "dry-7", str(self.folder / "old a.safetensors"), str(self.folder / (a["newStem"] + ".safetensors")))],
+            [(line["kind"], line["dryRunJobId"], line["from"], line["to"]) for line in lines],
+        )
+
     def test_exclusive_slot_lets_one_recovery_run_at_a_time(self) -> None:
         import asyncio
 
@@ -824,3 +840,101 @@ class NamingModelDownloadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _RevealRequest:
+    def __init__(self, payload, remote="127.0.0.1"):
+        self._payload = payload
+        self.remote = remote
+
+    async def json(self):
+        return self._payload
+
+
+class RevealRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.folder = Path(self._tmp.name) / "loras"
+        self.folder.mkdir()
+        self.keep = self.folder / "keep.civitai.info"
+        self.copy = self.folder / "copy.civitai.info"
+        for path in (self.keep, self.copy):
+            path.write_text("{}", encoding="utf-8")
+        survivor = {"key": str(self.keep).lower(), "modelPath": str(self.keep), "status": "unchanged"}
+        dup = {
+            "key": str(self.copy).lower(), "modelPath": str(self.copy), "status": "duplicate",
+            "survivorKey": str(self.keep).lower(), "survivorPath": str(self.keep),
+        }
+        self.job = JobRecord(id="dry", type=RENAME_DRY_RUN_JOB, status="completed", items=[survivor, dup])
+        self.launched: list = []
+
+    def reveal(self, payload, remote="127.0.0.1", platform="win32"):
+        import asyncio
+
+        get_job = lambda job_id: self.job if job_id == "dry" else None  # noqa: E731
+        response = asyncio.run(
+            reveal_response(_RevealRequest(payload, remote), get_job, launch=self.launched.append, platform=platform)
+        )
+        return response.status, json.loads(response.text)
+
+    def test_reveals_a_row_of_the_job(self) -> None:
+        status, body = self.reveal({"jobId": "dry", "key": str(self.copy).lower()})
+        self.assertEqual(200, status, body)
+        self.assertEqual([["explorer", "/select,", str(self.copy)]], self.launched)
+
+    def test_reveals_the_survivor_of_a_duplicate_row(self) -> None:
+        status, _body = self.reveal({"jobId": "dry", "key": str(self.copy).lower(), "survivor": True})
+        self.assertEqual(200, status)
+        self.assertEqual([["explorer", "/select,", str(self.keep)]], self.launched)
+
+    def test_a_path_in_the_request_is_never_used(self) -> None:
+        elsewhere = Path(self._tmp.name) / "secret.txt"
+        elsewhere.write_text("x", encoding="utf-8")
+        status, _body = self.reveal({"jobId": "dry", "key": str(elsewhere).lower(), "path": str(elsewhere)})
+        self.assertEqual(400, status)
+        status, _body = self.reveal({"jobId": "dry", "key": str(self.keep).lower(), "survivor": True})
+        self.assertEqual(400, status)  # not a duplicate row: it has no survivor
+        self.assertEqual([], self.launched)
+
+    def test_unknown_job_and_missing_fields(self) -> None:
+        self.assertEqual(404, self.reveal({"jobId": "other", "key": str(self.copy).lower()})[0])
+        self.assertEqual(400, self.reveal({"jobId": "dry"})[0])
+        self.assertEqual([], self.launched)
+
+    def test_only_from_the_same_machine(self) -> None:
+        for remote in ("::1", "::ffff:127.0.0.1", "127.0.0.2"):
+            self.assertEqual(200, self.reveal({"jobId": "dry", "key": str(self.copy).lower()}, remote=remote)[0], remote)
+        for remote in ("192.168.1.20", None, "not an address"):
+            status, body = self.reveal({"jobId": "dry", "key": str(self.copy).lower()}, remote=remote)
+            self.assertEqual(403, status)
+            self.assertEqual({"error": "Show in folder works only on the computer ComfyUI runs on."}, body)
+        self.assertEqual(3, len(self.launched))
+
+    def test_missing_file(self) -> None:
+        self.copy.unlink()
+        status, body = self.reveal({"jobId": "dry", "key": str(self.copy).lower()})
+        self.assertEqual(404, status)
+        self.assertIn("copy.civitai.info", body["error"])
+        self.assertEqual([], self.launched)
+
+    def test_commands_per_platform(self) -> None:
+        path = self.folder / "a b.safetensors"
+        self.assertEqual(["explorer", "/select,", str(path)], reveal_command(path, "win32"))
+        self.assertEqual(["open", "-R", str(path)], reveal_command(path, "darwin"))
+        self.assertEqual(["xdg-open", str(self.folder)], reveal_command(path, "linux"))
+
+    def test_launch_failure_is_reported(self) -> None:
+        import asyncio
+
+        def fail(command):
+            raise OSError("no explorer")
+
+        response = asyncio.run(
+            reveal_response(
+                _RevealRequest({"jobId": "dry", "key": str(self.copy).lower()}),
+                lambda job_id: self.job, launch=fail, platform="win32",
+            )
+        )
+        self.assertEqual(500, response.status)
+        self.assertIn("no explorer", json.loads(response.text)["error"])

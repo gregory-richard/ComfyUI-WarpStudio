@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 import os
 from pathlib import Path
 import queue
+import re
 import threading
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -36,9 +37,17 @@ from .naming_check import (
     strip_zeros,
     xl_is_base,
 )
-from .naming_scheme import NameParts, assemble, format_part, parse_stem, part_problems, stem_problems
+from .naming_scheme import (
+    _BASE_SUFFIX,
+    NameParts,
+    assemble,
+    format_part,
+    parse_stem,
+    part_problems,
+    stem_problems,
+)
 from .path_resolver import list_model_files
-from .rename_apply import file_identity
+from .rename_apply import assign_siblings, file_identity, removable_copy_files
 from .rename_store import AnswerCache, BaseCodeStore, DecisionStore
 from .sidecar import read_json
 from .updater_service import _dedupe_model_files, _stored_sha256
@@ -174,6 +183,7 @@ def _finished_row(entry: Entry, file_key: str, status: str, reason: str) -> dict
         "status": status,
         "reason": reason,
         "selected": False,
+        "metadataOnly": entry.metadata_only,
         **entry.identity,
     }
 
@@ -185,13 +195,73 @@ def _find_version(model: dict, version_id: str) -> Optional[dict]:
     return None
 
 
-def _split_duplicates(placed: List[Placed]) -> Tuple[List[Placed], List[dict]]:
+_WORD = re.compile(r"[a-z0-9]+")
+_NOT_WORD = re.compile(r"[^a-z0-9]+")
+
+
+def _without_base(stem: str) -> str:
+    match = _BASE_SUFFIX.match(stem)
+    return match.group(1) if match else stem
+
+
+def _words(text: str) -> List[str]:
+    """The words of a name that count: runs of letters/digits, three or longer, each once."""
+    return list(dict.fromkeys(word for word in _WORD.findall(text.lower()) if len(word) >= 3))
+
+
+def _compacted(texts: Iterable[str]) -> str:
+    """Lowercase letters and digits only; texts kept apart so no word spans two of them."""
+    return "|".join(_NOT_WORD.sub("", text.lower()) for text in texts if isinstance(text, str))
+
+
+def name_match_score(stem: str, live_texts: Iterable[str]) -> int:
+    """Words of the stem (its base part left out) found in the live texts, minus those not found.
+
+    A wrong word ("high" on the low file) counts against, so a longer name that
+    repeats the title cannot outscore a shorter one that is right.
+    """
+    haystack = _compacted(live_texts)
+    words = _words(_without_base(stem))
+    found = sum(1 for word in words if word in haystack)
+    return found - (len(words) - found)
+
+
+def name_matches_info(stem: str, live_texts: Iterable[str]) -> bool:
+    """Whether the title part of the stem shares a word with the live title, version and file name.
+
+    A title with no word long enough to compare is given the benefit of the doubt.
+    """
+    title = parse_stem(stem).title or _without_base(stem)
+    words = _words(title)
+    if not words:
+        return True
+    haystack = _compacted(live_texts)
+    return any(word in haystack for word in words)
+
+
+def _live_names(model: dict, version: dict, placed: Placed) -> Dict[str, str]:
+    """The live names a copy's file name is judged against."""
+    file_name = placed.file.get("name") if placed.file is not None else ""
+    return {
+        "liveTitle": _text(model.get("name")),
+        "uploader": _text(_as_dict(model.get("creator")).get("username")),
+        "versionName": _text(version.get("name")),
+        "civitaiFileName": _text(file_name),
+    }
+
+
+def _split_duplicates(placed: List[Placed], model: Optional[dict] = None) -> Tuple[List[Placed], List[dict]]:
     """Same version and same file in one folder: keep one, row the rest.
 
     The file is the matched live file, else the entry's own stored hash, so two
     different unmatched files of one version are never duplicates. Only entries
     with neither share the empty bucket.
+
+    The copy kept: one with weights if any, then the one whose name best matches
+    the live data (a copy saved under the wrong name long ago loses), then the
+    alphabetically first.
     """
+    model = model if isinstance(model, dict) else {}
     buckets: Dict[tuple, List[Placed]] = {}
     for item in placed:
         if item.file is not None:
@@ -204,19 +274,55 @@ def _split_duplicates(placed: List[Placed]) -> Tuple[List[Placed], List[dict]]:
         buckets.setdefault(bucket, []).append(item)
     duplicates: Dict[int, Placed] = {}
     rows: List[dict] = []
-    for members in buckets.values():
+    siblings: Dict[str, Dict[str, List[Path]]] = {}
+    for (_folder, _version, file_id), members in buckets.items():
         if len(members) < 2:
             continue
+        # How the copies are known to be one file; "none" (neither a live file nor a
+        # stored hash) is a guess the panel does not mark for removal.
+        same_file_by = file_id.split(":", 1)[0] if file_id else "none"
+        same_file_by = "hash" if same_file_by == "sha" else same_file_by
+        version = _find_version(model, members[0].entry.version_id) or {}
+        names = {id(item): _live_names(model, version, item) for item in members}
         with_weights = [item for item in members if item.entry.has_weights]
         # Never offer real weights for removal while a metadata-only copy survives.
         candidates = with_weights or members
-        survivor = min(candidates, key=lambda item: (item.entry.stem.lower(), item.entry.stem))
+
+        def rank(item: Placed) -> tuple:
+            live = names[id(item)]
+            score = name_match_score(
+                item.entry.stem, (live["uploader"], live["liveTitle"], live["versionName"], live["civitaiFileName"])
+            )
+            return (-score, item.entry.stem.lower(), item.entry.stem)
+
+        survivor = min(candidates, key=rank)
         for item in members:
             if item is survivor:
                 continue
             duplicates[id(item)] = survivor
+            live = names[id(item)]
             row = _finished_row(item.entry, item.file_key, "duplicate", "duplicate")
             row["survivorKey"] = _entry_key(survivor.entry)
+            row["survivorPath"] = str(survivor.entry.path)
+            row.update(live)
+            row["sameFileBy"] = same_file_by
+            folder = str(item.entry.folder)
+            if folder not in siblings:
+                siblings[folder] = assign_siblings(item.entry.folder)
+            # What Apply would move to the Recycle Bin, as the folder is now (Apply checks again).
+            row["removeFiles"] = [
+                str(path)
+                for path in removable_copy_files(
+                    siblings[folder].get(item.entry.stem.lower(), []),
+                    item.entry.stem,
+                    item.entry.path,
+                    survivor.entry.path,
+                    shares_stem=survivor.entry.stem.lower() == item.entry.stem.lower(),
+                )
+            ]
+            row["nameMatchesInfo"] = name_matches_info(
+                item.entry.stem, (live["liveTitle"], live["versionName"], live["civitaiFileName"])
+            )
             rows.append(row)
     kept = [item for item in placed if id(item) not in duplicates]
     return kept, rows
@@ -329,7 +435,7 @@ def _sort_model(
             continue
         placed.append(Placed(entry=entry, file=matched, file_key=file_key))
 
-    placed, duplicate_rows = _split_duplicates(placed)
+    placed, duplicate_rows = _split_duplicates(placed, model)
     rows.extend(duplicate_rows)
     if not placed:
         return None, rows
@@ -767,6 +873,7 @@ def _group_rows(
                     "liveTitle": pending.model_input.title,
                     # The live Civitai uploader, whoever the name credits.
                     "uploader": pending.model_input.creator,
+                    "metadataOnly": entry.metadata_only,
                     **entry.identity,
                 }
             )

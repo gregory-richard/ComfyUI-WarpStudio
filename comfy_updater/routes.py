@@ -5,8 +5,11 @@ import copy
 from dataclasses import asdict
 import functools
 from datetime import datetime, timezone
+import ipaddress
 import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any, Callable, Optional
 
 from aiohttp import web
@@ -44,6 +47,7 @@ from .renamer import (
     run_dry_run,
     title_clash_models,
 )
+from .rename_store import RenameLog
 from .request_guard import request_rejection
 from .sidecar import read_data_file, write_json
 from .updater_service import sidecar_seed_item
@@ -623,6 +627,7 @@ def _register_rename_routes(
     # Dry runs made before the last apply or recovery: their old stems may now name other files.
     applied_jobs: set = set()
     recovery_slot = ExclusiveSlot()
+    rename_log = RenameLog(config_store.data_dir)
     if dry_runs is not None:
         restore_last_dry_run(job_manager, dry_runs, applied_jobs)
 
@@ -806,6 +811,7 @@ def _register_rename_routes(
             summary = run_apply(
                 rows, selected, remove, journal, data_dir=data_dir, decisions=decisions, base_codes=base_codes,
                 check_jobs=job_manager, progress=progress, control=control,
+                log=rename_log, dry_run_job_id=job.id,
             )
             return summary, []
 
@@ -838,7 +844,7 @@ def _register_rename_routes(
             mark_dry_runs_stale(job_manager, applied_jobs)
             warning = await persist_stale()
             try:
-                result = await asyncio.to_thread(recover, journal, action)
+                result = await asyncio.to_thread(functools.partial(recover, journal, action, log=rename_log))
                 mapping = recovered_path_mapping(pending, result, action)
                 await asyncio.to_thread(update_saved_paths, config_store.data_dir, mapping)
                 update_check_job_paths(job_manager, mapping)
@@ -852,6 +858,11 @@ def _register_rename_routes(
         if warning:
             response["persistWarning"] = warning
         return web.json_response(response)
+
+    @routes.post("/civitai-updater/rename/reveal")
+    @_guarded
+    async def reveal_rename_file(request):
+        return await reveal_response(request, dry_run_job)
 
     @routes.post("/civitai-updater/jobs/download-naming-model")
     @_guarded
@@ -886,6 +897,78 @@ def _register_rename_routes(
         if not job:
             return busy()
         return web.json_response({"jobId": job.id})
+
+
+REVEAL_REMOTE_ERROR = "Show in folder works only on the computer ComfyUI runs on."
+
+
+def is_loopback(remote: Any) -> bool:
+    """Whether a request's peer address (aiohttp ``request.remote``) is this machine."""
+    if not isinstance(remote, str) or not remote.strip():
+        return False
+    try:
+        address = ipaddress.ip_address(remote.strip().split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(address.is_loopback or (mapped is not None and mapped.is_loopback))
+
+
+def reveal_command(path: Path, platform: str) -> list:
+    """The file manager command that shows ``path`` (an argument list, run without a shell)."""
+    if platform.startswith("win"):
+        # Explorer reads "/select," and the path as one switch; the path stays its own argument.
+        return ["explorer", "/select,", str(path)]
+    if platform == "darwin":
+        return ["open", "-R", str(path)]
+    return ["xdg-open", str(Path(path).parent)]
+
+
+def _launch_detached(command: list) -> None:
+    """Start the file manager and don't wait for it."""
+    subprocess.Popen(  # noqa: S603 - fixed program, path from the dry run's own rows
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+
+async def reveal_response(request, get_job, *, launch=_launch_detached, platform: str = sys.platform):
+    """Show a dry run row's file (or its survivor's) in the file manager.
+
+    Only paths the dry run itself listed are shown, never one from the request,
+    and only for a browser on the machine ComfyUI runs on.
+    """
+    if not is_loopback(getattr(request, "remote", None)):
+        return web.json_response({"error": REVEAL_REMOTE_ERROR}, status=403)
+    payload = await _read_json(request)
+    job_id = payload.get("jobId")
+    key = payload.get("key")
+    if not isinstance(job_id, str) or not job_id.strip() or not isinstance(key, str) or not key:
+        return web.json_response({"error": "jobId and key of a dry run row are required"}, status=400)
+    job = get_job(job_id.strip())
+    if job is None:
+        return web.json_response({"error": "job not found"}, status=404)
+    row = next((item for item in job.items if isinstance(item, dict) and item.get("key") == key), None)
+    if row is None:
+        return web.json_response({"error": "That file is not in this dry run."}, status=400)
+    if payload.get("survivor") is True:
+        target = row.get("survivorPath") if row.get("status") == "duplicate" else None
+        if not target:
+            return web.json_response({"error": "That row has no kept copy."}, status=400)
+    else:
+        target = row.get("modelPath")
+    if not isinstance(target, str) or not target:
+        return web.json_response({"error": "That row has no file."}, status=400)
+    path = Path(target)
+    if not os.path.lexists(path):
+        return web.json_response(
+            {"error": f"{path.name} is not there any more. Run a new dry run to see your files as they are now."},
+            status=404,
+        )
+    try:
+        launch(reveal_command(path, platform))
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": _short_error(f"Could not open the folder: {exc}")}, status=500)
+    return web.json_response({"ok": True})
 
 
 class ExclusiveSlot:
@@ -977,11 +1060,15 @@ def run_apply(
     control,
     check_jobs=None,
     trash: Callable[[str], Any] = send_to_trash,
+    log=None,
+    dry_run_job_id: str = "",
 ) -> dict:
     """The apply job body: plan, apply, then the follow-ups. Returns the job summary."""
     progress(0, 0, "Planning the renames")
     steps, planned_skips = plan(rows, selected, remove)
-    result = apply_steps(steps, journal, trash=trash, progress=progress, control=control)
+    result = apply_steps(
+        steps, journal, trash=trash, progress=progress, control=control, log=log, dry_run_job_id=dry_run_job_id
+    )
     result["skipped"] = planned_skips + list(result.get("skipped") or [])
     return apply_followups(
         rows, steps, result, data_dir=data_dir, decisions=decisions, base_codes=base_codes, check_jobs=check_jobs
