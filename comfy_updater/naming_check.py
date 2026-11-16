@@ -267,4 +267,14 @@ def name_check_flags(title: str, version: str, vocabulary: FrozenSet[str], *, xl
     words.extend(base_words(version, vocabulary, xl_base=xl_base))
     flags = [f"base-word:{word}" for word in words]
     flags.extend(f"version-format:{token}" for token in version_format(f"{title} {version}"))
+    flags.extend(f"type-word:{word}" for word in type_words(f"{title} {version}"))
     return list(dict.fromkeys(flags))
+
+
+# What kind of file it is, never part of its name (the naming rules say to drop them).
+TYPE_WORDS = frozenset({"lora", "loras", "lycoris", "locon", "loha", "lokr"})
+
+
+def type_words(text: str) -> List[str]:
+    """Words like "lora" standing on their own in a name."""
+    return list(dict.fromkeys(word for word in re.findall(r"[a-z0-9]+", text.lower()) if word in TYPE_WORDS))

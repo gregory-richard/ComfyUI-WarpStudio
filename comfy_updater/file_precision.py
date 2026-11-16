@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import BinaryIO, Dict, Optional
 
 MAX_HEADER_BYTES = 100 * 1024 * 1024
+# The share of weight bytes from which a file counts as its quantized variant.
+QUANTIZED_SHARE = 0.25
 _MAX_GGUF_COUNT = 10_000_000
 _MAX_GGUF_NESTING = 8
 
@@ -100,6 +102,16 @@ def _safetensors_precision(path: Path) -> str:
         return ""
     if not weights:
         return ""
+    # A quantized file keeps some parts (a text encoder, norms) in higher precision:
+    # it is the quantized variant once a quarter of its weights are quantized.
+    quantized = [dtype for dtype in ("I8", "F8_E4M3", "F8_E5M2") if dtype in weights]
+    if has_scale_2 and "U8" in weights:
+        quantized.append("U8")
+    total = sum(weights.values())
+    if quantized:
+        main = max(quantized, key=lambda key: weights[key])
+        if weights[main] >= QUANTIZED_SHARE * total:
+            return "nvfp4" if main == "U8" else _SAFETENSORS_PRECISION[main]
     dominant = max(weights, key=lambda key: weights[key])
     if dominant == "U8":
         return "nvfp4" if has_scale_2 else ""

@@ -264,6 +264,7 @@ async function renderTab(el) {
         <div id="cu-filter-base" class="cu-filter-slot"></div>
       </div>
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
+      <div id="cu-loading-bar" class="cu-loading-bar" aria-hidden="true"></div>
       <div id="cu-rename-pane" style="display:none"></div>
       <div id="cu-updates-pane">
       <div id="cu-scan-report" class="cu-scan-report"></div>
@@ -296,6 +297,7 @@ async function renderTab(el) {
   state.scanReportEl = root.querySelector("#cu-scan-report");
   state.checkSummaryEl = root.querySelector("#cu-check-summary");
   state.viewSwitchEl = root.querySelector("#cu-view-switch");
+  state.loadingBarEl = root.querySelector("#cu-loading-bar");
   state.sharedFiltersEl = root.querySelector("#cu-shared-filters");
   state.filterTypeEl = root.querySelector("#cu-filter-type");
   state.filterBaseEl = root.querySelector("#cu-filter-base");
@@ -330,6 +332,7 @@ async function renderTab(el) {
     filter: renameFilter,
     onFacets: onRenameFacets,
     onCount: () => renderViewSwitch(),
+    setLoading,
   });
   bindEvents(root);
   state.statusEl.textContent = state.statusText;
@@ -861,6 +864,7 @@ async function loadResultPage(force) {
     renderResults();
     return;
   }
+  setLoading("results", true);
   try {
     const query = new URLSearchParams({
       offset: String(state.pageOffset),
@@ -912,6 +916,8 @@ async function loadResultPage(force) {
       return;
     }
     setStatus(`Failed to fetch result page: ${error.message}`);
+  } finally {
+    setLoading("results", false);
   }
 }
 
@@ -1456,6 +1462,15 @@ function onMatureModeChanged() {
   state.pageOffset = 0;
   loadResultPage(true);
   state.renameView?.render();
+}
+
+/* A thin moving bar under the tabs while results load (Updates, Issues or Rename). */
+const loadingNow = new Set();
+
+function setLoading(kind, on) {
+  if (on) loadingNow.add(kind);
+  else loadingNow.delete(kind);
+  state.loadingBarEl?.classList.toggle("is-on", loadingNow.size > 0);
 }
 
 /* The filter menus serve all three views: the check's models plus the dry run's. */
@@ -2687,6 +2702,65 @@ function injectStyles() {
       grid-template-columns: 1fr 1fr;
       gap: 6px;
       margin-bottom: 9px;
+    }
+
+    /* ---- Loading: a bar sweeping under the tabs ---- */
+
+    .cu-loading-bar {
+      position: relative;
+      height: 2px;
+      margin: -6px 0 6px;
+      overflow: hidden;
+      border-radius: 1px;
+      visibility: hidden;
+    }
+
+    .cu-loading-bar.is-on {
+      visibility: visible;
+    }
+
+    .cu-loading-bar::after {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 35%;
+      background: linear-gradient(90deg, transparent, var(--cu-red-soft), transparent);
+      animation: cu-sweep 1.1s ease-in-out infinite;
+    }
+
+    @keyframes cu-sweep {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(300%); }
+    }
+
+    .cu-loading-note {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--cu-mono);
+      font-size: 10.5px;
+      color: var(--cu-ash);
+      padding: 10px 0;
+    }
+
+    .cu-spinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid var(--cu-seam-strong);
+      border-top-color: var(--cu-red-soft);
+      animation: cu-spin 0.8s linear infinite;
+    }
+
+    @keyframes cu-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .cu-loading-bar::after,
+      .cu-spinner {
+        animation-duration: 3s;
+      }
     }
 
     /* ---- Updates / Issues switch ---- */

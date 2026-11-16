@@ -770,7 +770,8 @@ class NamingTests(unittest.TestCase):
         _summary, rows = self.dry_run(models, generator)
         self.assertEqual(len(generator.messages), 2)
         self.assertIn(
-            'Versions "V1 - High" and "V1 - Low" both became "v1"; keep the words that tell them apart.',
+            'Versions "V1 - High" and "V1 - Low" both became "v1"; keep the words that tell them apart: '
+            '"high" only in "V1 - High"; "low" only in "V1 - Low".',
             generator.messages[1],
         )
         self.assertEqual(self.row(rows, "hl high")["newStem"], "maker - pinewave - v1 high (krea2)")

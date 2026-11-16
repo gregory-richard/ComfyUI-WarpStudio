@@ -62,6 +62,17 @@ class FilePrecisionTests(unittest.TestCase):
         write_safetensors(path, {"w1": ("I8", [4096, 4096]), "s1": ("F32", [4096])})
         self.assertEqual("int8", read_precision(path))
 
+    def test_a_partly_quantized_file_is_its_quantized_variant(self) -> None:
+        # An int8 model that keeps its text encoder in fp16: more fp16 bytes, still the int8 file.
+        path = self.dir / "m.safetensors"
+        write_safetensors(path, {"vision": ("I8", [1024, 512]), "text": ("F16", [1024, 400])})
+        self.assertEqual("int8", read_precision(path))
+
+    def test_a_few_quantized_tensors_do_not_make_a_quantized_file(self) -> None:
+        path = self.dir / "m.safetensors"
+        write_safetensors(path, {"small": ("I8", [64, 64]), "main": ("F16", [1024, 1024])})
+        self.assertEqual("fp16", read_precision(path))
+
     def test_bf16(self) -> None:
         path = self.dir / "m.safetensors"
         write_safetensors(path, {"w": ("BF16", [64, 64])})

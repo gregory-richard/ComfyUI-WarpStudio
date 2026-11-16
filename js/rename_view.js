@@ -63,6 +63,7 @@ export function createRenameStore() {
     result: null,
     recoverResult: null,
     revealError: null,
+    openHints: new Set(),
     restoredLastJob: false,
   };
 }
@@ -140,6 +141,8 @@ export function flagInfo(flag, row, rows) {
       return { level: "warn", text: `“${arg}” is a base-model name — usually it doesn't belong here` };
     case "version-format":
       return { level: "warn", text: `Write ${arg.replace(/(\.0+)+$/, "")} instead of ${arg}` };
+    case "type-word":
+      return { level: "warn", text: `“${arg}” says what kind of file it is; it doesn't belong in the name` };
     case "creator-from-file-name":
       return { level: "warn", text: "Civitai has no creator for this model; taken from your file name" };
     case "maker-from-description": {
@@ -635,6 +638,7 @@ export function renderRenameView(container, deps) {
 
   async function loadRows() {
     if (!store.jobId) return;
+    deps.setLoading?.("rename", true);
     try {
       const data = await deps.getJson(`${ROUTE}/rename/rows?jobId=${encodeURIComponent(store.jobId)}`);
       setRows(store, data.rows);
@@ -662,6 +666,8 @@ export function renderRenameView(container, deps) {
       } else {
         notify(`Could not load the dry run: ${error?.message || error}`, "error");
       }
+    } finally {
+      deps.setLoading?.("rename", false);
     }
   }
 
@@ -779,6 +785,14 @@ export function renderRenameView(container, deps) {
       // Finish moved files: the Updates view's results now carry the new paths.
       await deps.reloadResults?.();
     });
+  }
+
+  /* One file line drawn again in place (its card's images stay). */
+  function redrawLine(row, target) {
+    const host = target.closest("[data-rn-key]");
+    const card = cardsById.get(target.closest("[data-rn-card]")?.dataset.rnCard);
+    if (host && card) host.outerHTML = fileHtml(row, new Set(card.rows.map((r) => r.key)), locked());
+    else render();
   }
 
   /* Keep or remove an extra copy on Apply; its line is drawn again in place. */
@@ -947,7 +961,9 @@ export function renderRenameView(container, deps) {
     html.push(recoverHtml());
 
     if (!status) {
-      html.push(`<div class="cu-empty">${store.statusError ? esc(`Could not reach the renamer: ${store.statusError}`) : "Loading\u2026"}</div>`);
+      html.push(store.statusError
+        ? `<div class="cu-empty">${esc(`Could not reach the renamer: ${store.statusError}`)}</div>`
+        : `<div class="cu-loading-note"><span class="cu-spinner" aria-hidden="true"></span>Loading\u2026</div>`);
       return html.join("");
     }
 
@@ -1208,14 +1224,22 @@ export function renderRenameView(container, deps) {
     // A line that needs a look shows its buttons; the others show them on hover.
     const attention = messages.length > 0 || dup || store.editing === row.key;
     const base = row.parts?.base || "—";
+    // The hints wait behind a (!) on the line, coloured by the most serious one.
+    const level = messages.some((html) => html.includes('data-level="block"')) ? "block"
+      : messages.some((html) => html.includes('data-level="warn"')) ? "warn" : "info";
+    const hintsOpen = store.openHints.has(row.key);
+    const firstHint = messages.length ? messages[0].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim() : "";
+    const hintButton = messages.length
+      ? `<button class="cu-rn-hint-btn" data-rn-action="toggle-hints" data-level="${level}" aria-expanded="${hintsOpen}" title="${esc(messages.length > 1 ? `${firstHint} (+${messages.length - 1} more)` : firstHint)}">!${messages.length > 1 ? `<span>${messages.length}</span>` : ""}</button>`
+      : "";
     return `<div class="cu-rn-file${quiet ? " is-quiet" : ""}" data-rn-key="${esc(row.key)}" data-status="${esc(row.status)}"${removing ? " data-removing" : ""}${attention ? " data-attention" : ""}>
       <div class="cu-ver-row cu-rn-line">
         <label class="cu-rn-check">${check}</label>
         <span class="cu-ver-label" data-role="${role}">${label}</span>
         <span class="cu-ver-base" title="${esc(base)}">${esc(base)}</span>
-        <span class="cu-ver-main"><span class="cu-rn-names">${old}${renamed}</span>${actions.length ? `<span class="cu-rn-line-actions">${actions.join("")}</span>` : ""}</span>
+        <span class="cu-ver-main"><span class="cu-rn-names">${old}${renamed}</span>${hintButton}${actions.length ? `<span class="cu-rn-line-actions">${actions.join("")}</span>` : ""}</span>
       </div>
-      ${messages.join("")}
+      ${hintsOpen ? `<div class="cu-rn-hints">${messages.join("")}</div>` : ""}
       ${store.editing === row.key ? editHtml(row) : ""}
     </div>`;
   }
@@ -1380,6 +1404,13 @@ export function renderRenameView(container, deps) {
         break;
       case "copy-path":
         if (row?.modelPath) deps.copyOrReveal?.(target, row.modelPath, store.jobId);
+        break;
+      case "toggle-hints":
+        if (row) {
+          if (store.openHints.has(row.key)) store.openHints.delete(row.key);
+          else store.openHints.add(row.key);
+          redrawLine(row, target);
+        }
         break;
       case "keep-copy":
       case "remove-copy":
@@ -1788,8 +1819,52 @@ const RENAME_CSS = `
 
   /* An extra copy ticked for removal is struck through. */
   .cu-rn-file[data-removing] .cu-rn-old {
-    color: var(--cu-dust);
+    color: var(--cu-red-soft);
     text-decoration: line-through;
+    text-decoration-color: var(--cu-red-soft);
+  }
+
+  /* The (!) that opens a line's hints. */
+  .cu-rn-hint-btn {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    margin-top: 1px;
+    border-radius: 8px;
+    border: 1px solid currentColor;
+    background: transparent;
+    font: 700 9.5px/1 var(--cu-mono);
+    color: var(--cu-dust);
+    cursor: pointer;
+  }
+
+  .cu-rn-hint-btn span {
+    font-weight: 500;
+    opacity: 0.8;
+  }
+
+  .cu-rn-hint-btn[data-level="warn"] {
+    color: var(--cu-amber);
+  }
+
+  .cu-rn-hint-btn[data-level="block"] {
+    color: var(--cu-red-soft);
+  }
+
+  .cu-rn-hint-btn[aria-expanded="true"],
+  .cu-rn-hint-btn:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .cu-rn-hints {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .cu-rn .cu-ver-label[data-role="extra"] {
@@ -1803,7 +1878,7 @@ const RENAME_CSS = `
 
   /* Messages sit under their line, after the checkbox and the label. */
   .cu-rn .cu-rn-file .cu-issue-msg {
-    margin: 0 0 1px 106px;
+    margin: 0 0 1px 122px;
   }
 
   .cu-rn .cu-issue-msg[data-level="warn"],

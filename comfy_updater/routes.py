@@ -1355,6 +1355,7 @@ def _base_code_problem(code: str) -> str:
 # Flags that come from the parts themselves and are recomputed on every re-assembly.
 _PARTS_FLAG_KINDS = {
     "empty", "forbidden", "separator", "non-ascii", "reserved", "trailing", "base-word", "version-format",
+    "type-word",
 }
 _FOLDER_FLAGS = {"exists", "collision"}
 # Clashes with the model's other versions, or with another model's title: rechecked on every re-assembly.

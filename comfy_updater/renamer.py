@@ -630,6 +630,8 @@ def _flag_message(code: str, parts: NameParts) -> str:
         return f'"{part}" is a base model name; leave it out of the title and version.'
     if kind == "version-format":
         return f'write "{strip_zeros(part)}", not "{part}".'
+    if kind == "type-word":
+        return f'leave "{part}" out of the title and version.'
     value = getattr(parts, part, "") if part else ""
     if kind == "empty":
         return f"The {part} is empty."
@@ -695,6 +697,8 @@ def _version_clash_problems(pending: _Pending, answer: ModelAnswer) -> List[str]
     seen: Dict[Tuple[str, str, str], Tuple[Slot, bool]] = {}
     problems: List[str] = []
     told: Set[Tuple[str, str]] = set()
+    files = {slot.key: _slot_file_name(members) for slot, members in pending.slot_members}
+    vocabulary = base_vocabulary(pending.base_names)
     for slot, members in pending.slot_members:
         code = pending.base_code_of.get(slot.base_model) if slot.base_model else None
         base = format_part(code if code is not None else answer.bases.get(slot.base_model, ""))
@@ -715,9 +719,55 @@ def _version_clash_problems(pending: _Pending, answer: ModelAnswer) -> List[str]
             told.add(pair)
             became = f'both became "{version}"' if version else "both got no version"
             problems.append(
-                f'Versions "{other.version_name}" and "{slot.version_name}" {became}; keep the words that tell them apart.'
+                f'Versions "{other.version_name}" and "{slot.version_name}" {became}; keep the words that tell them apart'
+                + _telling_hint(pending, (other, files.get(other.key, "")), (slot, files.get(slot.key, "")), vocabulary)
             )
     return problems
+
+
+_TOKEN = re.compile(r"[a-z0-9]+(?:\.[0-9]+)*")
+_PRECISION_TOKEN = re.compile(r"(?:fp|bf|int|nf)\d+|convrot|scaled|e4m3fn?|e5m2")
+
+
+def _slot_file_name(members: List[Placed]) -> str:
+    """The Civitai name of a slot's file (else the local file's name)."""
+    for placed in members:
+        name = _text((placed.file or {}).get("name"))
+        if name:
+            return name
+    return members[0].entry.path.name if members else ""
+
+
+def _telling_hint(pending: _Pending, a: Tuple[Slot, str], b: Tuple[Slot, str], vocabulary) -> str:
+    """Name the words that set two clashing versions apart: from their version names, else their file names.
+
+    File names offered this way join the model's source text, so a word taken
+    from them does not count as invented.
+    """
+
+    def words(text: str) -> List[str]:
+        out = []
+        for word in _TOKEN.findall(text.lower()):
+            if word in vocabulary or _PRECISION_TOKEN.fullmatch(word) or word in out:
+                continue
+            out.append(word)
+        return out
+
+    def only(mine: List[str], theirs: List[str]) -> List[str]:
+        return [word for word in mine if word not in theirs]
+
+    (slot_a, file_a), (slot_b, file_b) = a, b
+    names_a, names_b = words(slot_a.version_name), words(slot_b.version_name)
+    parts = []
+    for name, mine in ((slot_a.version_name, only(names_a, names_b)), (slot_b.version_name, only(names_b, names_a))):
+        if mine:
+            parts.append(", ".join(f'"{word}"' for word in mine) + f' only in "{name}"')
+    if parts:
+        return ": " + "; ".join(parts) + "."
+    if file_a and file_b and only(words(file_a), words(file_b)) + only(words(file_b), words(file_a)):
+        pending.source = f"{pending.source}\n{file_a}\n{file_b}"
+        return f'. Their files are "{file_a}" and "{file_b}": take the word that tells them apart from there.'
+    return "."
 
 
 def _mark_version_clashes(rows: List[dict]) -> None:
