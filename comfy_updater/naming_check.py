@@ -380,6 +380,8 @@ def glued_names(source_title: str, answer_title: str, vocabulary: FrozenSet[str]
         word = _compact(piece)
         if len(word) < 6 or word in vocabulary or word in answer:
             continue
+        if _is_base_word(piece, vocabulary, True):
+            continue  # a base tag written as one word: "PonyXL", "Flux1D"
         if re.search(r"[a-z][A-Z]", piece):
             # Written in CamelCase: glued only when a part is itself a base name
             # ("KreaCore" yes; "AnimagineXL" no, "anima" only starts "Animagine").

@@ -75,6 +75,10 @@ class GluedNameTests(unittest.TestCase):
         vocab = base_vocabulary(["Anima", "anima", "Pony", "pony"])
         self.assertEqual([], glued_names("Oversized breast cup (AnimagineXL V3 & Pony)", "oversized breast cup", vocab))
 
+    def test_a_base_tag_written_as_one_word_passes(self) -> None:
+        title = "Stealth Fellatio (under table) LoRa | PonyXL & Illustrious"
+        self.assertEqual([], glued_names(title, "stealth fellatio under table", self.VOCAB))
+
 
 class NameRepeatTests(unittest.TestCase):
     def test_the_creator_in_the_title(self) -> None:
