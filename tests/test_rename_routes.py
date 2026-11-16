@@ -250,11 +250,22 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.assertNotIn("nameSource", high)
 
     def test_a_moving_row_stays_a_change_and_keep_cancels_the_move(self) -> None:
-        target = self.root / "pony"
-        moving = _row(self.folder, "maker - title - v1 (sdxl)", "maker - title - v1 (sdxl)")
-        moving["newFolder"] = str(target)
-        rows = [moving]
-        listing = {str(self.folder).lower(): {"maker - title - v1 (sdxl)"}, str(target).lower(): set()}
+        # A library kept per base: "sdxl" files in the sdxl folder, "pony" files in the pony folder,
+        # and one sdxl file filed under pony.
+        target = self.root / "sdxl"
+        pony = self.root / "pony"
+        library = [
+            _row(target, f"maker - home {n} - v1 (sdxl)", f"maker - home {n} - v1 (sdxl)", model_id=f"s{n}",
+                 parts={"creator": "maker", "title": f"home {n}", "version": "v1", "precision": "", "base": "sdxl"})
+            for n in range(3)
+        ] + [
+            _row(pony, f"maker - pony {n} - v1 (pony)", f"maker - pony {n} - v1 (pony)", model_id=f"p{n}",
+                 parts={"creator": "maker", "title": f"pony {n}", "version": "v1", "precision": "", "base": "pony"})
+            for n in range(3)
+        ]
+        moving = _row(pony, "maker - title - v1 (sdxl)", "maker - title - v1 (sdxl)")
+        rows = library + [moving]
+        listing = {str(pony).lower(): {"maker - title - v1 (sdxl)"}, str(target).lower(): set()}
         reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1")
         # The name stays, the folder changes: still something to apply.
         self.assertEqual("change", moving["status"])

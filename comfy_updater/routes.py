@@ -50,7 +50,7 @@ from .renamer import (
     run_dry_run,
     title_clash_models,
 )
-from .rename_folders import recheck_folder_flags
+from .rename_folders import plan_moves, recheck_folder_flags
 from .rename_store import RenameLog
 from .request_guard import request_rejection
 from .sidecar import read_data_file, write_json
@@ -1409,6 +1409,14 @@ def reassemble_rows(
 
     # Versions still alike: the user's own names, as on the dry run.
     _names_from_files(mine, decided)
+    # A base that changed (the version's own name, a new code) moves the file as on the dry run.
+    plan_moves(rows)
+    for row in mine:
+        target = str(row.get("newFolder") or "")
+        if target:
+            folders.add(target.lower())
+            if target.lower() not in folder_listing:
+                folder_listing[target.lower()] = _disk_stems(Path(target))
     _recheck_title_clashes(rows, decisions)
     _recheck_folders(rows, folders, folder_listing)
     mine_ids = {id(row) for row in mine}
