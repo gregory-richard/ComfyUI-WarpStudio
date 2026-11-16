@@ -708,7 +708,7 @@ def test_handle_title(server, tmp_path):
     out = pw.handle_title(
         {"base_url": server.url, "model": "m", "source": "idea"}, env={}, key_file=none
     )
-    assert out == {"title": "Beach at dusk"}
+    assert out == {"title": "Beach at dusk", "kind": "chat"}
     assert "error" in pw.handle_title(
         {"base_url": server.url, "model": "", "source": "idea"}, env={}, key_file=none
     )
@@ -719,6 +719,20 @@ def test_handle_title(server, tmp_path):
     assert "error" in pw.handle_title(
         {"base_url": server.url, "model": "m", "source": "idea"}, env={}, key_file=none
     )
+
+
+def test_handle_title_names_an_edit_for_its_change(server, tmp_path):
+    none = tmp_path / "none.json"
+    kinds = (("edit", pw.EDIT_TITLE_SYSTEM), ("chat", pw.TITLE_SYSTEM), (None, pw.TITLE_SYSTEM))
+    for kind, system in kinds:
+        server.replies.append((200, {"choices": [{"message": {"content": "More mist"}}]}))
+        out = pw.handle_title(
+            {"base_url": server.url, "model": "m", "source": "add mist", "kind": kind},
+            env={},
+            key_file=none,
+        )
+        assert out == {"title": "More mist", "kind": kind if kind == "edit" else "chat"}
+        assert server.requests[-1]["body"]["messages"][0]["content"] == system
 
 
 def test_system_prompts_newest_version_first(tmp_path):

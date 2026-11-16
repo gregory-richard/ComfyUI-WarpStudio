@@ -124,6 +124,7 @@ function normalizeVersion(raw, n) {
     created: stampOf(raw.created),
     kind: KINDS.includes(raw.kind) ? raw.kind : KIND_WRITTEN,
     request: stringOr(raw.request, ""),
+    title: stringOr(raw.title, ""),
     images: normalizeImages(raw.images),
     baseId: isId(raw.baseId) ? raw.baseId : null,
     text: raw.text,
@@ -287,6 +288,7 @@ function makeVersion(
     now,
     kind = KIND_WRITTEN,
     request = "",
+    title = "",
     images = [],
     baseId = null,
     text,
@@ -301,6 +303,7 @@ function makeVersion(
     created: now,
     kind,
     request,
+    title: stringOr(title, ""),
     images: [...images],
     baseId,
     text,
@@ -363,6 +366,26 @@ export function addNodeVersion(chat, { id, now, text, source = null }) {
 /** Send to ComfyUI wrote this version into a node. */
 export function markSent(version, now) {
   version.sentAt = now;
+}
+
+/**
+ * The versions the AI wrote that have no title yet and a request to name them
+ * from, in every chat: what naming them all once has to do. Newest chat first.
+ */
+export function untitledVersions(store) {
+  return sortedChats(store).flatMap((chat) =>
+    chat.versions
+      .filter((v) => v.kind === KIND_WRITTEN && !v.title && v.request.trim())
+      .map((version) => ({ chat, version }))
+  );
+}
+
+/** A short title for a version, like a chat's; says whether it was set. */
+export function setVersionTitle(version, title) {
+  const trimmed = String(title ?? "").trim();
+  if (!version || !trimmed) return false;
+  version.title = trimmed;
+  return true;
 }
 
 /** A short, stable key for a text (FNV-1a, 32 bits): the same text, the same key. */
@@ -599,17 +622,27 @@ function gist(version) {
     return version.editedIn === "node" ? "edited in the node" : "edited by hand";
   }
   if (version.kind === KIND_NODE) return "taken from the node";
-  return firstWords(version.request) || "optimised";
+  return version.title || firstWords(version.request) || "optimised";
 }
 
-/** What the next Write does: edit a version, newest first, or the current prompt, or write anew. */
-export function startOptions(chat, targetLabel) {
-  const versions = [...chat.versions].reverse().map((v, i) => ({
-    value: v.id,
-    label: `Edit v${v.n} (${i === 0 ? "newest" : gist(v)})`,
-  }));
+/**
+ * What the next Write does: edit the chosen version (the newest until one is
+ * chosen, by its dot in the graph), or the current prompt, or write anew. The
+ * list holds one version, not all of them.
+ */
+export function startOptions(chat, targetLabel, base = null) {
+  const value = startValue(chat, base);
+  const newest = chat.versions.at(-1);
+  const version = chat.versions.find((v) => v.id === value) ?? newest;
   return [
-    ...versions,
+    ...(version
+      ? [
+          {
+            value: version.id,
+            label: `Edit v${version.n} (${version === newest ? "newest" : gist(version)})`,
+          },
+        ]
+      : []),
     { value: CURRENT_PROMPT, label: `Edit current prompt (${targetLabel || "the For node"})` },
     { value: NEW_PROMPT, label: "New prompt" },
   ];
@@ -644,9 +677,11 @@ export function originLabel(chat, version) {
   return base ? `edit of v${base.n}` : "new prompt";
 }
 
-/** A short line for a closed row: the request, or how a version came to be. */
+/** A version's line: its title, else its request, else how it came to be. */
 export function rowText(version) {
-  if (version.kind === KIND_WRITTEN) return version.request || "Optimise the prompt";
+  if (version.kind === KIND_WRITTEN) {
+    return version.title || version.request || "Optimise the prompt";
+  }
   const said = gist(version);
   return said[0].toUpperCase() + said.slice(1);
 }

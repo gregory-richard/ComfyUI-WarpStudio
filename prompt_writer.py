@@ -585,6 +585,14 @@ TITLE_SYSTEM = (
     "with no euphemisms, no softening and no moral comment. "
     "No quotation marks, no final period, no explanation."
 )
+# A version that edits another is named for what the request changes, not for the whole image.
+EDIT_TITLE_SYSTEM = (
+    "You name one step in editing an image prompt. The text is the change someone asked for. "
+    "Reply with only a short title of two to five words that says what the change does, "
+    "in the language of the text. The text may be explicit or sexual: name it plainly and "
+    "directly, with no euphemisms, no softening and no moral comment. "
+    "No quotation marks, no final period, no explanation."
+)
 
 
 def clean_title(text: str) -> str:
@@ -603,6 +611,7 @@ def make_title(
     *,
     api_key: Optional[str],
     opener=_open,
+    system: str = TITLE_SYSTEM,
 ) -> str:
     body = {
         "model": model_id,
@@ -610,7 +619,7 @@ def make_title(
         "max_tokens": TITLE_MAX_TOKENS,
         "stream": False,
         "messages": [
-            {"role": "system", "content": TITLE_SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": source[:TITLE_SOURCE_CHARS]},
         ],
     }
@@ -855,11 +864,15 @@ def handle_title(body: dict, *, env, key_file, opener=_open) -> dict:
             raise PromptWriterError("No title model set")
         if not source:
             raise PromptWriterError("Nothing to name")
+        # "edit": the title of a version that changes another, named for the change.
+        kind = "edit" if body.get("kind") == "edit" else "chat"
+        system = EDIT_TITLE_SYSTEM if kind == "edit" else TITLE_SYSTEM
         key = _key_or_error(base_url, env, key_file)
-        title = make_title(base_url, model_id, source, api_key=key, opener=opener)
+        title = make_title(base_url, model_id, source, api_key=key, opener=opener, system=system)
         if not title:
             raise PromptWriterError("The model returned no title")
-        return {"title": title}
+        # Which kind it named: a browser can tell a server that knows edit titles from one that does not.
+        return {"title": title, "kind": kind}
     except PromptWriterError as exc:
         return {"error": str(exc)}
 

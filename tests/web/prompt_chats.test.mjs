@@ -51,7 +51,9 @@ import {
   keepSystemPrompt,
   nextVersionNumber,
   replaceVersion,
+  setVersionTitle,
   systemPromptOf,
+  untitledVersions,
 } from "../../web/prompt_chats.js";
 
 function version(id, now, extra = {}) {
@@ -243,6 +245,7 @@ test("addVersion fills every field and numbers from 1", () => {
     created: 7,
     kind: "written",
     request: "a red fox",
+    title: "",
     images: ["fox.png [input]"],
     baseId: null,
     text: "PROMPT",
@@ -548,6 +551,7 @@ test("normalizeStore: repairs the fields it can", () => {
     created: 0,
     kind: "written",
     request: "",
+    title: "",
     images: [],
     baseId: null,
     text: "t",
@@ -679,7 +683,7 @@ test("normalizeStore keeps a step that waits for an answer, and drops a broken o
   }
 });
 
-test("startOptions: edit a version, newest first, or the current prompt, or write a new one", () => {
+test("startOptions: the chosen version (else the newest), the current prompt, or a new one", () => {
   const chat = createChat(emptyStore(), { id: "c", now: 1 });
   assert.deepEqual(startOptions(chat, "Krea 2"), [
     { value: CURRENT_PROMPT, label: "Edit current prompt (Krea 2)" },
@@ -688,20 +692,24 @@ test("startOptions: edit a version, newest first, or the current prompt, or writ
   addVersion(chat, version("v1", 2, { request: "a red bicycle by the lake at dawn please" }));
   addVersion(chat, version("v2", 3, { request: "" }));
   addVersion(chat, version("v3", 4));
+  const labels = (base) => startOptions(chat, null, base).map((o) => o.label);
+  assert.deepEqual(labels(null), [
+    "Edit v3 (newest)",
+    "Edit current prompt (the For node)",
+    "New prompt",
+  ]);
   assert.deepEqual(
-    startOptions(chat, null).map((o) => o.label),
-    [
-      "Edit v3 (newest)",
-      "Edit v2 (optimised)",
-      "Edit v1 (a red bicycle by the lake)",
-      "Edit current prompt (the For node)",
-      "New prompt",
-    ]
+    startOptions(chat, null, "v1").map((o) => o.value),
+    ["v1", CURRENT_PROMPT, NEW_PROMPT]
   );
-  assert.deepEqual(
-    startOptions(chat, null).map((o) => o.value),
-    ["v3", "v2", "v1", CURRENT_PROMPT, NEW_PROMPT]
-  );
+  assert.equal(labels("v1")[0], "Edit v1 (a red bicycle by the lake)");
+  assert.equal(labels("v2")[0], "Edit v2 (optimised)");
+  // With the current prompt or a new one chosen, the version on offer is the newest.
+  assert.equal(labels(CURRENT_PROMPT)[0], "Edit v3 (newest)");
+  assert.equal(labels(NEW_PROMPT)[0], "Edit v3 (newest)");
+  // A version's title names it, once it has one.
+  chat.versions[0].title = "Bicycle at dawn";
+  assert.equal(labels("v1")[0], "Edit v1 (Bicycle at dawn)");
 });
 
 test("startValue: a draft's choice while it exists, else the newest version, else nothing", () => {
@@ -886,10 +894,11 @@ test("originLabel says where a version came from", () => {
   assert.equal(originLabel(chat, bare), "from the node");
 });
 
-test("rowText: the request, or how a version came to be", () => {
+test("rowText: the title, else the request, else how a version came to be", () => {
   const chat = chatWith("v1");
   assert.equal(rowText(chat.versions[0]), "ask v1");
   assert.equal(rowText({ ...chat.versions[0], request: "" }), "Optimise the prompt");
+  assert.equal(rowText({ ...chat.versions[0], title: "Red bike" }), "Red bike");
   const hand = addHandVersion(chat, { id: "h", now: 20, baseId: "v1", text: "x" });
   assert.equal(rowText(hand), "Edited by hand");
   hand.editedIn = "node";
@@ -907,18 +916,34 @@ test("startOptions names hand and node versions", () => {
   addHandVersion(chat, { id: "h", now: 4, baseId: "w", text: "fog!" });
   addHandVersion(chat, { id: "i", now: 5, baseId: "h", text: "fog!!", editedIn: "node" });
   addVersion(chat, version("x", 6, { request: "wider", baseId: "i" }));
+  const first = (base) => startOptions(chat, "Hero", base)[0].label;
+  assert.equal(first("x"), "Edit v5 (newest)");
+  assert.equal(first("i"), "Edit v4 (edited in the node)");
+  assert.equal(first("h"), "Edit v3 (edited by hand)");
+  assert.equal(first("w"), "Edit v2 (add fog)");
+  assert.equal(first("n"), "Edit v1 (taken from the node)");
   assert.deepEqual(
-    startOptions(chat, "Hero").map((o) => o.label),
-    [
-      "Edit v5 (newest)",
-      "Edit v4 (edited in the node)",
-      "Edit v3 (edited by hand)",
-      "Edit v2 (add fog)",
-      "Edit v1 (taken from the node)",
-      "Edit current prompt (Hero)",
-      "New prompt",
-    ]
+    startOptions(chat, "Hero")
+      .map((o) => o.label)
+      .slice(1),
+    ["Edit current prompt (Hero)", "New prompt"]
   );
+});
+
+test("setVersionTitle keeps a trimmed title, and nothing empty", () => {
+  const chat = chatWith("v1");
+  const v = chat.versions[0];
+  assert.equal(v.title, "");
+  assert.equal(setVersionTitle(v, "  Red bike  "), true);
+  assert.equal(v.title, "Red bike");
+  assert.equal(setVersionTitle(v, "   "), false);
+  assert.equal(setVersionTitle(null, "x"), false);
+  assert.equal(v.title, "Red bike");
+  const [saved] = normalizeStore(JSON.parse(JSON.stringify({ version: 1, chats: [chat] }))).chats;
+  assert.equal(saved.versions[0].title, "Red bike");
+  // A Retry keeps the title: the request is the same.
+  replaceVersion(chat, "v1", { now: 30, text: "again" });
+  assert.equal(v.title, "Red bike");
 });
 
 // --- a node prompt matched to the chat's versions -----------------------------------
@@ -1527,4 +1552,23 @@ test("a Retry's new system prompt takes the place of one no version uses any mor
   replaceVersion(chat, "v1", { now: 3, text: "again", systemPromptKey: fresh });
   assert.deepEqual(chat.systemPrompts, { [fresh]: "NEW" });
   assert.equal(systemPromptOf(chat, chat.versions[0]), "NEW");
+});
+
+test("untitledVersions: written versions with a request and no title, newest chat first", () => {
+  const store = emptyStore();
+  const old = createChat(store, { id: "old", now: 1 });
+  addVersion(old, version("a", 2));
+  addVersion(old, version("b", 3, { title: "Has one" }));
+  addVersion(old, version("c", 4, { request: "  " }));
+  addHandVersion(old, { id: "h", now: 5, baseId: "a", text: "by hand" });
+  const fresh = createChat(store, { id: "fresh", now: 1 });
+  addVersion(fresh, version("d", 9));
+  assert.deepEqual(
+    untitledVersions(store).map(({ chat, version: v }) => [chat.id, v.id]),
+    [
+      ["fresh", "d"],
+      ["old", "a"],
+    ]
+  );
+  assert.deepEqual(untitledVersions(emptyStore()), []);
 });
