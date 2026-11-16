@@ -13,7 +13,7 @@ Writing goes on in the background. You can close the pop-up (Esc, ×, or a click
 The left rail holds **Prompt Writer** with its settings (the cog), **New chat** and your chats. On the right is the open chat: its title and **For** at the top, the versions in a reading column, and the input at the bottom.
 
 - **Title** — Click to rename the chat. A new chat is named after your first request.
-- **For** — The Prompt + LoRAs this chat writes for. **Send to ComfyUI**, **Edit current prompt** and the LoRA suggestions all use it. Each chat remembers its own choice by the node's label (its group title, else its own title). A new chat starts on the node you opened it from, and if a remembered label is no longer in the workflow the chat falls back to that node, else to the first one.
+- **For** — The Prompt + LoRAs this chat writes for. **Send to ComfyUI**, **Edit current prompt** and the LoRA suggestions all use it. Each chat remembers its own choice by the node's label (its group title, else its own title). A new chat starts on the node you opened it from, and so does an empty chat you pick from the list (one with no version and nothing typed), and if a remembered label is no longer in the workflow the chat falls back to that node, else to the first one.
 
 ## Settings
 

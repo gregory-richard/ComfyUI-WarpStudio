@@ -26,6 +26,10 @@ All notable changes to this project will be documented in this file.
 - **A version's cost, time, tokens and thinking** are in its generation info, instead of a line at its top
 - **Thinking stays closed** while the model writes too; open its switch to watch. Once opened, it stays open while the card updates
 
+### Fixed
+
+- **An empty chat picked from the list** follows the Prompt + LoRAs you opened the Prompt Writer from, as **New chat** does. It kept the node it was first opened for, so **Edit current prompt** and **Send to ComfyUI** could name another group than the one you came from
+
 ## [5.0.0] - 2026-11-12
 
 This release also brings everything listed under 4.2.0, which was not released on its own.

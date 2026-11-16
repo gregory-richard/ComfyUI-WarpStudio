@@ -3231,6 +3231,27 @@ function renderAfterPress() {
 
 // --- What the controls do ------------------------------------------------------
 
+/**
+ * A chat that has written nothing and holds nothing typed is for the node the
+ * Prompt Writer was opened from, as New chat would make it. One that has a
+ * version, or a draft, keeps the node it was for.
+ */
+function followOpenedNode(chat) {
+  const draft = drafts.get(chat.id);
+  const untouched =
+    !chat.versions.length &&
+    !chat.pending &&
+    !chat.failure &&
+    !jobs.has(chat.id) &&
+    !chat.seedPrompt &&
+    !draft?.text?.trim() &&
+    !draft?.images?.length;
+  const label = labelOfNode(view.promptNode);
+  if (!untouched || !label || chat.targetLabel === label) return;
+  chat.targetLabel = label;
+  save();
+}
+
 function selectChat(id) {
   flushEdits();
   view.chatId = id;
@@ -3238,6 +3259,8 @@ function selectChat(id) {
   // A chat opens on its newest version.
   view.open = null;
   closeInfo();
+  const chosen = store.chats.find((chat) => chat.id === id);
+  if (chosen) followOpenedNode(chosen);
   if (unseen.has(id)) {
     const node = unseen.get(id);
     unseen.delete(id);
