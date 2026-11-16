@@ -42,6 +42,7 @@ Versions are numbered in the order they were made (v1, v2, v3…) and keep that 
 
 An open version shows, above its prompt, a row of switches:
 
+- **Request** — Open on every version until you close it: what you asked for, the questions the AI asked on the way with your answers, and the images you sent.
 - **Changes** — What changed from the version it was made from, in words added and removed (`Changes +38 −12`, `Rewritten` when most of it is new, or `Same as v2`). Open, the prompt below shows its changes: the new text reads as it is, with a margin line by each line that changed; what is new is lightly green, and right above each changed piece is, small and red, what it replaced (or, where something was only taken out, what went, over a thin red mark); a line that was taken out stays, small and red; a rewrite shows the two versions side by side. Click it again for the prompt.
 - **LoRAs** — How many were on and how many the AI suggests; open, they show under the row. See LoRA suggestions.
 

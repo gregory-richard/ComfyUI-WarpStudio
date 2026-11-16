@@ -701,7 +701,7 @@ shows for a new prompt, what it changes for an edit, `"kind": "edit"` in
 versions from before titles are named once when the pop-up opens, only by a server that
 answers with that `kind`). One version is open at a time,
 and the line you click stays where it is on the screen. An open version has
-**Changes** (`+38 −12`) and **LoRAs** above its prompt and **Send to ComfyUI (Group)**
+**Request** (open by default), **Changes** (`+38 −12`) and **LoRAs** above its prompt and **Send to ComfyUI (Group)**
 under it, which writes the text unchanged into the Prompt + LoRAs chosen under **For**,
 as one undo step, flashes the node and closes the pop-up. The newest version, when
 open, is editable (saved on blur). A version's **⋮** has **Generation info** (made

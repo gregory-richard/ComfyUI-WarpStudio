@@ -453,6 +453,10 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-who { font-size: 11px; color: var(--wpw-muted); }
 .wpw-said { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wpw-who.is-question, .wpw-said.is-question { color: var(--wpw-yellow); }
+.wpw-said.is-empty { font-style: italic; color: var(--wpw-muted); }
+/* Your request on an open version: quiet, with a rule so it does not read as the prompt. */
+.wpw-request { padding: 2px 0 2px 10px; border-left: 2px solid var(--wpw-line); font-size: 13px; }
+.wpw-request .wpw-thumbs { margin: 6px 0 2px; }
 .wpw-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 .wpw-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; display: block; }
 .wpw-hint-line { margin-top: 8px; font-size: 12px; color: var(--wpw-muted); }
@@ -2400,12 +2404,48 @@ function changesToggle(chat, version) {
  * turns into its changes. Everything else is in the generation info.
  */
 function metaParts(chat, version) {
-  const row = [changesToggle(chat, version), loraToggle(version)].filter(Boolean);
+  const request = requestToggle(version);
+  const row = [request, changesToggle(chat, version), loraToggle(version)].filter(Boolean);
   if (!row.length) return [];
   return [
     el("div", { class: "wpw-meta" }, ...row),
+    request && !view.requestClosed.has(version.id) ? requestPanel(version) : null,
     view.loras.has(version.id) && loraToggle(version) ? loraPanel(chat, version) : null,
   ];
+}
+
+/** The Request switch of a version the AI wrote: open until you close it. */
+function requestToggle(version) {
+  if (version.kind !== KIND_WRITTEN) return null;
+  return metaToggle("Request", {
+    open: !view.requestClosed.has(version.id),
+    onToggle: flip(view.requestClosed, version.id),
+    title: "What you asked for, its images, and the questions the AI asked on the way",
+  });
+}
+
+/** What you asked for, the questions and answers on the way, and the images it sent. */
+function requestPanel(version) {
+  const line = (who, text, extra = "") => [
+    el("span", { class: `wpw-who${extra}`, text: who }),
+    el("span", { class: `wpw-said${extra}`, text }),
+  ];
+  return el(
+    "div",
+    { class: "wpw-panel wpw-request" },
+    el(
+      "div",
+      { class: "wpw-said-grid" },
+      ...(version.request
+        ? line("You", version.request)
+        : line("You", "Optimise the prompt", " is-empty")),
+      ...(version.questions ?? []).flatMap((turn) => [
+        ...line("AI", turn.question, " is-question"),
+        ...line("You", turn.answer),
+      ])
+    ),
+    stepTurns({ images: version.images })
+  );
 }
 
 /** The changes: marked in the text, or side by side when most of it is new. */
@@ -3293,7 +3333,7 @@ function removeVersion(chat, version) {
   if (gone.includes(draft.base)) draft.base = null;
   if (gone.includes(view.open)) view.open = null;
   for (const id of gone) {
-    for (const set of [view.changes, view.thinking, view.loras]) set.delete(id);
+    for (const set of [view.changes, view.thinking, view.loras, view.requestClosed]) set.delete(id);
     view.successor.delete(id);
     comparisons.delete(id);
   }
@@ -3981,6 +4021,8 @@ function buildView(promptNode) {
     thinking: new Set(),
     // Versions whose LoRAs you opened.
     loras: new Set(),
+    // Versions whose request you closed: it is open on every version until then.
+    requestClosed: new Set(),
     // The generation info, while it is open.
     info: null,
     // version id → the hand edit typing made of it, so a press on its card acts on that.
