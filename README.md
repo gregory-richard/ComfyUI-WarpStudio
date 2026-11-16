@@ -155,7 +155,7 @@ too old to have Generate Text cannot run the renamer; the view says so.
    not find in Civitai's text, a maker taken from the description, two files
    that would get the same name, two versions or two models by one creator
    that would get the same name or title (the naming model is asked once more
-   first), an official file ComfyUI's templates may look for, a new base code. The new
+   first), a version whose own name names another base, a new base code. The new
    name is under the current one, with the changed words marked. You can **Edit**
    any part, **Keep current name**, or **Ask again** to let the naming model name
    the model afresh on the next dry run.

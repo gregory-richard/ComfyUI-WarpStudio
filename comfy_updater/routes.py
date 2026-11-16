@@ -1461,7 +1461,8 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
     kept_flags = []
     for flag in flags:
         kind, _, word = flag.partition(":")
-        if kind in _PARTS_FLAG_KINDS or flag in _FOLDER_FLAGS or flag in _CLASH_FLAGS:
+        if kind in _PARTS_FLAG_KINDS or flag in _FOLDER_FLAGS or flag in _CLASH_FLAGS or flag == "official-file":
+            # (official-file: older dry runs flagged files that kept their download name; no longer.)
             continue
         if flag in _MAKER_FLAGS and "creator" in decided:
             continue

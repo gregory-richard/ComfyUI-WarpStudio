@@ -325,7 +325,7 @@ class RenameRouteHelperTests(unittest.TestCase):
                  flags=["official-file", "maker-unknown"], selected=False)
         self.decisions.set_model("1", creator="quillworks")
         reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
-        self.assertEqual(["official-file"], a["flags"])
+        self.assertEqual([], a["flags"])
 
     # --- whether a dry run may be edited or applied ---------------------
 
@@ -407,7 +407,7 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.decisions.set_model("1", title="Title", creator="maker")
         reassemble_rows([a], self.decisions, self.base_codes, {}, model_id="1")
         # The version is still the AI's, so its invented word stays.
-        self.assertEqual(["invented:v4", "official-file"], a["flags"])
+        self.assertEqual(["invented:v4"], a["flags"])
         self.assertEqual("maker - title - v4 (sdxl)", a["newStem"])
 
     def test_bad_decision_is_flagged(self) -> None:

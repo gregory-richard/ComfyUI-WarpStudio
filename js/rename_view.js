@@ -165,8 +165,6 @@ export function flagInfo(flag, row, rows) {
         level: "warn",
         text: `Civitai lists this version as ${row?.baseModel || "another base"}, but its name says "${arg}"; the base in the new name may be wrong`,
       };
-    case "official-file":
-      return { level: "warn", text: "Official ComfyUI file: templates and workflows look for this exact name, so it isn't ticked" };
     case "file-not-in-release":
       return { level: "warn", text: "This file is not in the Civitai release (a conversion or a re-upload?)" };
     case "collision": {

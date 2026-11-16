@@ -926,11 +926,9 @@ def _group_rows(
             conflict = base_conflict(_text(version_live.get("name")), slot.base_model, known_bases)
             if conflict:
                 flags.append(f"base-conflict:{conflict}")
-            if _is_official_file(placed):
-                flags.append("official-file")
-                if not maker_found:
-                    # An official model re-uploaded: the uploader is rarely its maker.
-                    flags.append("maker-unknown")
+            if _is_official_file(placed) and not maker_found:
+                # An official model re-uploaded: the uploader is rarely its maker.
+                flags.append("maker-unknown")
             if placed.file is None and entry.sha256:
                 flags.append("file-not-in-release")
             new_stem = assemble(parts)

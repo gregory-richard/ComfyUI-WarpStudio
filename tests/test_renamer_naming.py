@@ -485,7 +485,8 @@ class NamingTests(unittest.TestCase):
         generator = FakeGenerator({"FLUX.1 dev": "title: flux.1 dev\noriginal:\nversion 1:",
                                    "Stale": "title: stale\noriginal:\nversion 1: v1"})
         _summary, rows = self.dry_run(models, generator)
-        self.assertIn("official-file", self.row(rows, "Flux1")["flags"])
+        # A file that kept its download name is renamed like any other.
+        self.assertNotIn("official-file", self.row(rows, "Flux1")["flags"])
         stale = self.row(rows, "stale")
         self.assertIn("file-not-in-release", stale["flags"])
         self.assertTrue(stale["fileKey"].startswith("path:"))
@@ -713,7 +714,7 @@ class NamingTests(unittest.TestCase):
         _summary, rows = self.dry_run(models, FakeGenerator({"Glowbase 4B": "title: glowbase\noriginal:\nversion 1: 4b"}))
         row = self.row(rows, "glowbase")
         self.assertEqual(row["parts"]["creator"], "siteofficial")
-        self.assertIn("official-file", row["flags"])
+        self.assertNotIn("official-file", row["flags"])
         self.assertIn("maker-unknown", row["flags"])
         self.assertFalse(row["selected"])
 
