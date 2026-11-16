@@ -86,6 +86,8 @@ GENERIC_BASE_WORDS = frozenset({
     "schnell", "pro", "lite", "plus", "ultra", "large", "medium", "small", "open", "stable", "diffusion",
     "cascade", "aura", "playground", "flow", "edit", "fast", "distilled", "preview", "hyper",
 })
+# What a model does ("i2v": image to video), not which base it is: never a base word.
+MODE_WORDS = frozenset({"i2v", "t2v", "ti2v", "i2i", "t2i", "v2v", "s2v"})
 # Base families whose models are SDXL-based, where a standalone "xl" names the base.
 XL_FAMILIES = frozenset({"SDXL", "Pony", "Illustrious", "NoobAI"})
 
@@ -214,7 +216,7 @@ def _is_base_word(word: str, vocabulary: FrozenSet[str], xl_base: bool) -> bool:
     if _NUMBER_WORD.fullmatch(word.lower()):
         return False
     compact = _compact(word)
-    if not compact or compact in GENERIC_BASE_WORDS:
+    if not compact or compact in GENERIC_BASE_WORDS or compact in MODE_WORDS:
         return False
     if compact == "xl":
         return xl_base
@@ -252,7 +254,7 @@ def _official_word(word: str, vocabulary: FrozenSet[str], xl_base: bool) -> bool
     if _is_base_word(word, vocabulary, xl_base) or _NUMBER_WORD.fullmatch(word.lower()):
         return True
     compact = _compact(word)
-    if compact in GENERIC_BASE_WORDS or _OFFICIAL_TAG.fullmatch(compact):
+    if compact in GENERIC_BASE_WORDS or compact in MODE_WORDS or _OFFICIAL_TAG.fullmatch(compact):
         return True
     pieces = [piece for piece in _WORD_PIECES.split(word) if piece]
     return len(pieces) > 1 and all(_official_word(piece, vocabulary, xl_base) for piece in pieces)
@@ -294,6 +296,31 @@ def name_check_flags(
     flags.extend(f"title-in-version:{phrase}" for phrase in title_in_version(title, version))
     flags.extend(f"noise-word:{word}" for word in noise_words(version, base_model))
     return list(dict.fromkeys(flags))
+
+
+# Wording hints and the part of the name each is about.
+_WORDING_PART = {"title-in-version": "version", "noise-word": "version", "base-number": "version", "creator-in-title": "title"}
+_WORDING_EITHER = frozenset({"base-word", "version-format", "type-word"})
+
+
+def users_own_words(flags: List[str], decided: Set[str], title: str, version: str) -> List[str]:
+    """The flags without the wording hints about what the user typed.
+
+    ``decided`` holds the parts the user wrote ("title", "version"). A hint about
+    one of them goes, unless the naming model's own part has the same word.
+    """
+    if not decided & {"title", "version"}:
+        return list(flags)
+    theirs = " ".join(text.lower() for name, text in (("title", title), ("version", version)) if name not in decided)
+    kept = []
+    for flag in flags:
+        kind, _, word = str(flag).partition(":")
+        if kind in _WORDING_PART and _WORDING_PART[kind] in decided:
+            continue
+        if kind in _WORDING_EITHER and word.lower() not in theirs:
+            continue
+        kept.append(flag)
+    return kept
 
 
 # Hints that only tell where a part of the name came from: the file stays ticked.

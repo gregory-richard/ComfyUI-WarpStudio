@@ -31,6 +31,7 @@ from .naming_ai import (
 )
 from .naming_check import (
     needs_review,
+    users_own_words,
     tidy_version,
     base_conflict,
     base_named_by,
@@ -967,10 +968,11 @@ def _group_rows(
                 base=format_part(code),
             )
             flags.extend(_parts_flags(parts))
-            flags.extend(name_check_flags(
+            typed = {name for name, mine in (("title", not title_from_answer), ("version", not version_from_answer)) if mine}
+            flags.extend(users_own_words(name_check_flags(
                 parts.title, parts.version, vocabulary, xl_base=xl_is_base(row_base), base_model=row_base,
                 creator=parts.creator,
-            ))
+            ), typed, parts.title, parts.version))
             if conflict and not named_base:
                 # It names another base, but not one the table knows: the user decides.
                 flags.append(f"base-conflict:{conflict}")

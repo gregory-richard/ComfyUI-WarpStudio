@@ -7,6 +7,7 @@ from comfy_updater.naming_check import (
     invented_words,
     needs_review,
     tidy_version,
+    users_own_words,
     base_numbers, base_vocabulary, creator_in_title, glued_names, name_check_flags, noise_words, title_in_version,
     type_words,
 )
@@ -192,6 +193,24 @@ class TidyVersionTests(unittest.TestCase):
         self.assertEqual("", tidy_version("pony", self.VOCAB))
         self.assertEqual("pony v2", tidy_version("pony v2", self.VOCAB))
         self.assertEqual("", tidy_version("", self.VOCAB))
+
+
+class UsersOwnWordsTests(unittest.TestCase):
+    VOCAB = base_vocabulary(["Wan Video 2.2 I2V-A14B", "wan2.2 14b i2v"])
+
+    def test_what_a_model_does_is_no_base_word(self) -> None:
+        self.assertNotIn("base-word:i2v", name_check_flags("wan video 2.2", "i2v high", self.VOCAB))
+        self.assertEqual("i2v", tidy_version("i2v", self.VOCAB))
+
+    def test_a_typed_version_gets_no_wording_hints(self) -> None:
+        flags = ["base-word:wan", "version-format:v1.0", "noise-word:high noise", "maker-unknown"]
+        self.assertEqual(["maker-unknown"], users_own_words(flags, {"version"}, "deep glide", "wan v1.0 high noise"))
+
+    def test_the_naming_models_own_part_is_still_checked(self) -> None:
+        flags = ["base-word:wan", "creator-in-title:maker"]
+        self.assertEqual(flags, users_own_words(flags, {"version"}, "maker wan glide", "wan v1"))
+        self.assertEqual(["base-word:wan"], users_own_words(flags, {"title"}, "maker glide", "wan v1"))
+        self.assertEqual(flags, users_own_words(flags, set(), "maker wan glide", "wan v1"))
 
 
 if __name__ == "__main__":
