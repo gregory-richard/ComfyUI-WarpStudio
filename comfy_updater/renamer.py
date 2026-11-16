@@ -30,6 +30,7 @@ from .naming_ai import (
     split_group_answer,
 )
 from .naming_check import (
+    base_conflict,
     base_vocabulary,
     invented_words,
     maker_in_description,
@@ -48,6 +49,7 @@ from .naming_scheme import (
 )
 from .path_resolver import list_model_files
 from .rename_apply import assign_siblings, file_identity, removable_copy_files
+from .rename_folders import plan_moves, recheck_folder_flags
 from .updater_service import _first_preview
 from .rename_store import AnswerCache, BaseCodeStore, DecisionStore
 from .sidecar import read_json
@@ -830,6 +832,7 @@ def _group_rows(
 
     model_bases = list(dict.fromkeys(slot.base_model for slot, _members in pending.slot_members if slot.base_model))
     vocabulary = base_vocabulary(pending.base_names + list(answer.bases.values()))
+    known_bases = base_codes.all()
     rows: List[dict] = []
     for slot, members in pending.slot_members:
         version_live = _find_version(group.model, slot.version_id) or {}
@@ -869,6 +872,10 @@ def _group_rows(
             )
             flags.extend(_parts_flags(parts))
             flags.extend(name_check_flags(parts.title, parts.version, vocabulary, xl_base=xl_is_base(slot.base_model)))
+            # Civitai's base field is set by hand: a version named for another base may be listed wrong.
+            conflict = base_conflict(_text(version_live.get("name")), slot.base_model, known_bases)
+            if conflict:
+                flags.append(f"base-conflict:{conflict}")
             if _is_official_file(placed):
                 flags.append("official-file")
                 if not maker_found:
@@ -1351,6 +1358,21 @@ def name_groups(
         namer.flag_title_clashes()
 
 
+def place_moves(rows: List[dict]) -> None:
+    """Files filed under another base's folder move to their base's folder; the names
+    are then checked against what is already in the folders they move into."""
+    plan_moves(rows)
+    moving = [row for row in rows if row.get("newFolder")]
+    if not moving:
+        return
+    paths: Dict[str, str] = {}
+    for row in moving:
+        for folder in (str(row["folder"]), str(row["newFolder"])):
+            paths.setdefault(folder.lower(), folder)
+    listing = {key: _disk_stems(Path(path)) for key, path in paths.items()}
+    recheck_folder_flags(rows, set(paths), listing)
+
+
 def _summary(entries: List[Entry], rows: List[dict]) -> dict:
     summary = {"entries": len(entries), "change": 0, "unchanged": 0, "kept": 0, "duplicate": 0, "flagged": 0, "error": 0}
     for row in rows:
@@ -1504,6 +1526,7 @@ def run_dry_run(
         with lock:
             # Whenever naming ends (done, stopped or failed), before the run's rows are final.
             namer.flag_title_clashes()
+            place_moves(rows)
             stop.set()
         # A cancelled fetch ends within a request. After a NamingModelError or a fetch error
         # one Civitai request may still be in flight and outlive the run: the client's

@@ -49,6 +49,7 @@ from .renamer import (
     run_dry_run,
     title_clash_models,
 )
+from .rename_folders import recheck_folder_flags
 from .rename_store import RenameLog
 from .request_guard import request_rejection
 from .sidecar import read_data_file, write_json
@@ -764,7 +765,11 @@ def _register_rename_routes(
             if "keep" in payload:
                 decisions.set_file(payload["fileKey"], keep=payload["keep"])
 
-        folders = sorted({str(row.get("folder") or "") for row in model_rows})
+        # The folders the model's files are in, and the ones they move into.
+        folders = sorted(
+            {str(row.get("folder") or "") for row in model_rows}
+            | {str(row["newFolder"]) for row in model_rows if row.get("newFolder")}
+        )
         listing = await asyncio.to_thread(lambda: {folder.lower(): _disk_stems(Path(folder)) for folder in folders})
         result = reassemble_rows(
             rows, decisions, base_codes, listing, model_id=model_id, asked_again=asked_again
@@ -1356,7 +1361,7 @@ _FOLDER_FLAGS = {"exists", "collision"}
 _CLASH_FLAGS = {"version-clash", "title-clash"}
 # Where the creator came from: dropped once the user decides the creator.
 _MAKER_FLAGS = {"maker-from-description", "maker-not-in-description", "creator-from-file-name", "maker-unknown"}
-_ASSEMBLED_KEYS = ("newStem", "parts", "changed", "flags", "status")
+_ASSEMBLED_KEYS = ("newStem", "newFolder", "parts", "changed", "flags", "status")
 
 
 def reassemble_rows(
@@ -1381,6 +1386,7 @@ def reassemble_rows(
     model_id = str(model_id)
     mine = [row for row in rows if str(row.get("modelId")) == model_id]
     folders = {str(row.get("folder") or "").lower() for row in mine}
+    folders |= {str(row["newFolder"]).lower() for row in mine if row.get("newFolder")}
     before = {id(row): _row_state(row) for row in rows}
     model_decision = decisions.model(model_id)
     for row in mine:
@@ -1415,6 +1421,7 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
             status="kept", reason="kept-by-you", newStem=old_stem, parts=asdict(parse_stem(old_stem)),
             changed=[], flags=[], selected=False,
         )
+        row.pop("newFolder", None)  # kept where it is, under its name
         return
     if row.get("status") == "kept":
         before = row.pop("beforeKeep", None)
@@ -1423,6 +1430,8 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
             row.update(reason="dry-run-again", selected=False)
             return
         row.update(before)
+        if not row.get("newFolder"):
+            row.pop("newFolder", None)
         row["reason"] = ""
 
     parts = dict(row.get("parts") or {})
@@ -1471,12 +1480,14 @@ def _reassemble_row(row: dict, model_decision: dict, decisions, base_codes) -> N
     kept_flags.extend(_parts_flags(name_parts))
     kept_flags.extend(_name_check_flags(row, name_parts, base_codes))
     new_stem = assemble(name_parts)
+    moves = bool(row.get("newFolder"))
+    changed = _changed(old_stem, name_parts) + (["folder"] if moves else [])
     row.update(
         newStem=new_stem,
         parts=asdict(name_parts),
-        changed=_changed(old_stem, name_parts),
+        changed=changed,
         flags=list(dict.fromkeys(kept_flags)),
-        status="unchanged" if new_stem == old_stem else "change",
+        status="unchanged" if new_stem == old_stem and not moves else "change",
         reason="",
     )
 
@@ -1507,28 +1518,8 @@ def _recheck_title_clashes(rows: list[dict], decisions) -> None:
 
 
 def _recheck_folders(rows: list[dict], folders: set, folder_listing: dict) -> None:
-    """Recompute "exists" and "collision" for the named rows in these folders, and their selection."""
-    named = [
-        row for row in rows
-        if row.get("status") in _NAMED_STATUSES and str(row.get("folder") or "").lower() in folders
-    ]
-    renamed_stems: dict = {}
-    by_new: dict = {}
-    for row in named:
-        folder = str(row.get("folder") or "").lower()
-        renamed_stems.setdefault(folder, set()).add(str(row.get("oldStem") or "").lower())
-        by_new.setdefault((folder, str(row.get("newStem") or "").lower()), []).append(row)
-    for row in named:
-        folder = str(row.get("folder") or "").lower()
-        new = str(row.get("newStem") or "").lower()
-        flags = [flag for flag in row.get("flags") or [] if flag not in _FOLDER_FLAGS]
-        on_disk = set(folder_listing.get(folder) or ()) - renamed_stems.get(folder, set())
-        if new in on_disk:
-            flags.append("exists")
-        if len(by_new[(folder, new)]) > 1:
-            flags.append("collision")
-        row["flags"] = flags
-        row["selected"] = row.get("status") == "change" and not flags
+    """Recompute "exists" and "collision" for the named rows from or into these folders, and their selection."""
+    recheck_folder_flags(rows, folders, folder_listing)
 
 
 def apply_followups(

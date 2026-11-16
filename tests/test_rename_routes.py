@@ -222,6 +222,27 @@ class RenameRouteHelperTests(unittest.TestCase):
         self.decisions.set_version("10", "v4")
         self.assertEqual([a, b], reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1"))
 
+    def test_a_moving_row_stays_a_change_and_keep_cancels_the_move(self) -> None:
+        target = self.root / "pony"
+        moving = _row(self.folder, "maker - title - v1 (sdxl)", "maker - title - v1 (sdxl)")
+        moving["newFolder"] = str(target)
+        rows = [moving]
+        listing = {str(self.folder).lower(): {"maker - title - v1 (sdxl)"}, str(target).lower(): set()}
+        reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1")
+        # The name stays, the folder changes: still something to apply.
+        self.assertEqual("change", moving["status"])
+        self.assertIn("folder", moving["changed"])
+        self.assertEqual(str(target), moving["newFolder"])
+        # Keeping the current name keeps the file where it is too; undoing it brings the move back.
+        self.decisions.set_file(moving["fileKey"], keep=True)
+        reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1")
+        self.assertEqual("kept", moving["status"])
+        self.assertNotIn("newFolder", moving)
+        self.decisions.set_file(moving["fileKey"], keep=False)
+        reassemble_rows(rows, self.decisions, self.base_codes, listing, model_id="1")
+        self.assertEqual("change", moving["status"])
+        self.assertEqual(str(target), moving["newFolder"])
+
     def test_rows_of_other_folders_are_not_returned(self) -> None:
         elsewhere = self.root / "other"
         a = _row(self.folder, "old a", "maker - title - v1 (sdxl)")

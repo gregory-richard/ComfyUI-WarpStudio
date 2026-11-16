@@ -172,13 +172,15 @@ def plan(
     for row in rows:
         key = row.get("key")
         old, new = str(row.get("oldStem") or ""), str(row.get("newStem") or "")
-        if row.get("status") != "change" or key not in selected_keys or not old or not new or old == new:
+        # A file filed under another base's folder moves to its base's (row["newFolder"]).
+        moves = bool(row.get("newFolder")) and _norm(row["newFolder"]) != _norm(row.get("folder") or "")
+        if row.get("status") != "change" or key not in selected_keys or not old or not new or (old == new and not moves):
             continue
         change_keys.add(key)
         files = checked_siblings(row)
         if files is None:
             continue
-        folder = Path(row["folder"])
+        folder = Path(row["newFolder"] if moves else row["folder"])
         for path in _ordered(files, _norm(key)):
             suffix = path.name[len(old):]
             target = target_path(folder, new, suffix)

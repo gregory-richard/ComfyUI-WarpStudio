@@ -157,6 +157,11 @@ export function flagInfo(flag, row, rows) {
       return { level: "warn", text: `"${parts.creator || ""}" is not named in the description; check who made it` };
     case "new-base-code":
       return { level: "info", text: `New base code "${parts.base || ""}"${row?.baseModel ? ` for ${row.baseModel}` : ""}`, action: "base-link" };
+    case "base-conflict":
+      return {
+        level: "warn",
+        text: `Civitai lists this version as ${row?.baseModel || "another base"}, but its name says "${arg}"; the base in the new name may be wrong`,
+      };
     case "official-file":
       return { level: "warn", text: "Official ComfyUI file: templates and workflows look for this exact name, so it isn't ticked" };
     case "file-not-in-release":
@@ -696,8 +701,9 @@ export function renderRenameView(container, deps) {
       await loadRows();
     } else {
       const saved = store.status?.lastDryRun;
-      if (!store.jobId && saved && saved !== store.forgottenJobId) {
-        // No dry run of this browser's own: show the one the server kept across a restart.
+      if (saved && saved !== store.jobId && saved !== store.forgottenJobId) {
+        // The newest finished dry run is the one to show, wherever it was started
+        // (another browser, or before a restart).
         store.jobId = saved;
         writeLastJob(saved);
       }
@@ -1170,8 +1176,10 @@ export function renderRenameView(container, deps) {
     else if (row.status === "error") [role, label] = ["error", "Error"];
     const copyTitle = deps.copyPathTitle ? deps.copyPathTitle(row.modelPath || "") : row.modelPath || "";
     const old = `<span class="cu-ver-link cu-copy-path cu-rn-old" data-rn-action="copy-path" title="${esc(copyTitle)}">${esc(row.oldStem)}</span>`;
+    // A file filed under another base's folder moves to its base's: "→ pony/name".
+    const moveTo = row.status === "change" && row.newFolder ? fileName(row.newFolder) : "";
     const renamed = row.status === "change"
-      ? `<span class="cu-rn-new" title="${esc(row.newStem)}"><span class="cu-rn-arrow">→</span>${nameDiff(row.oldStem, row.newStem)
+      ? `<span class="cu-rn-new" title="${esc(moveTo ? `${row.newFolder}\n${row.newStem}` : row.newStem)}"><span class="cu-rn-arrow">→</span>${moveTo ? `<mark class="cu-rn-diff">${esc(moveTo)}/</mark>` : ""}${nameDiff(row.oldStem, row.newStem)
         .map((piece) => (piece.changed ? `<mark class="cu-rn-diff">${esc(piece.text)}</mark>` : esc(piece.text))).join("")}</span>`
       : "";
     const actions = [];

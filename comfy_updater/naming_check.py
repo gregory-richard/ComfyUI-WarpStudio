@@ -103,6 +103,52 @@ def _vocab_word(word: str) -> bool:
     return len(word) >= 3 and word[0].isalpha() and word not in GENERIC_BASE_WORDS
 
 
+# --- A version named for another base -------------------------------------------
+
+
+def _words_of(*texts: str) -> Set[str]:
+    """Base-like words of names and codes: compacted pieces and CamelCase parts, no generic words."""
+    words: Set[str] = set()
+    for text in texts:
+        for piece in _PIECE_SPLIT.split(text or ""):
+            compact = _compact(piece)
+            if _vocab_word(compact):
+                words.add(compact)
+            if re.search(r"[a-z][A-Z]", piece):
+                for part in _CAMEL.findall(piece):
+                    part = part.lower()
+                    if len(part) >= 4 and _vocab_word(part):
+                        words.add(part)
+    return words
+
+
+def base_conflict(version_name: str, base_model: str, known_bases: dict) -> str:
+    """A word of the version's own name that names another base, or "".
+
+    Civitai's base field is set by hand and is sometimes wrong: a version called
+    "krea2 v1.0" listed as Flux.1 D. ``known_bases`` maps base-model names to
+    codes (the base-code table). A word counts when it belongs to another base
+    and not to this one, and the version name has no word of its own base that
+    the other lacks ("ZIT and ZIB v2" listed as ZImageBase is fine).
+    """
+    if not version_name or not base_model:
+        return ""
+    written = _words_of(version_name)
+    # A base word with a number glued on is still that base: "illustrious2", "pony6".
+    words = written | {stem for stem in (re.sub(r"v?\d+[a-z]?\d*$", "", word) for word in written) if _vocab_word(stem)}
+    if not words:
+        return ""
+    own = _words_of(base_model, str(known_bases.get(base_model) or ""))
+    for other, code in known_bases.items():
+        if not isinstance(other, str) or other == base_model:
+            continue
+        theirs = _words_of(other, str(code or ""))
+        clash = sorted((word for word in words if word in theirs and word not in own), key=lambda w: (w not in written, w))
+        if clash and not (words & (own - theirs)):
+            return clash[0]  # as the name writes it, when it does
+    return ""
+
+
 def base_vocabulary(names: Iterable[str]) -> FrozenSet[str]:
     """Base words from base-model names and codes, plus the base families the updater knows.
 
