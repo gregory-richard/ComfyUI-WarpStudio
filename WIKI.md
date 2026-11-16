@@ -666,9 +666,10 @@ is muted or bypassed — itself or a subgraph it sits in — or the active one h
 
 ### 🌀 Prompt Writer
 
-Not a node: a chat-style pop-up opened from the **✨ AI** button on the
-`text` box of every 🌀 Prompt + LoRAs. An LLM writes and rewrites an image
-prompt, and **Send to prompt** puts a version into a Prompt + LoRAs. It lives in the
+Not a node: a chat-style pop-up opened from the **✨ AI Prompt Writer** button just
+above the `text` box of every 🌀 Prompt + LoRAs, in the empty middle of the last row
+of slots (**✨ AI** on a narrow node). An LLM writes and rewrites an image prompt, and **Send to ComfyUI** puts
+a version into a Prompt + LoRAs. It lives in the
 browser (`web/prompt_writer.js`), never appears in the prompt ComfyUI receives,
 and writing a prompt never queues an image. Every call goes through the
 `/warppipe/llm` routes, so the browser never sees a key.
@@ -696,11 +697,18 @@ lists** (the backend caches a model list for an hour).
 **Chats and versions:** the left rail lists the chats, newest first. Each write
 is one card `v2` with what it changed (`edit of v1`), its status, e.g.
 `Finished · 0.3 ¢ · 8 s · 1,812 → 640 tokens`, the request with its images and any
-questions on the way, and the prompt. The newest version is editable
-(saved on blur); older ones are one line and can be expanded. **Send to prompt** writes
+questions on the way, and the prompt, then two folded lines: **LoRAs** and
+**Written with** (model, system prompt, temperature, thinking level, LoRA choice,
+server, and the system prompt's text as the server read it, kept once per chat in
+`systemPrompts`). The newest version is editable (saved on blur); older ones are one
+line and can be expanded, with their buttons shown on hover. **Send to ComfyUI** writes
 the text unchanged into the Prompt + LoRAs chosen under **For**, as one undo step,
-flashes the node and closes the pop-up. The pencil on an older version makes it
-the one the next request edits.
+flashes the node and closes the pop-up. **Use as input** only chooses the version
+under **Edit …** for the next request (**✓ Input** marks the chosen one). **Retry**
+writes a version the AI wrote again at once and replaces it in place (not once others
+were made from it); **Recreate** sends the same request as a new version beside it;
+both use the settings chosen now. **Delete** removes a version and those made from it,
+after asking. Version numbers are saved, so a deleted one leaves a gap.
 
 **Questions:** the LLM is told to start a reply that asks instead of writing with
 `===QUESTION===`. That reply is a **Question** card, not a version; the send button then
@@ -723,7 +731,7 @@ the text of the **For** node read when you send, or **New prompt**), the LoRA ch
 a round send button that stays the same size and turns into a yellow stop button while
 it runs. Ctrl+Enter sends.
 Writes are held per chat outside the pop-up, so several run at once and survive
-closing it. The **✨ AI** button on the node is yellow while a chat opened from
+closing it. The **✨ AI Prompt Writer** button on the node is yellow while a chat opened from
 that node writes, and has a green dot when one finished unseen. While it writes,
 the card shows waiting, thinking or writing, the seconds and an estimate of the tokens
 so far, the model's thinking as it comes (for models that send it) and the prompt as it
