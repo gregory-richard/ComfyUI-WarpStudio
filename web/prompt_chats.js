@@ -30,6 +30,8 @@ const isId = (v) => typeof v === "string" && v !== "";
 const stringOr = (v, fallback) => (typeof v === "string" ? v : fallback);
 const numberOrNull = (v) => (Number.isFinite(v) ? v : null);
 const stampOf = (v) => (Number.isFinite(v) || isId(v) ? v : 0);
+const idOrNull = (v) => (isId(v) ? v : null);
+const LORA_SCOPES = ["off", "list", "all"];
 
 function normalizeImages(raw) {
   if (!Array.isArray(raw)) return [];
@@ -71,15 +73,19 @@ function normalizeTurns(raw) {
 const isPending = (raw) => isObject(raw) && isId(raw.question) && typeof raw.request === "string";
 const isFailure = (raw) => isObject(raw) && isId(raw.message) && typeof raw.request === "string";
 
-/** A step that waits for the answer to a question, or null. */
+/**
+ * A step that waits for the answer to a question, or null. `replaceId` is the
+ * version a Retry writes over once it is answered.
+ */
 function normalizePending(raw, baseId = raw?.baseId) {
   if (!isPending(raw)) return null;
   return {
     request: raw.request,
     images: normalizeImages(raw.images),
-    baseId: isId(baseId) ? baseId : null,
+    baseId: idOrNull(baseId),
     turns: normalizeTurns(raw.turns),
     question: raw.question,
+    replaceId: idOrNull(raw.replaceId),
   };
 }
 
@@ -89,10 +95,25 @@ function normalizeFailure(raw, baseId = raw?.baseId) {
   return {
     request: raw.request,
     images: normalizeImages(raw.images),
-    baseId: isId(baseId) ? baseId : null,
+    baseId: idOrNull(baseId),
     turns: normalizeTurns(raw.turns),
     answer: stringOr(raw.answer, null),
     message: raw.message,
+    replaceId: idOrNull(raw.replaceId),
+  };
+}
+
+/**
+ * The settings a version was written with, beside its model and system prompt.
+ * Null where it is not known: versions written before they were kept.
+ */
+function normalizeSettings(raw) {
+  return {
+    temperature: numberOrNull(raw.temperature),
+    thinkingLevel: stringOr(raw.thinkingLevel, null),
+    loraScope: LORA_SCOPES.includes(raw.loraScope) ? raw.loraScope : null,
+    server: stringOr(raw.server, null),
+    systemPromptKey: idOrNull(raw.systemPromptKey),
   };
 }
 
@@ -108,6 +129,7 @@ function normalizeVersion(raw, n) {
     text: raw.text,
     model: stringOr(raw.model, ""),
     systemPrompt: stringOr(raw.systemPrompt, ""),
+    ...normalizeSettings(raw),
     cost: numberOrNull(raw.cost),
     seconds: numberOrNull(raw.seconds),
     usage: isObject(raw.usage) ? { ...raw.usage } : {},
@@ -119,6 +141,27 @@ function normalizeVersion(raw, n) {
     source: stringOr(raw.source, null),
     sentAt: numberOrNull(raw.sentAt),
   };
+}
+
+/** The number after the newest version's. Numbers are kept, so a deleted version leaves a gap. */
+function nextNumber(versions) {
+  return (versions.at(-1)?.n ?? 0) + 1;
+}
+
+/** The number the next version of this chat gets. */
+export function nextVersionNumber(chat) {
+  return nextNumber(chat.versions);
+}
+
+/** The system prompts a chat's versions were written with, by key: only those still used. */
+function usedSystemPrompts(raw, versions) {
+  const kept = {};
+  if (!isObject(raw)) return kept;
+  for (const v of versions) {
+    const key = v.systemPromptKey;
+    if (key && typeof raw[key] === "string") kept[key] = raw[key];
+  }
+  return kept;
 }
 
 // The first entry of each id, among those `valid` accepts.
@@ -154,7 +197,11 @@ function normalizeChat(raw) {
   };
   for (const v of validUnique(raw.versions, (v) => typeof v.text === "string")) {
     const baseId = baseOf(v, `${v.id}~node`, stampOf(v.created));
-    versions.push(normalizeVersion({ ...v, baseId }, versions.length + 1));
+    // A saved number stays (a deleted version leaves a gap) while numbers still rise;
+    // a version inserted above renumbers the ones after it.
+    const next = nextNumber(versions);
+    const n = Number.isInteger(v.n) && v.n >= next ? v.n : next;
+    versions.push(normalizeVersion({ ...v, baseId }, n));
   }
   const updated = stampOf(raw.updated);
   const pending = isPending(raw.pending)
@@ -164,6 +211,9 @@ function normalizeChat(raw) {
     ? normalizeFailure(raw.failure, baseOf(raw.failure, `${raw.id}~failure`, updated))
     : null;
   const known = new Set(versions.map((v) => v.id));
+  for (const step of [pending, failure]) {
+    if (step && !known.has(step.replaceId)) step.replaceId = null;
+  }
   return {
     id: raw.id,
     title: stringOr(raw.title, DEFAULT_TITLE),
@@ -176,6 +226,7 @@ function normalizeChat(raw) {
     pending,
     failure,
     folded: Array.isArray(raw.folded) ? [...new Set(raw.folded.filter((id) => known.has(id)))] : [],
+    systemPrompts: usedSystemPrompts(raw.systemPrompts, versions),
   };
 }
 
@@ -204,6 +255,7 @@ export function createChat(store, { id, now, seedPrompt = null, targetLabel = nu
     pending: null,
     failure: null,
     folded: [],
+    systemPrompts: {},
   };
   store.chats.push(chat);
   return chat;
@@ -238,17 +290,9 @@ function makeVersion(
     images = [],
     baseId = null,
     text,
-    model = "",
-    systemPrompt = "",
-    cost = null,
-    seconds = null,
-    usage = {},
-    suggestions = [],
-    activeLoras = [],
-    questions = [],
-    reasoning = "",
     editedIn = null,
     source = null,
+    ...written
   }
 ) {
   return {
@@ -260,8 +304,30 @@ function makeVersion(
     images: [...images],
     baseId,
     text,
+    ...writtenFields(written),
+    editedIn,
+    source,
+    sentAt: null,
+  };
+}
+
+/** What the LLM's answer sets on a version: the text aside, all a Retry writes over. */
+function writtenFields({
+  model = "",
+  systemPrompt = "",
+  cost = null,
+  seconds = null,
+  usage = {},
+  suggestions = [],
+  activeLoras = [],
+  questions = [],
+  reasoning = "",
+  ...settings
+}) {
+  return {
     model,
     systemPrompt,
+    ...normalizeSettings(settings),
     cost,
     seconds,
     usage: { ...usage },
@@ -269,15 +335,12 @@ function makeVersion(
     activeLoras: normalizeSuggestions(activeLoras),
     questions: normalizeTurns(questions),
     reasoning: stringOr(reasoning, ""),
-    editedIn,
-    source,
-    sentAt: null,
   };
 }
 
 /** A new version at the end. The first one the LLM writes names the chat. */
 export function addVersion(chat, fields) {
-  const version = makeVersion(chat.versions.length + 1, fields);
+  const version = makeVersion(nextNumber(chat.versions), fields);
   const named = chat.versions.some((v) => v.kind === KIND_WRITTEN);
   chat.versions.push(version);
   chat.updated = fields.now;
@@ -297,9 +360,79 @@ export function addNodeVersion(chat, { id, now, text, source = null }) {
   return addVersion(chat, { id, now, kind: KIND_NODE, text, source });
 }
 
-/** Send to prompt wrote this version into a node. */
+/** Send to ComfyUI wrote this version into a node. */
 export function markSent(version, now) {
   version.sentAt = now;
+}
+
+/** A short, stable key for a text (FNV-1a, 32 bits): the same text, the same key. */
+function keyOf(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * Keep the text of a system prompt a version was written with, once per chat
+ * however many versions share it. Returns its key, or null for no text.
+ */
+export function keepSystemPrompt(chat, text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  chat.systemPrompts ??= {};
+  let key = keyOf(text);
+  // Two texts with one key: the second gets a key of its own.
+  while (chat.systemPrompts[key] != null && chat.systemPrompts[key] !== text) key += "~";
+  chat.systemPrompts[key] = text;
+  return key;
+}
+
+/** The system prompt text a version was written with, or null when it was not kept. */
+export function systemPromptOf(chat, version) {
+  const key = version.systemPromptKey;
+  return key ? (chat.systemPrompts?.[key] ?? null) : null;
+}
+
+/** Has anything been made from this version? */
+export function hasFollowUps(chat, id) {
+  return chat.versions.some((v) => v.baseId === id);
+}
+
+/**
+ * A Retry's answer written over the version it retried: the same number, place,
+ * request and base, with the new text and everything the write says about
+ * itself. It has not been sent anywhere yet. Null when that version is gone.
+ */
+export function replaceVersion(chat, id, { now, text, ...fields }) {
+  const version = chat.versions.find((v) => v.id === id);
+  if (!version) return null;
+  Object.assign(version, { text, ...writtenFields(fields), sentAt: null });
+  chat.systemPrompts = usedSystemPrompts(chat.systemPrompts, chat.versions);
+  chat.updated = now;
+  return version;
+}
+
+/** The version and every version made from it, directly or further down, in order. */
+export function branchOf(chat, id) {
+  const ids = new Set([id]);
+  for (const v of chat.versions) if (ids.has(v.baseId)) ids.add(v.id);
+  return chat.versions.filter((v) => ids.has(v.id));
+}
+
+/**
+ * Delete a version and every version made from it. The numbers of the others
+ * stay as they are. Returns the ids that went.
+ */
+export function deleteVersion(chat, id, now) {
+  const gone = new Set(branchOf(chat, id).map((v) => v.id));
+  if (!gone.size) return [];
+  chat.versions = chat.versions.filter((v) => !gone.has(v.id));
+  chat.folded = chat.folded.filter((f) => !gone.has(f));
+  chat.systemPrompts = usedSystemPrompts(chat.systemPrompts, chat.versions);
+  chat.updated = now;
+  return [...gone];
 }
 
 const WORDS = /[\p{L}\p{N}]+/gu;
@@ -354,7 +487,7 @@ function adoptInto(versions, text, { id, now, source = null }) {
   const fields = match
     ? { id, now, kind: KIND_HAND, baseId: match.version.id, text, editedIn: "node" }
     : { id, now, kind: KIND_NODE, text, source };
-  const version = makeVersion(versions.length + 1, fields);
+  const version = makeVersion(nextNumber(versions), fields);
   versions.push(version);
   return version;
 }
@@ -425,6 +558,7 @@ export function openQuestion(chat, step, question, now) {
     baseId: step.baseId ?? null,
     turns: normalizeTurns(step.turns),
     question,
+    replaceId: idOrNull(step.replaceId),
   };
   chat.updated = now;
   return chat.pending;
@@ -439,6 +573,7 @@ export function recordFailure(chat, spec, message, now) {
     turns: spec.turns,
     answer: spec.answer,
     message,
+    replaceId: spec.replaceId,
   });
   chat.updated = now;
   return chat.failure;
@@ -487,10 +622,15 @@ export function startValue(chat, base) {
   return chat.versions.at(-1)?.id ?? NEW_PROMPT;
 }
 
-/** How a step that is not a version yet says where it started. */
-export function startLabel(chat, baseId) {
+/**
+ * How a step that is not a version yet says where it started; a Retry also
+ * says which version it writes over.
+ */
+export function startLabel(chat, baseId, replaceId = null) {
   const version = chat.versions.find((v) => v.id === baseId);
-  return version ? `edit of v${version.n}` : "new prompt";
+  const from = version ? `edit of v${version.n}` : "new prompt";
+  const over = replaceId ? chat.versions.find((v) => v.id === replaceId) : null;
+  return over ? `${from} · retry of v${over.n}` : from;
 }
 
 /** How a version says where it came from. */

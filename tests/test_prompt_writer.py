@@ -362,8 +362,18 @@ def test_handle_write_uses_setting_folder_and_reference(server, tmp_path):
     assert msgs[1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert out["text"] == "OUT"
     assert out["cost"] == pytest.approx(0.003)
-    assert set(out) == {"text", "reasoning", "seconds", "usage", "cost", "suggestions"}
+    assert set(out) == {
+        "text",
+        "reasoning",
+        "seconds",
+        "usage",
+        "cost",
+        "suggestions",
+        "system_prompt_text",
+    }
     assert out["suggestions"] == []
+    # The file's own text, without the rules the writer adds to it.
+    assert out["system_prompt_text"] == "SYS"
     assert "LOCALKEY" not in json.dumps(out)
 
 
@@ -1197,7 +1207,7 @@ def test_handle_write_returns_a_question_instead_of_a_version(server, tmp_path):
     content = "===QUESTION===\nIs the sun in the frame?\n===LORAS===\nL1 | 1 | r"
     out = _lora_write(server, tmp_path, content, LORAS)
     assert out["question"] == "Is the sun in the frame?"
-    assert set(out) == {"question", "reasoning", "seconds", "usage", "cost"}
+    assert set(out) == {"question", "reasoning", "seconds", "usage", "cost", "system_prompt_text"}
 
 
 def test_handle_write_an_empty_question_is_the_no_text_error(server, tmp_path):
@@ -1485,6 +1495,9 @@ def test_the_log_holds_the_request_and_then_its_result(server, tmp_path):
     assert result["usage"] == {"prompt_tokens": 1000, "completion_tokens": 500}
     assert result["cost"] == pytest.approx(0.002)
     assert isinstance(result["seconds"], float)
+    # The answer carries the system prompt's text for the browser; the log only its name.
+    assert out["system_prompt_text"]
+    assert "system_prompt_text" not in request and "system_prompt_text" not in result
 
 
 def test_the_log_never_holds_the_key_or_image_data(server, tmp_path):

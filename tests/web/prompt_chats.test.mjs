@@ -45,6 +45,13 @@ import {
   setAutoTitle,
   sortedChats,
   titleFrom,
+  branchOf,
+  deleteVersion,
+  hasFollowUps,
+  keepSystemPrompt,
+  nextVersionNumber,
+  replaceVersion,
+  systemPromptOf,
 } from "../../web/prompt_chats.js";
 
 function version(id, now, extra = {}) {
@@ -88,6 +95,7 @@ test("createChat adds a fresh chat to the store", () => {
     pending: null,
     failure: null,
     folded: [],
+    systemPrompts: {},
   });
   assert.equal(store.chats[0], chat);
   assert.equal(createChat(store, { id: "b", now: 6, seedPrompt: "seed" }).seedPrompt, "seed");
@@ -240,6 +248,11 @@ test("addVersion fills every field and numbers from 1", () => {
     text: "PROMPT",
     model: "m",
     systemPrompt: "s.txt",
+    temperature: null,
+    thinkingLevel: null,
+    loraScope: null,
+    server: null,
+    systemPromptKey: null,
     cost: 0.1,
     seconds: 2,
     usage: { prompt_tokens: 1, completion_tokens: 2 },
@@ -462,7 +475,7 @@ test("normalizeStore: drops malformed chats", () => {
   assert.deepEqual(ids(out.chats), ["ok"]);
 });
 
-test("normalizeStore: drops malformed versions and renumbers", () => {
+test("normalizeStore: drops malformed versions and keeps the saved numbers", () => {
   const out = normalizeStore({
     version: 1,
     chats: [
@@ -473,7 +486,12 @@ test("normalizeStore: drops malformed versions and renumbers", () => {
           null,
           { id: "noText" },
           { text: "noId" },
+          // A deleted version left a gap: the number stays.
           { id: "v3", text: "three", n: 5 },
+          // No number, or one that does not rise: the next one.
+          { id: "v4", text: "four" },
+          { id: "v5", text: "five", n: 2 },
+          { id: "v6", text: "six", n: 1.5 },
         ],
       },
     ],
@@ -482,7 +500,10 @@ test("normalizeStore: drops malformed versions and renumbers", () => {
     out.chats[0].versions.map((v) => [v.id, v.n]),
     [
       ["v1", 1],
-      ["v3", 2],
+      ["v3", 5],
+      ["v4", 6],
+      ["v5", 7],
+      ["v6", 8],
     ]
   );
 });
@@ -532,6 +553,11 @@ test("normalizeStore: repairs the fields it can", () => {
     text: "t",
     model: "",
     systemPrompt: "",
+    temperature: null,
+    thinkingLevel: null,
+    loraScope: null,
+    server: null,
+    systemPromptKey: null,
     cost: null,
     seconds: null,
     usage: {},
@@ -631,6 +657,7 @@ test("openQuestion puts a step on hold, dropQuestion takes it back", () => {
     baseId: "v1",
     turns: [],
     question: "Sun in frame?",
+    replaceId: null,
   });
   assert.equal(chat.updated, 5);
   step.images.push("b.png");
@@ -730,6 +757,7 @@ test("recordFailure keeps what a Retry needs, and nothing that only lives in the
     turns: [{ question: "Q", answer: "A" }],
     answer: "A",
     message: "Insufficient balance",
+    replaceId: null,
   });
   assert.equal(chat.updated, 5);
   FAILED.images.push("b.png");
@@ -757,6 +785,7 @@ test("normalizeStore keeps a saved failure, and drops a broken one", () => {
     turns: [],
     answer: null,
     message: "Timed out",
+    replaceId: null,
   });
   for (const failure of [
     null,
@@ -1277,4 +1306,225 @@ test("isUsed: sent, followed up, waiting, failed or being written from", () => {
   chat.failure = null;
   markSent(v2, 5);
   assert.equal(isUsed(chat, v2), true);
+});
+
+// --- Delete, Retry over a version, what a version was written with --------------
+
+/** v1 → v2 → v3, and v4 from v1 again. */
+function branchedChat() {
+  const chat = chatWith("v1", "v2");
+  addVersion(chat, version("v3", 20, { baseId: "v2" }));
+  addVersion(chat, version("v4", 21, { baseId: "v1" }));
+  chat.versions[1].baseId = "v1";
+  return chat;
+}
+
+test("branchOf is a version and everything made from it, in order", () => {
+  const chat = branchedChat();
+  assert.deepEqual(ids(branchOf(chat, "v1")), ["v1", "v2", "v3", "v4"]);
+  assert.deepEqual(ids(branchOf(chat, "v2")), ["v2", "v3"]);
+  assert.deepEqual(ids(branchOf(chat, "v4")), ["v4"]);
+  assert.deepEqual(branchOf(chat, "nope"), []);
+});
+
+test("hasFollowUps says whether a version was built on", () => {
+  const chat = branchedChat();
+  assert.equal(hasFollowUps(chat, "v1"), true);
+  assert.equal(hasFollowUps(chat, "v2"), true);
+  assert.equal(hasFollowUps(chat, "v3"), false);
+});
+
+test("deleteVersion takes the version and what was made from it; the other numbers stay", () => {
+  const chat = branchedChat();
+  chat.folded = ["v2", "v1"];
+  assert.deepEqual(deleteVersion(chat, "v2", 99), ["v2", "v3"]);
+  assert.deepEqual(
+    chat.versions.map((v) => [v.id, v.n]),
+    [
+      ["v1", 1],
+      ["v4", 4],
+    ]
+  );
+  assert.deepEqual(chat.folded, ["v1"]);
+  assert.equal(chat.updated, 99);
+  assert.deepEqual(deleteVersion(chat, "nope", 100), []);
+  assert.equal(chat.updated, 99);
+});
+
+test("numbers go on from the newest version: a gap stays, the newest's number comes back", () => {
+  const chat = branchedChat();
+  deleteVersion(chat, "v2", 30);
+  assert.equal(nextVersionNumber(chat), 5);
+  assert.equal(addVersion(chat, version("v5", 31)).n, 5);
+  deleteVersion(chat, "v5", 32);
+  assert.equal(addVersion(chat, version("v6", 33)).n, 5);
+  const saved = normalizeStore(JSON.parse(JSON.stringify({ version: 1, chats: [chat] })));
+  assert.deepEqual(
+    saved.chats[0].versions.map((v) => v.n),
+    [1, 4, 5]
+  );
+  assert.equal(nextVersionNumber(createChat(emptyStore(), { id: "e", now: 1 })), 1);
+});
+
+test("replaceVersion writes a Retry's answer over the version, in its place", () => {
+  const chat = chatWith("v1", "v2");
+  const v2 = chat.versions[1];
+  v2.baseId = "v1";
+  markSent(v2, 3);
+  const out = replaceVersion(chat, "v2", {
+    now: 50,
+    text: "again",
+    model: "m2",
+    systemPrompt: "t.txt",
+    temperature: 0.9,
+    thinkingLevel: "high",
+    loraScope: "list",
+    server: "nano-gpt.com",
+    systemPromptKey: "k",
+    cost: 0.2,
+    seconds: 4,
+    usage: { prompt_tokens: 3 },
+    reasoning: "why",
+  });
+  assert.equal(out, v2);
+  assert.deepEqual(ids(chat.versions), ["v1", "v2"]);
+  assert.equal(v2.n, 2);
+  assert.equal(v2.request, "ask v2");
+  assert.equal(v2.baseId, "v1");
+  assert.equal(v2.created, 11);
+  assert.equal(v2.text, "again");
+  assert.equal(v2.model, "m2");
+  assert.equal(v2.temperature, 0.9);
+  assert.equal(v2.thinkingLevel, "high");
+  assert.equal(v2.loraScope, "list");
+  assert.equal(v2.server, "nano-gpt.com");
+  assert.equal(v2.systemPromptKey, "k");
+  assert.equal(v2.reasoning, "why");
+  assert.deepEqual(v2.suggestions, []);
+  // The new text has not been sent anywhere yet.
+  assert.equal(v2.sentAt, null);
+  assert.equal(chat.updated, 50);
+  assert.equal(replaceVersion(chat, "gone", { now: 51, text: "x" }), null);
+});
+
+test("a version keeps the settings it was written with, through a save", () => {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  addVersion(
+    chat,
+    version("v1", 2, {
+      temperature: 0.4,
+      thinkingLevel: "",
+      loraScope: "all",
+      server: "localhost:1234",
+      systemPromptKey: keepSystemPrompt(chat, "SYS"),
+    })
+  );
+  const [again] = normalizeStore(JSON.parse(JSON.stringify({ version: 1, chats: [chat] }))).chats;
+  const v = again.versions[0];
+  assert.equal(v.temperature, 0.4);
+  assert.equal(v.thinkingLevel, "");
+  assert.equal(v.loraScope, "all");
+  assert.equal(v.server, "localhost:1234");
+  assert.equal(systemPromptOf(again, v), "SYS");
+});
+
+test("normalizeStore repairs settings it cannot read", () => {
+  const [chat] = normalizeStore({
+    version: 1,
+    chats: [
+      {
+        id: "c",
+        versions: [
+          {
+            id: "v",
+            text: "t",
+            temperature: "hot",
+            thinkingLevel: 3,
+            loraScope: "some",
+            server: {},
+            systemPromptKey: "",
+          },
+        ],
+      },
+    ],
+  }).chats;
+  const v = chat.versions[0];
+  assert.equal(v.temperature, null);
+  assert.equal(v.thinkingLevel, null);
+  assert.equal(v.loraScope, null);
+  assert.equal(v.server, null);
+  assert.equal(v.systemPromptKey, null);
+  assert.deepEqual(chat.systemPrompts, {});
+});
+
+test("keepSystemPrompt keeps each text once per chat", () => {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  const a = keepSystemPrompt(chat, "You write prompts.");
+  assert.equal(keepSystemPrompt(chat, "You write prompts."), a);
+  const b = keepSystemPrompt(chat, "You write short prompts.");
+  assert.notEqual(a, b);
+  assert.deepEqual(Object.keys(chat.systemPrompts).sort(), [a, b].sort());
+  assert.equal(keepSystemPrompt(chat, ""), null);
+  assert.equal(keepSystemPrompt(chat, "   "), null);
+  assert.equal(keepSystemPrompt(chat, undefined), null);
+});
+
+test("keepSystemPrompt gives a second text with the same key a key of its own", () => {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  const a = keepSystemPrompt(chat, "one");
+  // Another text already held under the key "one" would get.
+  chat.systemPrompts = { [a]: "something else" };
+  const b = keepSystemPrompt(chat, "one");
+  assert.notEqual(b, a);
+  assert.equal(chat.systemPrompts[a], "something else");
+  assert.equal(chat.systemPrompts[b], "one");
+});
+
+test("only system prompts a version still uses are kept", () => {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  const a = keepSystemPrompt(chat, "A");
+  const b = keepSystemPrompt(chat, "B");
+  addVersion(chat, version("v1", 2, { systemPromptKey: a }));
+  addVersion(chat, version("v2", 3, { systemPromptKey: b }));
+  keepSystemPrompt(chat, "never used");
+  const [saved] = normalizeStore(JSON.parse(JSON.stringify({ version: 1, chats: [chat] }))).chats;
+  assert.deepEqual(saved.systemPrompts, { [a]: "A", [b]: "B" });
+  deleteVersion(chat, "v2", 4);
+  assert.deepEqual(chat.systemPrompts, { [a]: "A" });
+  assert.equal(systemPromptOf(chat, { systemPromptKey: null }), null);
+  assert.equal(systemPromptOf(chat, { systemPromptKey: "missing" }), null);
+});
+
+test("a Retry's question and failure remember the version they write over", () => {
+  const chat = chatWith("v1", "v2");
+  openQuestion(chat, { request: "r", baseId: "v1", replaceId: "v2" }, "Which?", 5);
+  assert.equal(chat.pending.replaceId, "v2");
+  recordFailure(chat, { request: "r", baseId: "v1", replaceId: "v2" }, "Timed out", 6);
+  assert.equal(chat.failure.replaceId, "v2");
+  const [saved] = normalizeStore(JSON.parse(JSON.stringify({ version: 1, chats: [chat] }))).chats;
+  assert.equal(saved.pending.replaceId, "v2");
+  assert.equal(saved.failure.replaceId, "v2");
+  // One that names no version any more writes a new one.
+  chat.versions.pop();
+  const [gone] = normalizeStore(JSON.parse(JSON.stringify({ version: 1, chats: [chat] }))).chats;
+  assert.equal(gone.pending.replaceId, null);
+  assert.equal(gone.failure.replaceId, null);
+});
+
+test("startLabel says which version a Retry writes over", () => {
+  const chat = chatWith("v1", "v2");
+  assert.equal(startLabel(chat, "v1", "v2"), "edit of v1 · retry of v2");
+  assert.equal(startLabel(chat, null, "v2"), "new prompt · retry of v2");
+  assert.equal(startLabel(chat, "v1", "gone"), "edit of v1");
+  assert.equal(startLabel(chat, "v1"), "edit of v1");
+});
+
+test("a Retry's new system prompt takes the place of one no version uses any more", () => {
+  const chat = createChat(emptyStore(), { id: "c", now: 1 });
+  const old = keepSystemPrompt(chat, "OLD");
+  addVersion(chat, version("v1", 2, { systemPromptKey: old }));
+  const fresh = keepSystemPrompt(chat, "NEW");
+  replaceVersion(chat, "v1", { now: 3, text: "again", systemPromptKey: fresh });
+  assert.deepEqual(chat.systemPrompts, { [fresh]: "NEW" });
+  assert.equal(systemPromptOf(chat, chat.versions[0]), "NEW");
 });

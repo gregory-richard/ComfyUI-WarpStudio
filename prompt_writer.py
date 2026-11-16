@@ -975,6 +975,9 @@ def handle_write(
         system = read_system_prompt(
             (settings or {}).get(SETTING_DIR), str(body.get("system_prompt") or "")
         )
+        # The user's own system prompt as it was read for this write. The browser keeps
+        # it with the version, so what a version was written with can be read later.
+        own_system = system
         loras = clean_loras(body.get("loras"))
         turns = _turns(body.get("turns"))
         # The LoRA rules carry the question rule; without them it stands alone.
@@ -1037,7 +1040,7 @@ def handle_write(
             kept = ("reasoning", "seconds", "usage", "cost")
             asked = {"question": question, **{k: out[k] for k in kept}}
             _log_result(log_path, request_id, start, outcome="question", **asked)
-            return asked
+            return {**asked, "system_prompt_text": own_system}
         out["suggestions"] = []
         if loras is not None:
             refs = {lora["ref"] for lora in loras["available"]}
@@ -1047,7 +1050,8 @@ def handle_write(
             if not out["text"].strip():
                 raise PromptWriterError("The model returned no text")
         _log_result(log_path, request_id, start, outcome="text", **out)
-        return out
+        # After the log line: the log keeps the file's name, not its text on every line.
+        return {**out, "system_prompt_text": own_system}
     except PromptWriterError as exc:
         message = _scrub(str(exc), key)
         outcome = "stopped" if message == "Stopped" else "error"
