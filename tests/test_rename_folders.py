@@ -161,5 +161,35 @@ class ApplyMoveTests(unittest.TestCase):
             )
 
 
+class DeleteTests(unittest.TestCase):
+    def test_a_deleted_entry_sends_its_file_and_sidecars_to_the_bin_and_is_not_renamed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            stem = "maker - unwanted (pony)"
+            for suffix in (".safetensors", ".civitai.info", ".preview.png", ".zip"):
+                (folder / (stem + suffix)).write_text("x", encoding="utf-8")
+            own = folder / (stem + ".safetensors")
+            row = {
+                "key": str(own).lower(), "modelPath": str(own), "folder": str(folder),
+                "oldStem": stem, "newStem": "maker - wanted (pony)", "status": "change", "flags": [],
+            }
+            steps, skipped = plan([row], {row["key"]}, set(), {row["key"]})
+            self.assertEqual([], skipped)
+            self.assertEqual({"trash"}, {step["kind"] for step in steps})
+            self.assertTrue(all(step["delete"] and step["to"] == "" for step in steps))
+            # Only the kinds the plugin knows go; the zip of that name stays.
+            self.assertEqual(
+                sorted(str(folder / (stem + s)) for s in (".safetensors", ".civitai.info", ".preview.png")),
+                sorted(step["from"] for step in steps),
+            )
+
+    def test_a_deletion_needs_no_kept_copy(self) -> None:
+        from comfy_updater.rename_apply import _copy_problem, _survivor_problem
+
+        step = {"kind": "trash", "from": "a.safetensors", "to": "", "entry": "a", "delete": True}
+        self.assertIsNone(_survivor_problem([step], {"a.safetensors"}))
+        self.assertIsNone(_copy_problem([step]))
+
+
 if __name__ == "__main__":
     unittest.main()

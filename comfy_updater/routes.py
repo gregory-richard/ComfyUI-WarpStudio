@@ -812,13 +812,14 @@ def _register_rename_routes(
         rows = copy.deepcopy(list(job.items))
         selected = set(payload["keys"])
         remove = set(payload["removeDuplicates"])
+        delete = set(payload["delete"])
         data_dir = config_store.data_dir
 
         def runner(progress, emit, control):  # noqa: ARG001
             summary = run_apply(
                 rows, selected, remove, journal, data_dir=data_dir, decisions=decisions, base_codes=base_codes,
                 check_jobs=job_manager, progress=progress, control=control,
-                log=rename_log, dry_run_job_id=job.id,
+                log=rename_log, dry_run_job_id=job.id, delete=delete,
             )
             return summary, []
 
@@ -1199,10 +1200,11 @@ def run_apply(
     trash: Callable[[str], Any] = send_to_trash,
     log=None,
     dry_run_job_id: str = "",
+    delete: Any = frozenset(),
 ) -> dict:
     """The apply job body: plan, apply, then the follow-ups. Returns the job summary."""
     progress(0, 0, "Planning the renames")
-    steps, planned_skips = plan(rows, selected, remove)
+    steps, planned_skips = plan(rows, selected, remove, delete)
     result = apply_steps(
         steps, journal, trash=trash, progress=progress, control=control, log=log, dry_run_job_id=dry_run_job_id
     )
@@ -1341,6 +1343,7 @@ def _normalize_apply_payload(payload: dict) -> dict:
         "jobId": _clean_id(payload.get("jobId")),
         "keys": _string_list(payload.get("keys")),
         "removeDuplicates": _string_list(payload.get("removeDuplicates")),
+        "delete": _string_list(payload.get("delete")),
     }
 
 

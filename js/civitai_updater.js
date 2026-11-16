@@ -259,7 +259,7 @@ async function renderTab(el) {
         <h3>Results</h3>
         <select id="cu-size" title="Results per page">${PAGE_SIZES.map((v) => `<option value="${v}">${v}</option>`).join("")}</select>
       </div>
-      <div id="cu-shared-filters" class="cu-filters" style="display:none">
+      <div id="cu-shared-filters" class="cu-filters">
         <div id="cu-filter-type" class="cu-filter-slot"></div>
         <div id="cu-filter-base" class="cu-filter-slot"></div>
       </div>
@@ -371,6 +371,7 @@ async function loadCachedResults() {
   // Until the last check is back, the list shows that it is loading, not that it is empty.
   state.startupLoading = true;
   setLoading("startup", true);
+  renderCacheInfo();
   renderResults();
   try {
     // Reconnect to any job that is still running server-side (scan or
@@ -424,6 +425,7 @@ async function loadCachedResults() {
     state.startupLoading = false;
     setLoading("startup", false);
     state.lastRenderSignature = null;
+    renderCacheInfo();
     renderResults();
   }
 }
@@ -971,6 +973,11 @@ function scanCounts(s) {
 function renderCacheInfo() {
   if (!state.cacheInfoEl) return;
   if (!state.cachedAt) {
+    if (state.startupLoading) {
+      state.cacheInfoEl.innerHTML = `<span class="cu-spinner" aria-hidden="true"></span>Loading the last check\u2026`;
+      state.cacheInfoEl.style.display = "";
+      return;
+    }
     state.cacheInfoEl.innerHTML = "";
     state.cacheInfoEl.style.display = "none";
     return;
@@ -1002,7 +1009,8 @@ function renderCacheInfo() {
 
   const showRefresh = fresh && !dirty;
   const refreshPart = showRefresh ? ` · <button id="cu-force-recheck" class="cu-text-btn">Refresh</button>` : "";
-  state.cacheInfoEl.innerHTML = `Last checked ${timeAgo(state.cachedAt)} · ${statusPill}${detailsText}${refreshPart}`;
+  state.cacheInfoEl.innerHTML = `<span class="cu-cache-text">Last checked ${timeAgo(state.cachedAt)} ·</span> ${statusPill}${detailsText}${refreshPart}`;
+  state.cacheInfoEl.title = `Last checked ${timeAgo(state.cachedAt)}${dirty && typeof dirty === "object" ? ` · changes detected (${[dirty.added ? `${dirty.added} added` : "", dirty.removed ? `${dirty.removed} removed` : ""].filter(Boolean).join(", ")})` : ""}`;
   state.cacheInfoEl.style.display = "";
   const refreshEl = state.cacheInfoEl.querySelector("#cu-force-recheck");
   if (refreshEl) {
@@ -1548,10 +1556,6 @@ async function loadModeCounts() {
 
 function renderFilters() {
   if (!state.filterTypeEl || !state.filterBaseEl) return;
-  if (state.sharedFiltersEl) {
-    const any = state.facets.modelTypes.length || state.facets.baseModels.length;
-    state.sharedFiltersEl.style.display = any ? "" : "none";
-  }
   syncFacetSelection("filterTypes", "modelTypes");
   syncFacetSelection("filterBases", "baseModels");
   // Re-rendering replaces the <details> menus; keep them open across a
@@ -1672,7 +1676,8 @@ function renderFilterMenu(kind, label, options, selected, capitalizeValues) {
 
 function filterSummary(options, selected, capitalizeValues) {
   const active = selected || [];
-  if (!options.length || active.length === 0) return "none";
+  if (!options.length) return "all"; // no options yet: nothing is filtered
+  if (active.length === 0) return "none";
   if (active.length === options.length) return "all";
   if (active.length === 1) return capitalizeValues ? capitalize(active[0]) : active[0];
   return `${active.length} selected`;
@@ -2212,6 +2217,23 @@ function injectStyles() {
        Red is reserved for one meaning: a new release exists.
        ================================================================ */
 
+    .cu-cache-info > * {
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cu-cache-info > .cu-spinner,
+    .cu-cache-info > .cu-status-pill {
+      flex-shrink: 0;
+    }
+
+    .sidebar-content-container:has(> .cu-root),
+    .sidebar-content-container:has(.cu-root) {
+      scrollbar-gutter: stable;
+    }
+
     .cu-root {
       --cu-ink: #131316;
       --cu-slate: #1b1b20;
@@ -2510,11 +2532,16 @@ function injectStyles() {
 
     /* ---- Cache line + status pills ---- */
 
+    /* One line, whatever the panel's width: it never pushes the panel down when it fills in. */
     .cu-cache-info {
       display: flex;
       align-items: center;
       gap: 6px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      height: 18px;
       min-height: 18px;
       margin-bottom: 7px;
       font-size: 11px;

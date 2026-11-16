@@ -64,6 +64,7 @@ export function createRenameStore() {
     recoverResult: null,
     revealError: null,
     openHints: new Set(),
+    deleteKeys: new Set(),
     restoredLastJob: false,
   };
 }
@@ -376,7 +377,15 @@ export function rowFacets(rows) {
 }
 
 export function selectedKeys(store) {
-  return store.rows.filter((row) => shown(store, row) && canSelect(row) && store.selected.get(row.key)).map((row) => row.key);
+  return store.rows
+    .filter((row) => shown(store, row) && canSelect(row) && store.selected.get(row.key) && !store.deleteKeys?.has(row.key))
+    .map((row) => row.key);
+}
+
+/* Entries the user deletes (their file and sidecars to the Recycle Bin), shown rows only. */
+export function deleteKeys(store) {
+  if (!canRemoveDuplicates(store) || !store.deleteKeys) return [];
+  return store.rows.filter((row) => shown(store, row) && store.deleteKeys.has(row.key)).map((row) => row.key);
 }
 
 /* Removing a copy needs the send2trash package, which a symlinked install may lack.
@@ -405,7 +414,7 @@ export function duplicateKeys(store) {
 }
 
 export function applyPayload(store) {
-  return { jobId: store.jobId, keys: selectedKeys(store), removeDuplicates: duplicateKeys(store) };
+  return { jobId: store.jobId, keys: selectedKeys(store), removeDuplicates: duplicateKeys(store), delete: deleteKeys(store) };
 }
 
 /* Several files of one version in the list: a version edit is saved per file. */
@@ -475,13 +484,15 @@ export function selectionState(store) {
     if (on !== Boolean(row.selected)) overrides[row.key] = on;
   }
   const removeDup = [...store.removeDup].filter((key) => store.byKey.get(key)?.status === "duplicate");
-  return { overrides, removeDup };
+  const deleted = [...(store.deleteKeys || [])].filter((key) => store.byKey.has(key));
+  return { overrides, removeDup, delete: deleted };
 }
 
 /* Whether the choices are the defaults (nothing worth storing). */
 export function isDefaultSelection(store) {
   const state = selectionState(store);
   if (Object.keys(state.overrides).length) return false;
+  if (state.delete.length) return false;
   const defaults = defaultRemoveDup(store);
   return state.removeDup.length === defaults.size && state.removeDup.every((key) => defaults.has(key));
 }
@@ -496,6 +507,7 @@ export function restoreSelection(store, saved) {
   }
   if (!saved) return;
   store.removeDup = new Set((saved.removeDup || []).filter((key) => store.byKey.get(key)?.status === "duplicate"));
+  store.deleteKeys = new Set((saved.delete || []).filter((key) => store.byKey.has(key)));
 }
 
 /* The saved choices if they belong to this dry run, else null (stored text may be anything). */
@@ -507,7 +519,8 @@ export function parseSelection(text, jobId) {
     const overrides = data.overrides ?? {};
     if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return null;
     const removeDup = Array.isArray(data.removeDup) ? data.removeDup.filter((key) => typeof key === "string") : [];
-    return { overrides, removeDup };
+    const deleted = Array.isArray(data.delete) ? data.delete.filter((key) => typeof key === "string") : [];
+    return { overrides, removeDup, delete: deleted };
   } catch (_) {
     return null;
   }
@@ -641,6 +654,7 @@ export function renderRenameView(container, deps) {
       const data = await deps.getJson(`${ROUTE}/rename/rows?jobId=${encodeURIComponent(store.jobId)}`);
       setRows(store, data.rows);
       store.removeDup = defaultRemoveDup(store);
+      store.deleteKeys = new Set();
       const saved = readSelection(store.jobId);
       if (saved) restoreSelection(store, saved);
       else writeSelection(null); // choices of another dry run, if any, are dropped
@@ -654,6 +668,7 @@ export function renderRenameView(container, deps) {
       if (store.applied) {
         // Read-only: nothing is left to choose for this dry run.
         store.removeDup.clear();
+        store.deleteKeys.clear();
         store.confirming = false;
         store.editing = null;
       }
@@ -740,6 +755,7 @@ export function renderRenameView(container, deps) {
       store.limits = {};
       setRows(store, []);
       store.removeDup.clear();
+      store.deleteKeys.clear();
       writeLastJob(data.jobId);
       writeSelection(null);
       notify(null);
@@ -1048,7 +1064,7 @@ export function renderRenameView(container, deps) {
       summary = parts.join(" \u00b7 ");
       if (!store.applied) {
         const renames = selectedKeys(store).length;
-        const removals = duplicateKeys(store).length;
+        const removals = duplicateKeys(store).length + deleteKeys(store).length;
         const what = [renames || !removals ? `Rename ${count(renames)}` : "", removals ? `remove ${count(removals)}` : ""]
           .filter(Boolean).join(" \u00b7 ");
         apply = `<button class="cu-btn cu-btn-sm cu-btn-primary" data-rn-action="confirm"${disabledIf(!(renames + removals) || locked() || store.confirming)}>${what.charAt(0).toUpperCase() + what.slice(1)}</button>`;
@@ -1063,9 +1079,11 @@ export function renderRenameView(container, deps) {
   function confirmHtml() {
     const renames = selectedKeys(store).length;
     const removals = duplicateKeys(store).length;
+    const deletes = deleteKeys(store).length;
     const parts = [];
     if (renames) parts.push(`rename ${plural(renames, "file")} (with their sidecars and previews)`);
     if (removals) parts.push(`move ${plural(removals, "extra copy", "extra copies")} to the Recycle Bin`);
+    if (deletes) parts.push(`delete ${plural(deletes, "file")} (to the Recycle Bin; very large files may be deleted outright)`);
     return `<div class="cu-rn-banner" data-level="warn">
       <div class="cu-rn-banner-text">This will ${esc(parts.join(" and "))}. Models loaded right now are skipped.</div>
       <div class="cu-rn-actions">
@@ -1177,9 +1195,10 @@ export function renderRenameView(container, deps) {
     const named = NAMED.has(row.status);
     const dup = row.status === "duplicate";
     const canRemove = canRemoveDuplicates(store);
-    const removing = dup && canRemove && store.removeDup.has(row.key);
+    const deleting = canRemove && store.deleteKeys.has(row.key);
+    const removing = (dup && canRemove && store.removeDup.has(row.key)) || deleting;
     let check = `<span class="cu-rn-nocheck"></span>`;
-    if (row.status === "change") {
+    if (row.status === "change" && !deleting) {
       const selectable = canSelect(row);
       const on = selectable && store.selected.get(row.key);
       check = `<input type="checkbox" data-rn-select${on ? " checked" : ""}${disabledIf(!selectable || isLocked)} title="${selectable ? "Rename this file on Apply" : "Fix the problems below first"}">`;
@@ -1197,7 +1216,9 @@ export function renderRenameView(container, deps) {
         .map((piece) => (piece.changed ? `<mark class="cu-rn-diff">${esc(piece.text)}</mark>` : esc(piece.text))).join("")}</span>`
       : "";
     const actions = [];
-    if (named) {
+    if (deleting) {
+      actions.push(`<button class="cu-inline-btn" data-rn-action="undelete"${disabledIf(isLocked)} title="Keep this file; Apply leaves it alone">Keep</button>`);
+    } else if (named) {
       actions.push(`<button class="cu-inline-btn" data-rn-action="edit"${disabledIf(isLocked)}>Edit</button>`);
       if (row.status === "change") actions.push(`<button class="cu-inline-btn" data-rn-action="keep"${disabledIf(isLocked)} title="Don't rename this file">Keep current name</button>`);
       if (!(row.flags || []).includes("ask-again")) actions.push(`<button class="cu-inline-btn" data-rn-action="ask-again"${disabledIf(isLocked)} title="Forget the saved name; the naming model names this model again on the next dry run">Ask again</button>`);
@@ -1207,6 +1228,10 @@ export function renderRenameView(container, deps) {
         : `<button class="cu-inline-btn" data-rn-action="remove-copy"${disabledIf(isLocked)} title="Move this copy to the Recycle Bin on Apply">Remove</button>`);
     } else if (row.status === "kept" && row.reason === "kept-by-you") {
       actions.push(`<button class="cu-inline-btn" data-rn-action="unkeep"${disabledIf(isLocked)} title="Rename this file after all">Undo keep current name</button>`);
+    }
+    // Every file can go: to the Recycle Bin on Apply, with its info file and preview.
+    if (!dup && !deleting && canRemove) {
+      actions.push(`<button class="cu-inline-btn cu-rn-delete" data-rn-action="delete"${disabledIf(isLocked)} title="Move this file, its info file and preview to the Recycle Bin on Apply">Delete</button>`);
     }
     const messages = [];
     if (named) {
@@ -1402,6 +1427,16 @@ export function renderRenameView(container, deps) {
         break;
       case "copy-path":
         if (row?.modelPath) deps.copyOrReveal?.(target, row.modelPath, store.jobId);
+        break;
+      case "delete":
+      case "undelete":
+        if (row && !locked() && canRemoveDuplicates(store)) {
+          if (action === "delete") store.deleteKeys.add(row.key);
+          else store.deleteKeys.delete(row.key);
+          saveSelection();
+          redrawLine(row, target);
+          updateSelectionUi();
+        }
         break;
       case "toggle-hints":
         if (row) {

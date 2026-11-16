@@ -151,8 +151,11 @@ class RenameRouteHelperTests(unittest.TestCase):
         payload = _normalize_apply_payload(
             {"jobId": "job", "keys": ["a", "b", "a", 3, ""], "removeDuplicates": ["d", "d"], "other": 1}
         )
-        self.assertEqual({"jobId": "job", "keys": ["a", "b"], "removeDuplicates": ["d"]}, payload)
-        self.assertEqual({"jobId": "", "keys": [], "removeDuplicates": []}, _normalize_apply_payload({"keys": "a"}))
+        self.assertEqual({"jobId": "job", "keys": ["a", "b"], "removeDuplicates": ["d"], "delete": []}, payload)
+        self.assertEqual(
+            {"jobId": "", "keys": [], "removeDuplicates": [], "delete": []}, _normalize_apply_payload({"keys": "a"})
+        )
+        self.assertEqual(["x"], _normalize_apply_payload({"delete": ["x", "x"]})["delete"])
 
     def test_config_payload_takes_naming_model(self) -> None:
         self.assertEqual({"namingModel": "llm\\q.safetensors"}, _normalize_config_payload({"namingModel": "llm\\q.safetensors"}))

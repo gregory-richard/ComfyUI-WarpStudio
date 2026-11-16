@@ -133,11 +133,14 @@ def _identity_problem(row: dict, own: str) -> Optional[str]:
 
 
 def plan(
-    rows: list[dict], selected_keys: set[str], remove_duplicate_keys: set[str]
+    rows: list[dict], selected_keys: set[str], remove_duplicate_keys: set[str], delete_keys: Any = frozenset()
 ) -> tuple[list[dict], list[dict]]:
     """Rename steps for selected ``change`` rows, trash steps for chosen duplicates, and the skips.
 
     Trash steps come first so a survivor can take over a removed copy's name.
+    ``delete_keys`` are entries the user deletes outright: their file and its
+    sidecars go to the Recycle Bin (steps marked ``delete``), with no kept copy
+    to check against, and they are not renamed.
     An entry whose own file is gone, or is not the file the dry run saw, gets no
     steps: it is reported in the skips (``{"entry", "path", "reason"}``) instead.
     """
@@ -174,6 +177,8 @@ def plan(
         old, new = str(row.get("oldStem") or ""), str(row.get("newStem") or "")
         # A file filed under another base's folder moves to its base's (row["newFolder"]).
         moves = bool(row.get("newFolder")) and _norm(row["newFolder"]) != _norm(row.get("folder") or "")
+        if key in delete_keys:
+            continue  # deleted: not renamed as well
         if row.get("status") != "change" or key not in selected_keys or not old or not new or (old == new and not moves):
             continue
         change_keys.add(key)
@@ -187,7 +192,7 @@ def plan(
             if str(target) == str(path):
                 continue
             renames.append({"kind": "rename", "from": str(path), "to": str(target), "entry": key, "suffix": suffix})
-    for key in sorted(k for k in selected_keys if k not in change_keys):
+    for key in sorted(k for k in selected_keys if k not in change_keys and k not in delete_keys):
         skipped.append({"entry": key, "path": key, "reason": NOT_A_RENAME})
 
     renamed = {_norm(step["from"]) for step in renames}
@@ -196,6 +201,13 @@ def plan(
     for row in rows:
         key = row.get("key")
         survivor = rows_by_key.get(row.get("survivorKey"))
+        if key in delete_keys:
+            files = checked_siblings(row)
+            if files is None:
+                continue
+            for path in removable_copy_files(files, str(row.get("oldStem") or ""), key, "", shares_stem=False):
+                trashes.append({"kind": "trash", "from": str(path), "to": "", "entry": key, "delete": True})
+            continue
         if row.get("status") != "duplicate" or key not in remove_duplicate_keys:
             continue
         files = checked_siblings(row)
@@ -223,9 +235,11 @@ def plan(
     return trashes + renames, skipped
 
 
-def plan_steps(rows: list[dict], selected_keys: set[str], remove_duplicate_keys: set[str]) -> list[dict]:
+def plan_steps(
+    rows: list[dict], selected_keys: set[str], remove_duplicate_keys: set[str], delete_keys: Any = frozenset()
+) -> list[dict]:
     """The steps of ``plan`` without its skips."""
-    return plan(rows, selected_keys, remove_duplicate_keys)[0]
+    return plan(rows, selected_keys, remove_duplicate_keys, delete_keys)[0]
 
 
 def _survivor_file(row: dict) -> str:
@@ -504,8 +518,8 @@ def _recorder(log: Optional[RenameLog], run_id: str, dry_run_job_id: str) -> Cal
 def _survivor_problem(entry_steps: list[dict], trash_sources: set) -> Optional[dict]:
     """A removal needs the survivor's own file on disk, and not among the files removed."""
     first = entry_steps[0]
-    if first.get("kind") != "trash":
-        return None
+    if first.get("kind") != "trash" or first.get("delete"):
+        return None  # a deletion keeps no copy
     keep = first.get("to")
     if not keep or not os.path.lexists(keep) or _norm(keep) in trash_sources:
         return {"entry": first.get("entry"), "path": str(keep or ""), "reason": SURVIVOR_GONE}
@@ -532,7 +546,7 @@ def _copy_problem(entry_steps: list[dict], should_stop: Optional[Callable[[], bo
     one), so the kept copy must really be the same model. Sidecars need no check.
     """
     for step in entry_steps:
-        if step.get("kind") != "trash" or step.get("done") or not _is_weights(Path(step["from"]).name):
+        if step.get("kind") != "trash" or step.get("done") or step.get("delete") or not _is_weights(Path(step["from"]).name):
             continue
         src, keep = Path(step["from"]), Path(step.get("to") or "")
         if not os.path.lexists(src):
