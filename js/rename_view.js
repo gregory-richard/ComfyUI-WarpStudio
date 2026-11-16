@@ -1126,12 +1126,15 @@ export function renderRenameView(container, deps) {
     }
     if (store.revealError?.key === row.key) messages.push(`<div class="cu-issue-msg" data-level="block">${esc(store.revealError.text)}</div>`);
     const quiet = row.status === "unchanged" || row.status === "kept";
-    return `<div class="cu-rn-file${quiet ? " is-quiet" : ""}" data-rn-key="${esc(row.key)}" data-status="${esc(row.status)}"${removing ? " data-removing" : ""}>
+    // A line that needs a look shows its buttons; the others show them on hover.
+    const attention = messages.length > 0 || store.editing === row.key;
+    const base = row.parts?.base || "—";
+    return `<div class="cu-rn-file${quiet ? " is-quiet" : ""}" data-rn-key="${esc(row.key)}" data-status="${esc(row.status)}"${removing ? " data-removing" : ""}${attention ? " data-attention" : ""}>
       <div class="cu-ver-row cu-rn-line">
         <label class="cu-rn-check">${check}</label>
         <span class="cu-ver-label" data-role="${role}">${label}</span>
-        <span class="cu-ver-base">${esc(row.parts?.base || "—")}</span>
-        <span class="cu-ver-main"><span class="cu-rn-names">${old}${renamed}</span>${actions.join("")}</span>
+        <span class="cu-ver-base" title="${esc(base)}">${esc(base)}</span>
+        <span class="cu-ver-main"><span class="cu-rn-names">${old}${renamed}</span>${actions.length ? `<span class="cu-rn-line-actions">${actions.join("")}</span>` : ""}</span>
       </div>
       ${messages.join("")}
       ${store.editing === row.key ? editHtml(row) : ""}
@@ -1614,7 +1617,7 @@ const RENAME_CSS = `
   }
 
   .cu-rn .cu-versions .cu-rn-line {
-    grid-template-columns: 14px 80px 44px minmax(0, 1fr);
+    grid-template-columns: 14px 80px 60px minmax(0, 1fr);
     align-items: start;
   }
 
@@ -1679,6 +1682,25 @@ const RENAME_CSS = `
 
   .cu-rn .cu-rn-line .cu-inline-btn {
     margin-top: 1px;
+  }
+
+  .cu-rn-line-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  /* With a mouse, a line's buttons show while it is hovered or focused, or
+     always when the line needs a look. Touch screens always show them. */
+  @media (hover: hover) {
+    .cu-rn-file:not([data-attention]) .cu-rn-line-actions {
+      visibility: hidden;
+    }
+
+    .cu-rn-file:hover .cu-rn-line-actions,
+    .cu-rn-file:focus-within .cu-rn-line-actions {
+      visibility: visible;
+    }
   }
 
   /* Unchanged and kept files: quiet. */
