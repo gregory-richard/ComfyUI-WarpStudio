@@ -287,6 +287,107 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual("target exists", result["skipped"][0]["reason"])
         self.assertEqual("a.safetensors", (self.folder / "c.safetensors").read_text(encoding="utf-8"))
 
+    def _content(self, stem: str) -> str:
+        return (self.folder / (stem + ".civitai.info")).read_text(encoding="utf-8")
+
+    def test_a_rename_into_a_name_another_rename_frees_runs_after_it(self) -> None:
+        # Listed first, it takes the name the second one gives up.
+        _make(self.folder, "grab - two hands")
+        _make(self.folder, "grab")
+        rows = [_row(self.folder, "grab - two hands", "grab"), _row(self.folder, "grab", "grab - v1")]
+        result = self._run(rows)
+        self.assertEqual({"grab" + s for s in SIDECARS} | {"grab - v1" + s for s in SIDECARS}, _names(self.folder))
+        self.assertEqual("grab - two hands.civitai.info", self._content("grab"))
+        self.assertEqual("grab.civitai.info", self._content("grab - v1"))
+        self.assertEqual([], result["skipped"])
+        self.assertEqual({rows[0]["key"], rows[1]["key"]}, set(result["done"]))
+        self.assertIsNone(self.journal.pending())
+
+    def test_a_swap_goes_through_temporary_names(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "a")]
+        result = self._run(rows)
+        self.assertEqual({"a" + s for s in SIDECARS} | {"b" + s for s in SIDECARS}, _names(self.folder))
+        self.assertEqual("b.civitai.info", self._content("a"))
+        self.assertEqual("a.civitai.info", self._content("b"))
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(2, len(result["done"]))
+        self.assertIsNone(self.journal.pending())
+
+    def test_a_ring_of_three(self) -> None:
+        for stem in ("a", "b", "c"):
+            _make(self.folder, stem)
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "c"), _row(self.folder, "c", "a")]
+        result = self._run(rows)
+        self.assertEqual({stem + s for stem in "abc" for s in SIDECARS}, _names(self.folder))
+        self.assertEqual(("c.civitai.info", "a.civitai.info", "b.civitai.info"),
+                         (self._content("a"), self._content("b"), self._content("c")))
+        self.assertEqual([], result["skipped"])
+
+    def test_a_locked_file_in_a_swap_leaves_both_names(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        real_rename = os.rename
+
+        def fake_rename(src, dst):
+            if Path(src).name == "b.safetensors":
+                raise PermissionError("in use")
+            return real_rename(src, dst)
+
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "a")]
+        with mock.patch("os.rename", side_effect=fake_rename):
+            result = self._run(rows)
+        self.assertEqual({"a" + s for s in SIDECARS} | {"b" + s for s in SIDECARS}, _names(self.folder))
+        self.assertEqual("a.civitai.info", self._content("a"))
+        self.assertEqual("b.civitai.info", self._content("b"))
+        self.assertEqual([], result["done"])
+        self.assertEqual(2, len(result["skipped"]))
+        self.assertIsNone(self.journal.pending())
+
+    def test_a_swap_held_by_another_file_moves_nothing(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        (self.folder / "c.preview.png").write_text("someone else's", encoding="utf-8")
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "c")]
+        result = self._run(rows)
+        self.assertEqual({"a" + s for s in SIDECARS} | {"b" + s for s in SIDECARS} | {"c.preview.png"},
+                         _names(self.folder))
+        self.assertEqual([], result["done"])
+        self.assertEqual({"target exists"}, {skip["reason"] for skip in result["skipped"]})
+
+    def test_an_entry_that_could_not_finish_is_never_parked(self) -> None:
+        # "a" could free its name for "d" only by parking, but "b" never frees its own:
+        # an outsider holds "c". Nothing moves, and nothing is left under a temporary name.
+        for stem in ("a", "b", "d"):
+            _make(self.folder, stem)
+        (self.folder / "c.preview.png").write_text("someone else's", encoding="utf-8")
+        before = _names(self.folder)
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "c"), _row(self.folder, "d", "a")]
+        result = self._run(rows)
+        self.assertEqual(before, _names(self.folder))
+        self.assertEqual([], result["done"])
+        self.assertEqual(3, len(result["skipped"]))
+
+    def test_cancel_waits_for_a_parked_swap(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "a")]
+
+        class Control:
+            def wait_if_paused(self):
+                pass
+
+            def is_cancelled(self):
+                return any(".cu-tmp-" in name for name in os.listdir(folder))
+
+        folder = self.folder
+        result = self._run(rows, control=Control())
+        self.assertEqual("b.civitai.info", self._content("a"))
+        self.assertEqual("a.civitai.info", self._content("b"))
+        self.assertEqual(2, len(result["done"]))
+        self.assertIsNone(self.journal.pending())
+
     def test_refuses_to_start_over_an_unfinished_run(self) -> None:
         _make(self.folder, "a")
         _make(self.folder, "b")
@@ -785,6 +886,17 @@ class RenameLogTests(unittest.TestCase):
             self.assertTrue(line["time"].endswith("+00:00"))
         self.assertEqual(1, len({line["runId"] for line in lines}))
         self.assertTrue(lines[0]["runId"])
+
+    def test_a_swap_logs_each_file_once_under_its_real_names(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "a")]
+        self._apply(rows, {row["key"] for row in rows})
+        expected = sorted(
+            (str(self.folder / (old + s)), str(self.folder / (new + s))) for old, new in (("a", "b"), ("b", "a"))
+            for s in SIDECARS
+        )
+        self.assertEqual(expected, sorted((line["from"], line["to"]) for line in self.lines()))
 
     def test_a_second_apply_appends(self) -> None:
         _make(self.folder, "a")

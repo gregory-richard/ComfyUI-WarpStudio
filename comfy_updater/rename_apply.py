@@ -3,6 +3,8 @@
 Every entry's weights file is renamed together with each file in its folder that
 shares its stem (``.civitai.info``, ``.preview.png``, anything another tool left).
 An existing target is never overwritten. A file Windows has locked is skipped.
+A rename into a name another rename of the run gives up runs after that one; in a
+swap (A takes B's name, B takes A's) one side waits under temporary names.
 Every step that completes is appended to the rename log (``RenameLog``), if one is given.
 """
 
@@ -457,30 +459,44 @@ def apply_steps(
     # Entries blocked from the start stay out of the journal: recovery must never
     # take a file that sits at a skipped entry's target for one of ours.
     trash_steps: list[dict] = []
-    rename_steps: list[dict] = []
+    rename_entries: list[tuple[Any, list[dict]]] = []
     for entry, indices in groups_in:
         if entry in refused:
             continue
         entry_steps = [dict(steps[index]) for index in indices]
-        problem = _blocked(entry_steps, freed)
-        if problem is not None:
-            skipped.append(problem)
-        elif entry_steps[0].get("kind") == "trash":
+        if entry_steps[0].get("kind") == "trash":
             trash_steps.extend(entry_steps)
         else:
-            rename_steps.extend(entry_steps)
+            rename_entries.append((entry, entry_steps))
+    # A rename may take the name another rename of this run gives up: it runs after that one.
+    ordered, parked, problems = _rename_order(rename_entries, freed)
+    skipped.extend(problems)
     # Removals run first so the names they free are free when a survivor is renamed.
-    steps = trash_steps + rename_steps
+    steps = trash_steps + [step for _entry, entry_steps in ordered for step in entry_steps]
     run_id = journal.begin(steps, dry_run_job_id)
     record = _recorder(log, run_id, dry_run_job_id)
     groups = _group(steps)
+    indices_of = dict(groups)
+    # A swap's parked entry moves to temporary names just before the first entry that takes one of its names.
+    park_owner = {
+        _norm(steps[index]["from"]): entry for entry, indices in groups if entry in parked for index in indices
+    }
+    parked_now: set = set()
     still_open: list[int] = []
     for position, (entry, indices) in enumerate(groups):
         if control is not None:
             control.wait_if_paused()
-            if control.is_cancelled():
+            # A parked entry is always finished first: its files are under temporary names.
+            if control.is_cancelled() and not parked_now:
                 break
-        problem = _apply_entry(steps, indices, journal, run_id, trash, control, record)
+        for index in indices:
+            owner = park_owner.get(_norm(steps[index].get("to") or ""))
+            if owner is not None and owner != entry and owner not in parked_now:
+                if _park(steps, indices_of[owner], run_id):
+                    parked_now.add(owner)
+                park_owner = {source: other for source, other in park_owner.items() if other != owner}
+        problem = _apply_entry(steps, indices, journal, run_id, trash, control, record, parked=entry in parked_now)
+        parked_now.discard(entry)
         if problem is None:
             done.append(entry)
         else:
@@ -515,6 +531,129 @@ def _recorder(log: Optional[RenameLog], run_id: str, dry_run_job_id: str) -> Cal
     return record
 
 
+def _sources(entry_steps: list[dict]) -> set:
+    return {_norm(step["from"]) for step in entry_steps if step.get("kind") == "rename"}
+
+
+def _held_by(entry_steps: list[dict], free: set) -> set:
+    """The entry's targets that are taken: on disk, not freed, and not its own file under another case."""
+    return {
+        _norm(step["to"])
+        for step in entry_steps
+        if step.get("kind") == "rename"
+        and os.path.lexists(step["to"])
+        and not _same_name(Path(step["from"]), Path(step["to"]))
+        and _norm(step["to"]) not in free
+    }
+
+
+def _swap_entry(waiting: dict, free: set, banned: set) -> Any:
+    """A waiting entry to park under temporary names, or None.
+
+    It is held back only by names other waiting entries give up, and it holds
+    one of them back: a swap (A takes B's name, B takes A's), or a ring of them.
+    """
+    sources = {entry: _sources(entry_steps) for entry, entry_steps in waiting.items()}
+    for entry, entry_steps in waiting.items():
+        if entry in banned or any(
+            not os.path.lexists(step["from"]) for step in entry_steps if step.get("kind") == "rename"
+        ):
+            continue
+        others = set().union(*(names for other, names in sources.items() if other != entry))
+        held = _held_by(entry_steps, free)
+        if not held or not held <= others:
+            continue
+        if any(_held_by(waiting[other], free) & sources[entry] for other in waiting if other != entry):
+            return entry
+    return None
+
+
+def _rename_order(entries: list[tuple[Any, list[dict]]], freed: set) -> tuple[list, set, list[dict]]:
+    """The rename entries in the order they can run, the entries parked to break a swap,
+    and the problems of the entries that cannot run.
+
+    An entry whose target is the current name of another entry's file runs after
+    that entry. In a swap one entry first moves to temporary names, so the others
+    can take its names, and finishes after them. ``freed`` holds the names the
+    run's removals free.
+    """
+    banned: set = set()
+    while True:
+        free = set(freed)
+        waiting = dict(entries)
+        runnable: set = set()
+        parked: set = set()
+        while waiting:
+            ready = [entry for entry, entry_steps in waiting.items() if _blocked(entry_steps, free) is None]
+            if not ready:
+                swap = _swap_entry(waiting, free, banned | parked)
+                if swap is None:
+                    break
+                parked.add(swap)
+                free |= _sources(waiting[swap])
+                continue
+            for entry in ready:
+                free |= _sources(waiting.pop(entry))
+                runnable.add(entry)
+        stuck = parked & set(waiting)
+        if not stuck:
+            break
+        banned |= stuck  # a parked entry that still cannot run frees nothing
+    problems = [problem for problem in (_blocked(entry_steps, free) for entry_steps in waiting.values()) if problem]
+    steps_of = dict(entries)
+    # Who gives up each name now, among the entries that run (a parked entry gives its up when parked).
+    giver = {source: entry for entry in runnable if entry not in parked for source in _sources(steps_of[entry])}
+    takers: dict = {}
+    for entry in runnable:
+        for step in steps_of[entry]:
+            if step.get("kind") == "rename":
+                takers.setdefault(_norm(step["to"]), set()).add(entry)
+    order: list = []
+    seen: set = set()
+
+    def visit(entry: Any) -> None:
+        if entry in seen:
+            return
+        seen.add(entry)
+        for step in steps_of[entry]:
+            before = giver.get(_norm(step.get("to") or "")) if step.get("kind") == "rename" else None
+            if before is not None and before != entry:
+                visit(before)
+        order.append(entry)
+        # A parked entry whose name this one takes finishes right after it.
+        taken = {_norm(step["to"]) for step in steps_of[entry] if step.get("kind") == "rename"}
+        for other in sorted(parked & runnable, key=str):
+            if other not in seen and _sources(steps_of[other]) & taken:
+                visit(other)
+
+    for entry, _entry_steps in entries:
+        if entry in runnable:
+            visit(entry)
+    return [(entry, steps_of[entry]) for entry in order], parked & runnable, problems
+
+
+def _park(steps: list[dict], indices: list[int], run_id: str) -> bool:
+    """Move an entry's files to temporary names, freeing its names for a swap. False (nothing moved) on failure."""
+    moved: list[tuple[Path, Path]] = []
+    for index in indices:
+        step = steps[index]
+        if step.get("kind") != "rename":
+            continue
+        src = Path(step["from"])
+        tmp = _tmp_path(Path(step["to"]), step.get("suffix"), run_id)
+        try:
+            _rename_new(src, tmp)
+        except OSError:
+            for done_src, done_tmp in reversed(moved):
+                try:
+                    _rename_new(done_tmp, done_src)
+                except OSError:
+                    pass  # left under the temporary name; its turn or recovery finishes it
+            return False
+        moved.append((src, tmp))
+    return True
+
+
 def _survivor_problem(entry_steps: list[dict], trash_sources: set) -> Optional[dict]:
     """A removal needs the survivor's own file on disk, and not among the files removed."""
     first = entry_steps[0]
@@ -526,13 +665,16 @@ def _survivor_problem(entry_steps: list[dict], trash_sources: set) -> Optional[d
     return None
 
 
-def _blocked(entry_steps: list[dict], freed: Optional[set] = None) -> Optional[dict]:
-    """Why an entry's renames cannot start, or None. Targets in ``freed`` count as free."""
+def _blocked(entry_steps: list[dict], freed: Optional[set] = None, run_id: str = "") -> Optional[dict]:
+    """Why an entry's renames cannot start, or None. Targets in ``freed`` count as free.
+
+    With ``run_id``, a file parked under this run's temporary name counts as there.
+    """
     for step in entry_steps:
         if step.get("kind") != "rename":
             continue
         src, dst = Path(step["from"]), Path(step["to"])
-        if not os.path.lexists(src):
+        if not os.path.lexists(src) and not (run_id and _find_tmp(dst, run_id) is not None):
             return {"entry": step.get("entry"), "path": str(src), "reason": SOURCE_MISSING}
         if os.path.lexists(dst) and not _same_name(src, dst) and _norm(dst) not in (freed or ()):
             return {"entry": step.get("entry"), "path": str(dst), "reason": TARGET_EXISTS}
@@ -567,7 +709,7 @@ def _copy_problem(entry_steps: list[dict], should_stop: Optional[Callable[[], bo
     return None
 
 
-def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=None) -> Optional[dict]:
+def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=None, parked=False) -> Optional[dict]:
     entry = steps[indices[0]].get("entry")
     record = record or _recorder(None, run_id, "")
 
@@ -612,8 +754,12 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=No
 
     # Checked again with nothing counted as freed: an earlier entry may have taken
     # a target, or a duplicate's removal may have failed.
-    problem = _blocked([steps[index] for index in indices])
+    problem = _blocked([steps[index] for index in indices], run_id=run_id if parked else "")
     if problem is not None:
+        if parked:
+            # Back from the temporary names, where its old names are still free.
+            _restored, problems = _undo_entry([steps[index] for index in indices], run_id)
+            problem["reason"] = _with_problems(problem["reason"], problems)
         give_up(problem["path"], problem["reason"])
         return problem
 
@@ -621,8 +767,15 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=No
     for index in indices:
         step = steps[index]
         try:
-            _move(Path(step["from"]), Path(step["to"]), step.get("suffix"), run_id)
+            if parked:
+                _finish_move(step, run_id)  # from its temporary name
+            else:
+                _move(Path(step["from"]), Path(step["to"]), step.get("suffix"), run_id)
         except OSError as exc:
+            if parked:
+                # Its old names may be taken by now: what is left stays under the
+                # temporary names, open for recovery.
+                return give_up(step["to"], _reason(exc))
             _restored, problems = _undo_entry(finished, run_id)
             return give_up(step["from"], _with_problems(_reason(exc), problems))
         finished.append(step)
