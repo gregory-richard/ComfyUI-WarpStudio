@@ -130,8 +130,8 @@ export function flagInfo(flag, row, rows) {
   const partWord = PART_WORDS[arg] || arg;
   switch (kind) {
     case "invented":
-      if (/^v\d/i.test(arg)) return { level: "warn", text: `"${arg}" is not in Civitai's version name` };
-      return { level: "warn", text: `"${arg}" is not in Civitai's title, version names or file names` };
+      if (/^v\d/i.test(arg)) return { level: "warn", text: `The naming model added "${arg}", which is not in Civitai's version name, so this isn't ticked` };
+      return { level: "warn", text: `The naming model added "${arg}", which is not in Civitai's title, version names or file names (made up, or translated), so this isn't ticked` };
     case "unparsed":
       return { level: "warn", text: "The naming model's answer could not be read, so this name is a fallback. Edit it or ask again." };
     case "empty":
