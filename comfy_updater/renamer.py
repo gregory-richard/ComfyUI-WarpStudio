@@ -1162,17 +1162,20 @@ class _Named:
     cached: bool = False
 
 
-def _title_key(row: dict) -> Optional[Tuple[str, str, str]]:
-    """(creator, title, base code) of a named row: two models clash only under the same base.
+def _title_key(row: dict) -> Optional[Tuple[str, str, str, str]]:
+    """(creator, title, base code, model type) of a named row: two models clash only under the
+    same base and of the same kind.
 
     One idea released per base (the same title as "(ill)" and "(krea2)") is the
-    user's naming: the base codes already keep those names apart.
+    user's naming: the base codes already keep those names apart. A checkpoint
+    and a LoRA of one title live in different folders and are different things.
     """
     if row.get("status") not in ("change", "unchanged"):
         return None
     parts = row.get("parts") or {}
     title = str(parts.get("title") or "")
-    return (str(parts.get("creator") or ""), title, str(parts.get("base") or "")) if title else None
+    kind = str(row.get("modelType") or "")
+    return (str(parts.get("creator") or ""), title, str(parts.get("base") or ""), kind) if title else None
 
 
 class _Namer:

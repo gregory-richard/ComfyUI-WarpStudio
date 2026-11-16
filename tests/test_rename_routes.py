@@ -290,6 +290,13 @@ class RenameRouteHelperTests(unittest.TestCase):
                       parts={"creator": "bolt", "title": "towel", "version": "v1", "precision": "", "base": "sdxl"})
         return towel, towel2
 
+    def test_a_checkpoint_and_a_lora_of_one_title_do_not_clash(self) -> None:
+        towel, towel2 = self.towel_rows()
+        towel["modelType"], towel2["modelType"] = "checkpoint", "lora"
+        reassemble_rows([towel, towel2], self.decisions, self.base_codes, {}, model_id="2")
+        self.assertEqual([], towel["flags"])
+        self.assertEqual([], towel2["flags"])
+
     def test_title_edit_that_ends_a_title_clash_clears_it_on_both_models(self) -> None:
         towel, towel2 = self.towel_rows()
         rows = [towel, towel2]

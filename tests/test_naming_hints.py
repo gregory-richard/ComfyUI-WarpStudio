@@ -70,6 +70,7 @@ class NameRepeatTests(unittest.TestCase):
         self.assertEqual(["xlabs"], creator_in_title("xlabs flux realism", "xlabs"))
         self.assertEqual([], creator_in_title("donutsdelivery", "donutsdelivery"))  # named after its creator
         self.assertEqual([], creator_in_title("flux realism", "xlabs"))
+        self.assertEqual(["stable yogi"], creator_in_title("babes by stable yogi", "stable_yogi"))
 
     def test_an_official_title_may_carry_its_maker(self) -> None:
         vocab = base_vocabulary(["Qwen", "qwen"])

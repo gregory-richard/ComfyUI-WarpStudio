@@ -288,7 +288,12 @@ def creator_in_title(title: str, creator: str) -> List[str]:
     words = (title or "").split()
     if len(name) < 3 or _compact(title or "") == name:
         return []  # a model named after its creator ("donutsdelivery")
-    return [word for word in words if _compact(word) == name][:1]
+    # Also written as several words: "stable yogi" for stable_yogi.
+    for size in (1, 2, 3):
+        for start in range(len(words) - size + 1):
+            if _compact("".join(words[start:start + size])) == name:
+                return [" ".join(words[start:start + size])]
+    return []
 
 
 def title_in_version(title: str, version: str) -> List[str]:
