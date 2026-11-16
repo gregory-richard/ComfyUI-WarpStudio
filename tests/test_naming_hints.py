@@ -82,6 +82,9 @@ class NameRepeatTests(unittest.TestCase):
         self.assertEqual(["high noise"], noise_words("v1 high noise"))
         self.assertEqual(["lownoise"], noise_words("lownoise"))
         self.assertEqual([], noise_words("v1 high"))
+        # On a Wan model a lone "h" / "l" is high / low noise; elsewhere it is just a letter.
+        self.assertEqual(["h"], noise_words("0928 h", "Wan Video 2.2 T2V-A14B"))
+        self.assertEqual([], noise_words("0928 h", "Krea 2"))
 
 
 class BaseNumberTests(unittest.TestCase):

@@ -276,7 +276,7 @@ def name_check_flags(
         # An official model's name may carry its maker's ("qwen image 2.1").
         flags.extend(f"creator-in-title:{word}" for word in creator_in_title(title, creator))
     flags.extend(f"title-in-version:{phrase}" for phrase in title_in_version(title, version))
-    flags.extend(f"noise-word:{word}" for word in noise_words(version))
+    flags.extend(f"noise-word:{word}" for word in noise_words(version, base_model))
     return list(dict.fromkeys(flags))
 
 
@@ -306,9 +306,16 @@ def title_in_version(title: str, version: str) -> List[str]:
 _NOISE = re.compile(r"\b(high|low)[ _-]?noise\b")
 
 
-def noise_words(version: str) -> List[str]:
-    """"high noise" / "highnoise" (and low) in a version, which the names write as "high" / "low"."""
-    return list(dict.fromkeys(match.group(0) for match in _NOISE.finditer((version or "").lower())))
+def noise_words(version: str, base_model: str = "") -> List[str]:
+    """"high noise" / "highnoise" (and low) in a version, which the names write as "high" / "low".
+
+    On a Wan model a lone "h" / "l" (or "hn" / "ln") is the same thing, shortened.
+    """
+    text = (version or "").lower()
+    found = [match.group(0) for match in _NOISE.finditer(text)]
+    if "wan" in (base_model or "").lower():
+        found.extend(token for token in text.split() if token in ("h", "l", "hn", "ln"))
+    return list(dict.fromkeys(found))
 
 
 def glued_names(source_title: str, answer_title: str, vocabulary: FrozenSet[str]) -> List[str]:

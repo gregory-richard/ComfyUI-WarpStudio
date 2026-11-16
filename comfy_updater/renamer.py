@@ -640,7 +640,7 @@ def _flag_message(code: str, parts: NameParts) -> str:
     if kind == "title-in-version":
         return f'the title and the version both say "{part}"; keep it in only one of them.'
     if kind == "noise-word":
-        short = part.split()[0][:4] if part.startswith("high") else "low"
+        short = "high" if part.startswith("h") else "low"
         return f'write "{short}", not "{part}".'
     value = getattr(parts, part, "") if part else ""
     if kind == "empty":
@@ -696,9 +696,20 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
             probe.title, probe.version, vocabulary, xl_base=xl_is_base(slot.base_model), base_model=slot.base_model,
             creator=original or pending.model_input.creator,
         )
-        problems.extend(_flag_message(code, probe) for code in codes)
+        problems.extend(_repeat_message(code, answer) if code.startswith("title-in-version:") else _flag_message(code, probe)
+                        for code in codes)
     problems.extend(_version_clash_problems(pending, answer))
     return list(dict.fromkeys(problems))
+
+
+def _repeat_message(code: str, answer: ModelAnswer) -> str:
+    """Where a phrase in both the title and the version belongs: in the title when every version
+    repeats it ("amateur selfies v1" on each), else in the version that it sets apart."""
+    phrase = code.partition(":")[2]
+    versions = [format_part(text) for text in answer.versions.values()]
+    if versions and all(phrase in version for version in versions):
+        return f'every version repeats the title ("{phrase}"); leave it out of the versions.'
+    return f'"{phrase}" sets this version apart; keep it in the version and leave it out of the title.'
 
 
 def _version_clash_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:

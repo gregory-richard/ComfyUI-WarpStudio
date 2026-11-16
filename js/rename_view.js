@@ -160,7 +160,7 @@ export function flagInfo(flag, row, rows) {
     case "title-in-version":
       return { level: "warn", text: `The version repeats the title (“${arg}”)` };
     case "noise-word":
-      return { level: "warn", text: `Write ${arg.startsWith("high") ? "high" : "low"} instead of ${arg}` };
+      return { level: "warn", text: `Write ${arg.startsWith("h") ? "high" : "low"} instead of ${arg}` };
     case "glued-name":
       return { level: "warn", text: `“${arg}” is the model's own name; the new title doesn't keep it whole` };
     case "base-number":
