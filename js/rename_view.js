@@ -566,6 +566,16 @@ export function baseCodeEntries(baseCodes, rows) {
   return [...entries.values()].sort((a, b) => Number(b.isNew) - Number(a.isNew) || a.base.localeCompare(b.base));
 }
 
+/* Escaped text back to plain text ("doesn&#39;t" -> "doesn't"). */
+export function unescapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&#39;|&#x27;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
 export function fileName(path) {
   const text = String(path || "");
   const i = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
@@ -1388,7 +1398,8 @@ export function renderRenameView(container, deps) {
     const level = conflict || messages.some((html) => html.includes('data-level="block"')) ? "block"
       : messages.some((html) => html.includes('data-level="warn"')) ? "warn" : "info";
     const hintsOpen = store.openHints.has(row.key);
-    const firstHint = messages.length ? messages[0].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim() : "";
+    // The hint's text for the tooltip: tags out, entities back to characters (it is escaped once more below).
+    const firstHint = messages.length ? unescapeHtml(messages[0].replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim() : "";
     const hintButton = messages.length
       ? `<button class="cu-rn-hint-btn" data-rn-action="toggle-hints" data-level="${level}" aria-expanded="${hintsOpen}" title="${esc(messages.length > 1 ? `${firstHint} (+${messages.length - 1} more)` : firstHint)}">!${messages.length > 1 ? `<span>${messages.length}</span>` : ""}</button>`
       : "";
