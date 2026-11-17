@@ -91,3 +91,41 @@ def test_message_two(tmp_path):
         "Civitai Updater 1.9.2 are still installed. Update or remove them in the "
         "Manager, then restart."
     )
+
+
+def test_old_warppipe_names_are_detected(dirs):
+    custom, own = dirs
+    make(custom, "a", "comfyui-warppipe", "2.2.0")
+    make(custom, "b", "warp-pipe-comfyui", "1.0.0")
+    found = find_active_old_packages([custom], own)
+    assert [(p.name, p.version) for p in found] == [("warppipe", "2.2.0"), ("warppipe", "1.0.0")]
+
+
+def test_clone_without_pyproject_is_detected(dirs):
+    custom, own = dirs
+    (custom / "a").mkdir()
+    (custom / "a" / "warp_pipe.py").write_text("", encoding="utf-8")
+    (custom / "b" / "comfy_updater").mkdir(parents=True)
+    (custom / "b" / "comfy_updater" / "plugin.py").write_text("", encoding="utf-8")
+    found = find_active_old_packages([custom], own)
+    assert [(p.name, p.version) for p in found] == [
+        ("warppipe", "unknown"),
+        ("civitai-updater", "unknown"),
+    ]
+
+
+def test_warp_studio_checkout_is_never_old(dirs):
+    custom, own = dirs
+    path = make(custom, "other-checkout", "warp-studio", "1.0.0")
+    (path / "warp_pipe.py").write_text("", encoding="utf-8")
+    (path / "comfy_updater").mkdir()
+    (path / "comfy_updater" / "plugin.py").write_text("", encoding="utf-8")
+    assert find_active_old_packages([custom], own) == []
+
+
+def test_message_without_version(tmp_path):
+    msg = stand_down_message([OldPackage("warppipe", "unknown", tmp_path)])
+    assert msg == (
+        "Warp Studio is installed but switched off, because WarpPipe is still "
+        "installed. Update or remove it in the Manager, then restart."
+    )

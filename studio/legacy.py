@@ -14,6 +14,8 @@ from pathlib import Path
 
 GOODBYE_VERSIONS = {"warppipe": (5, 1, 0), "civitai-updater": (1, 10, 0)}
 DISPLAY = {"warppipe": "WarpPipe", "civitai-updater": "Civitai Updater"}
+# WarpPipe's project names before it became "warppipe" (renamed 2026-02-09).
+PROJECT_ALIASES = {"warp-pipe-comfyui": "warppipe", "comfyui-warppipe": "warppipe"}
 
 
 @dataclass(frozen=True)
@@ -23,22 +25,29 @@ class OldPackage:
     path: Path
 
 
-def read_project(folder: Path) -> tuple[str, str] | None:
-    """Name and version from the [project] table of folder/pyproject.toml."""
+def _project_values(folder: Path) -> dict:
+    """The name and/or version found in the [project] table (missing keys absent)."""
     try:
         text = (folder / "pyproject.toml").read_text(encoding="utf-8")
     except (OSError, UnicodeError):
-        return None
+        return {}
     table = re.search(r"^\[project\]\s*$(.*?)(?=^\[|\Z)", text, re.MULTILINE | re.DOTALL)
     if not table:
-        return None
+        return {}
     values = {}
     for key in ("name", "version"):
-        found = re.search(rf'^\s*{key}\s*=\s*["\']([^"\']*)["\']', table.group(1), re.MULTILINE)
-        if not found:
-            return None
-        values[key] = found.group(1)
-    return values["name"], values["version"]
+        found = re.search(rf"^\s*{key}\s*=\s*[\"']([^\"']*)[\"']", table.group(1), re.MULTILINE)
+        if found:
+            values[key] = found.group(1)
+    return values
+
+
+def read_project(folder: Path) -> tuple[str, str] | None:
+    """Name and version from the [project] table of folder/pyproject.toml."""
+    values = _project_values(folder)
+    if "name" in values and "version" in values:
+        return values["name"], values["version"]
+    return None
 
 
 def version_tuple(version: str) -> tuple[int, int, int]:
@@ -72,18 +81,29 @@ def find_active_old_packages(custom_node_dirs: list[Path], own_root: Path) -> li
                     continue
             except OSError:
                 continue
-            project = read_project(child)
-            if project is None:
+            values = _project_values(child)
+            if "name" not in values:
+                # No readable project name: recognise a clone by its files.
+                if (child / "warp_pipe.py").is_file():
+                    found.append(OldPackage("warppipe", "unknown", child))
+                elif (child / "comfy_updater" / "plugin.py").is_file():
+                    found.append(OldPackage("civitai-updater", "unknown", child))
                 continue
-            name, version = project
+            name = PROJECT_ALIASES.get(values["name"], values["name"])
             goodbye = GOODBYE_VERSIONS.get(name)
+            version = values.get("version", "")
             if goodbye and version_tuple(version) < goodbye:
                 found.append(OldPackage(name, version, child))
     return found
 
 
 def stand_down_message(found: list[OldPackage]) -> str:
-    names = [f"{DISPLAY.get(p.name, p.name)} {p.version}" for p in found]
+    names = [
+        DISPLAY.get(p.name, p.name)
+        if p.version == "unknown"
+        else f"{DISPLAY.get(p.name, p.name)} {p.version}"
+        for p in found
+    ]
     if len(names) == 1:
         subject, rest = names[0], "it"
         verb = "is"
