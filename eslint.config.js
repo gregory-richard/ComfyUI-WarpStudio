@@ -9,7 +9,7 @@ export default [
   // Civitai Updater files keep the style they were written in.
   { ignores: ["web/vendor/**", "web/civitai_updater.js", "web/rename_view.js"] },
   {
-    files: ["web/**/*.js"],
+    files: ["web/**/*.js", "standdown/**/*.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",

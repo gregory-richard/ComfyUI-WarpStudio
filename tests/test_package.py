@@ -52,3 +52,52 @@ def test_the_package_ships_the_updater_prompt():
     text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert '"warp_studio.comfy_updater" = ["prompts/*.txt"]' in text
     assert (PROJECT_ROOT / "comfy_updater" / "prompts" / "naming_system.txt").is_file()
+
+
+def _fake_folder_paths(monkeypatch, tmp_path, folders):
+    import sys
+    import types
+
+    custom = tmp_path / "custom_nodes"
+    custom.mkdir()
+    for folder, name, version in folders:
+        path = custom / folder
+        path.mkdir()
+        (path / "pyproject.toml").write_text(
+            f'[project]\nname = "{name}"\nversion = "{version}"\n', encoding="utf-8"
+        )
+    user = tmp_path / "user"
+    user.mkdir()
+    fake = types.ModuleType("folder_paths")
+    fake.get_folder_paths = lambda kind: [str(custom)]
+    fake.get_user_directory = lambda: str(user)
+    monkeypatch.setitem(sys.modules, "folder_paths", fake)
+    return custom, user
+
+
+def test_package_stands_down_when_old_warppipe_present(package_loader, monkeypatch, tmp_path):
+    import sys
+
+    _, user = _fake_folder_paths(monkeypatch, tmp_path, [("warppipe", "warppipe", "5.0.0")])
+    package = package_loader()
+    assert package.NODE_CLASS_MAPPINGS == {}
+    assert package.NODE_DISPLAY_NAME_MAPPINGS == {}
+    assert package.WEB_DIRECTORY == "./standdown"
+    assert f"{package.__name__}.warp_pipe" not in sys.modules
+    assert not (user / "warp-studio" / "migrated.json").exists()
+
+
+def test_package_loads_when_detection_raises(package_loader, monkeypatch, tmp_path):
+    import pathlib
+
+    _fake_folder_paths(monkeypatch, tmp_path, [("warppipe", "warppipe", "5.0.0")])
+    real = pathlib.Path.iterdir
+
+    def boom(self):
+        if self.name == "custom_nodes":
+            raise PermissionError("nope")
+        return real(self)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", boom)
+    package = package_loader()
+    assert set(package.NODE_CLASS_MAPPINGS) == EXPECTED
