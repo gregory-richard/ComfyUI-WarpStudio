@@ -35,10 +35,12 @@ const SETTINGS = {
   fallbackOwnCreator: "CivitaiUpdater.Fallback.OwnCreator",
 };
 
+// The row label column fits "No match"; the message line names the source.
+const FALLBACK_LABEL = "Found";
 const FALLBACK_SOURCES = {
-  "ai-toolkit": { label: "Own training", phrase: "your ai-toolkit training" },
-  huggingface: { label: "Hugging Face", phrase: "Hugging Face" },
-  civarchive: { label: "civarchive", phrase: "civarchive" },
+  "ai-toolkit": { phrase: "your ai-toolkit training" },
+  huggingface: { phrase: "Hugging Face" },
+  civarchive: { phrase: "civarchive" },
 };
 
 const GROUP_OPTIONS = [
@@ -1185,7 +1187,7 @@ function renderLocalVersionRow(v, showMessage = true) {
   const date = v.publishedAt ? shortDate(v.publishedAt) : "";
   const role = issue ? issue.role : (v.metadataOnly ? "metadata" : "saved");
   const source = v.status === "not_found" ? FALLBACK_SOURCES[v.fallbackSource] : null;
-  const label = source ? source.label : (issue ? issue.label : (v.metadataOnly ? "Metadata" : "Saved"));
+  const label = source ? FALLBACK_LABEL : (issue ? issue.label : (v.metadataOnly ? "Metadata" : "Saved"));
   const filePath = v.filePath || v.modelPath || "";
   // A file Civitai never identified has no version name; its file name is
   // what the user will recognize.
