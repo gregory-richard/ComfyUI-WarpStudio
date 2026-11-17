@@ -1,10 +1,11 @@
-# WarpPipe documentation
+# Warp Studio documentation
 
 Everything beyond the [README](README.md). Each node also carries its own help
 inside ComfyUI, behind the `?` on the node.
 
 - [Getting started](#getting-started)
 - [Usage](#usage)
+- [Civitai panel](#civitai-panel)
 - [Node reference](#node-reference)
 - [HTTP API](#http-api)
 - [Architecture](#architecture)
@@ -16,7 +17,7 @@ inside ComfyUI, behind the `?` on the node.
 
 ## Getting started
 
-Two things, in one node pack.
+Three things, in one node pack.
 
 **A prompt box that owns its LoRAs.** Write `<lora:name:weight>` in the list
 under the prompt, the way A1111 does, and the tags *are* the loader. The text is
@@ -26,6 +27,14 @@ off are all edits to it.
 **One wire instead of twenty.** A Warp bundles everything a generation needs;
 an Unwarp gives it back. Whole model setups become a single connection you move.
 
+**A sidebar panel for your model library.** The **Civitai** tab checks your models
+against their Civitai releases, renames your files into one scheme and finds
+previews for models Civitai no longer serves. It is described under
+[Civitai panel](#civitai-panel).
+
+Warp Studio is WarpPipe and Civitai Updater in one package. If you used either,
+see [Coming from WarpPipe or Civitai Updater](#coming-from-warppipe-or-civitai-updater).
+
 Each node also carries its own help inside ComfyUI. The `?` on a node opens the
 matching page from [`web/docs/`](web/docs) without leaving the canvas.
 
@@ -34,14 +43,14 @@ matching page from [`web/docs/`](web/docs) without leaving the canvas.
 From the ComfyUI Registry:
 
 ```bash
-comfy node install warppipe
+comfy node install warp-studio
 ```
 
 Or by hand, into `ComfyUI/custom_nodes`:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/gregory-richard/ComfyUI-WarpPipe.git
+git clone https://github.com/gregory-richard/ComfyUI-WarpStudio.git
 ```
 
 Restart ComfyUI afterwards either way. If you keep the source elsewhere, link it
@@ -49,13 +58,41 @@ in rather than copying — see [Development](#setting-up).
 
 ### What it needs
 
-ComfyUI, Python 3.9 or newer, and nothing else. There are no third-party Python
-dependencies: everything WarpPipe uses — `Pillow`, `aiohttp`, `torch` — already
-ships with ComfyUI.
+ComfyUI and Python 3.9 or newer. The nodes use only what ships with ComfyUI
+(`Pillow`, `aiohttp`, `torch`). The Civitai panel adds `requests`, `Pillow`,
+`imageio-ffmpeg` (only to turn video previews into thumbnails) and `send2trash`
+(only to move the renamer's extra copies to the Recycle Bin). The registry
+installs them; for a clone, run `pip install -r requirements.txt` with ComfyUI's
+Python.
 
-[Civitai Updater](https://github.com/gregory-richard/comfyui-civitai-updater) is
-not required but is worth having; see
-[Usage → What the sidecars give you](#what-the-sidecars-give-you).
+### Coming from WarpPipe or Civitai Updater
+
+1. Install Warp Studio.
+2. Update the old package, or remove it. Warp Studio switches itself off, with a
+   message, while WarpPipe before 5.1.0 or Civitai Updater before 1.10.0 is
+   still active. The nodes, the panel and the routes would otherwise register
+   twice.
+3. Restart ComfyUI.
+
+On the first start, Warp Studio copies your data to its own names. It copies and
+never moves, never overwrites a file that is already there, and leaves the old
+files in place. If a copy fails, it tries again on the next start.
+
+| Was | Now |
+| --- | --- |
+| settings `WarpPipe.*` | `WarpStudio.*` |
+| the updater's settings, which began `Civitai` + `Updater.` | `WarpStudio.Updater.*` |
+| `user/warppipe_llm_keys.json`, `warppipe_llm_log.jsonl`, `warppipe_hashes.json` | `user/warp-studio/llm_keys.json`, `llm_log.jsonl`, `hashes.json` |
+| `warp_studio_prompt_chats.json`, per ComfyUI user | `warp_studio_prompt_chats.json` |
+| the updater's `.civitai_updater/` folder in its package | `user/warp-studio/updater/` |
+| routes `/warp-studio/...` | `/warp-studio/...` |
+| the updater's routes, under its own `civitai-updater` prefix | `/warp-studio/updater/...` |
+
+Settings appear under **Warp Studio** in ComfyUI's settings; the updater's
+groups are "Civitai Network", "Civitai General", "Civitai Path Sources",
+"Civitai Custom Paths", "Civitai Preview Fallback" and "Civitai Rename". The
+Rename view's saved choices in the browser are carried over too. Saved workflows
+keep working: node ids and the `WARPPIPE` link type did not change.
 
 ### A quick tour
 
@@ -84,7 +121,7 @@ and different steps, and switching between them is one connection moved.
 
 ### Version
 
-This documents **4.3.0**. See the [changelog](CHANGELOG.md) for what changed,
+This documents **1.0.0**. See the [changelog](CHANGELOG.md) for what changed,
 and [Development](#development) for how releases are cut.
 
 ---
@@ -229,7 +266,7 @@ folded sections are saved in the node.
 
 The boxes are a code editor (CodeMirror 6) laid over ComfyUI's own text box, which
 stays in place, hidden, and is still what ComfyUI saves and queues from. The setting
-`WarpPipe.CodeEditor`, under WarpPipe, turns the editor off and takes effect at once.
+`WarpStudio.CodeEditor`, under Warp Studio, turns the editor off and takes effect at once.
 Off, or if the editor cannot load, a box is a plain text box without folding.
 
 #### Trigger words
@@ -363,9 +400,8 @@ dropped, rather than silently omitting it.
 
 ### What the sidecars give you
 
-WarpPipe reads `.civitai.info` files sitting beside your models — the sidecars
-[Civitai Updater](https://github.com/gregory-richard/comfyui-civitai-updater)
-writes and keeps current.
+Warp Studio reads `.civitai.info` files sitting beside your models — the sidecars
+the [Civitai panel](#civitai-panel) writes and keeps current.
 
 | Field | Used for | Without it |
 | --- | --- | --- |
@@ -387,6 +423,312 @@ Links point at `civitai.red` rather than `civitai.com`. Since the April 2026
 split, `.com` serves an SFW-filtered catalogue, so a link to it for a mature
 model arrives nowhere useful; `.red` serves everything, checked against a model
 flagged safe.
+
+---
+
+## Civitai panel
+
+The sidebar tab **Civitai** checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models.
+
+![The Civitai panel in the ComfyUI sidebar](assets/docs/panel-sidebar.png)
+
+Base models are grouped by family, because Civitai records one per version and the spellings multiply: `Flux.1 D`, `Flux.2 Klein 9B` and `Flux.2 Klein 9B-base` all file under **Flux**, while every row still prints its exact base. A version counts as **new** when its `publishedAt` date (or `createdAt`, when `publishedAt` is missing) is later than the newest local version you have of that model, not by version number.
+
+
+### 1. Open panel
+
+In ComfyUI, open the sidebar tab `Civitai`.
+
+### 2. Configure settings
+
+Go to **Settings → Warp Studio**, the groups that start with "Civitai":
+
+- API key (optional)
+- cache duration (how long `Check for Updates` shows saved results instead of checking again)
+- timeout/retries/request delay
+- treat valid `.civitai.info` sidecars as installed models (enabled by default)
+- path source toggles (Comfy defaults, `extra_model_paths.yaml`, custom paths)
+- custom paths per model type
+- mature content (show, blur previews, hide)
+
+### 3. Quick workflow
+
+1. Click `Check for Updates`.
+2. Watch progress bar and status.
+3. Review the `Results` cards. The `Updates` view lists models with a newer
+   release; `Issues` lists the models Civitai could not match or check, with the
+   reason under each file.
+4. Use the multi-select `Types` and `Bases` filters, plus `Show hidden`, to narrow the result list.
+5. Use `Pause/Resume` or `Stop` for long jobs. `Stop` waits at most for the
+   request in flight; a file being hashed is abandoned.
+6. Limit the **Model Scope** in the panel settings to re-check only some types; results for the other types are kept from the previous check.
+
+Within the cache duration, `Check for Updates` shows the saved results instead
+of checking again, unless Model Scope differs from the last check, files were
+added or removed, `Force rehash` is ticked, or the last check was stopped.
+`Refresh` next to "Last checked" always runs a check.
+
+### 4. Metadata workflow (Advanced)
+
+Run `Fetch Missing Metadata`.
+
+- Downloads `.civitai.info` sidecars and preview images only.
+- Models that already have a sidecar are skipped, unless `Refetch metadata that
+  already exists` is ticked — that re-pulls them by sidecar version ID, with no
+  re-hashing.
+- Never queries the version list, so it never reports updates and never fills
+  update cards.
+- Report is compact (`total/refreshed/skipped/notFound/errors`).
+- Use it to populate names, base models, and thumbnails after adding a batch of
+  models, then run `Check for Updates` to see what is outdated.
+
+### 5. Pagination and streaming
+
+- Default page size is `25` (options: `25`, `50`, `100`).
+- Metadata is polled every `800ms`.
+- Page 1 auto-refreshes while a check job is running (streaming feel).
+- While a check job is running, a card built from the previous check's results is marked `Provisional` until its files have been re-checked.
+- If you navigate to another page, your page is preserved.
+
+### 6. Reading a result card
+
+Each card is a ledger of one model's releases. The dot on the left of every row
+says where that version stands:
+
+| Dot | Row | Meaning |
+| --- | --- | --- |
+| hollow | `Saved` | A version present on disk. Click the name to copy its file path. |
+| hollow, dim | `Metadata` | Tracked from a `.civitai.info` sidecar with no weight file next to it. |
+| red | `New` | Released after your newest local version. Click the name to open it on Civitai. |
+| grey | `Hidden` | A new release you hid. Visible only with `Show hidden` enabled. |
+| amber | `Error` | The lookup failed or Civitai refused it (a removed model, one that needs an API key). The reason is printed under the row. |
+| dashed | `No match` | Civitai has no release with this file's hash. |
+
+Red is used for one meaning only: a release exists that you do not have.
+`New` rows are sorted by release date, newest first.
+
+A `Buzz` badge on a `New` or `Hidden` row means downloading it costs Buzz:
+
+- `Buzz · 5d left` (dashed) is early access. It is free after the date in its
+  tooltip, and the badge disappears once that date passes.
+- `Buzz · always` (solid) has no free date.
+
+Civitai's public API does not give the price.
+
+`Version` means a specific Civitai release.
+`New` uses Civitai release dates: `publishedAt` first, then `createdAt` when `publishedAt` is missing.
+
+A sidecar-only version suppresses that same Civitai version from `New`. It is
+shown only when a later version produces an update card. The sidecar must contain
+valid `modelId` and version `id` fields; preview PNGs alone and invalid sidecars
+are ignored.
+
+### 7. Grouping and sorting
+
+Open `Arrange` in the filter row to set two levels of grouping and the sort
+applied inside them.
+
+- `Group` / `Then`: `Nothing`, `Model type`, or `Base model`.
+- Default is `Model type` then `Base model`, sorted `Name A–Z`.
+- `Furthest behind` sorts by the gap between your newest local version and the
+  newest release.
+- Base models are grouped by family (`Flux.1 D` and `Flux.2 Klein 9B` both file
+  under `Flux`); each row still shows its exact base.
+- A card is filed under the base model of the release it is headlining, because
+  one Civitai model page can publish on several base models.
+- Group headers count the whole result set, not the current page. Click one to
+  collapse it; a group continuing past a page break is marked `cont.`
+
+### 8. Mature content
+
+`Settings → Warp Studio -> Mature content`:
+
+- `Show everything` (default).
+- `Blur previews` blurs the preview image only, so titles stay readable.
+- `Hide mature models` removes them from results and reports how many were
+  hidden.
+
+### 9. Hidden updates
+
+- Use `Hide` on a remote version row if you do not want to download that version.
+- Hidden versions stay hidden across future checks.
+- Enable `Show hidden` to review or unarchive them later.
+
+### Previews from other sources
+
+Some models Civitai does not serve: removed models, merges, your own trainings.
+**Fetch Missing Metadata** can ask other sources for a file that still has no
+`.preview.png`. They are asked in this order, and the first answer wins:
+
+1. **ai-toolkit.** Your own trainings. Set the output folders that hold your runs under **Civitai Preview Fallback → ai-toolkit Folders**. The sample images of a run become the previews of its files. **Own Creator** is the creator name those files are filed under.
+2. **Hugging Face.** Authors or repos you name (`author` or `owner/name`, separated by `;` or new lines), matched by file hash. Leave it empty to skip Hugging Face.
+3. **civarchive.** Looked up by the file's SHA256 hash; only the hash is sent. It is off until you turn on **Look up previews on civarchive**.
+
+A hit writes the preview and fills only the empty fields of the `.civitai.info`.
+It never replaces a preview you already have, and an info file that identifies a
+Civitai model keeps every field it has. Images are downscaled before they are
+saved, and a source that fails three times in a row is skipped for the rest of
+the scan.
+
+A hash that no source knew, or whose answer had no usable picture, is not asked
+about again for 30 days. A failed lookup is never remembered. The result row says
+the file was **Found**, and the line under it names the source. The renamer can
+name these files too, from the info the fallback found; those rows start
+unticked.
+
+### Renaming your library
+
+The **Rename** view, next to **Updates** and **Issues**, renames your model
+files after their current Civitai releases, in one scheme:
+
+```
+creator - title - version [precision] (base)
+```
+
+All lowercase, for example `some_artist - watercolor style - v2 (sdxl)` for a
+LoRA or `some_studio - photo mix - v3 fp16 (sdxl)` for a checkpoint.
+
+- **creator** is the Civitai uploader. For a re-upload, a conversion or an
+  official model it is the model's maker, when the description credits one.
+- **title** and **version** come from Civitai's live data, cleaned up: no base
+  model names, no "lora", no taglines. A name the creator coined stays as
+  written.
+- **precision** (`int8`, `fp8`, `bf16`, `q8_0`, …) is given only to
+  checkpoints and UNets; LoRAs never get one. It is read from the model file
+  itself. A metadata-only entry (a `.civitai.info` with no weights) takes it
+  from Civitai's file info instead, and only when the release has a single
+  main model file.
+- **base** is a short code per base model, such as `sdxl` or `flux1d`. The
+  codes are a table, seeded once from the `(tag)` at the end of your existing
+  file names, and you can edit it in the Rename view (**Base codes**). A base
+  the table does not know gets a suggested code, saved when you apply.
+
+Checkpoints, LoRAs, UNets and embeddings are renamed where they are. Every
+file next to the model that shares its name goes along: the `.civitai.info`,
+the `.preview.png`, and anything another tool left there.
+
+#### The naming model
+
+The cleaning is done by a local text model, run by ComfyUI's built-in
+**Generate Text** node. Nothing goes to the cloud and no other app is needed.
+Pick the model under **Settings → Warp Studio → Civitai Rename → Naming model**:
+any Qwen3, Qwen3.5, Qwen3-VL or Gemma text encoder file in your
+`text_encoders` folders that ComfyUI can load. Until a usable naming model is
+set, the Rename view offers **Download naming model (9.75 GB)**, which fetches
+Comfy-Org's `qwen3.5_9b_int8_convrot.safetensors` into your first
+`text_encoders` folder. If that file is already in one of those folders, it is
+chosen instead of downloaded again.
+
+The renamer's work goes through ComfyUI's queue like any other prompt, so it
+takes turns with your own jobs and shows up in the queue history. A ComfyUI
+too old to have Generate Text cannot run the renamer; the view says so.
+
+#### Dry run, review, apply
+
+1. **Start dry run.** It asks Civitai about every model and the naming model
+   about every title, and lists each old name next to its new name. Nothing on
+   disk changes yet. The answers are saved, so a second dry run only asks
+   about models that changed. Each model is one card, as in **Updates**: its
+   preview, Civitai title and uploader, and one line per file. Click a file's
+   name to show it in its folder.
+2. **Review.** Rows that need a look come first, unticked: a word the naming
+   model could not find in Civitai's text, two files that would get the same
+   name, two versions or two models by one creator that would get the same name
+   or title (the naming model is asked once more first), a version whose own
+   name names another base, a new base code. A maker taken from the
+   description, a creator taken from your file name, or a file that is not in
+   the Civitai release is only a hint: the row stays ticked. Some fixes have one
+   right answer and are made without asking: "v1.0" becomes "v1", "high noise"
+   becomes "high", and a version that only names the base is left out. The new
+   name is under the current one, with the changed words marked. You can **Edit**
+   any part, or **Ask again** to let the naming model name the model afresh on
+   the next dry run. The checkbox decides whether a file is renamed: a file you
+   untick keeps its name, also in later dry runs, until you tick it again.
+3. **Apply selected** renames the ticked rows and moves the extra copies to the
+   Recycle Bin.
+
+The same Civitai file saved twice in one folder is listed once as an extra
+copy. The copy kept is one with weights, if any, and then the one whose name
+matches its Civitai info; a copy saved under the wrong name long ago is the
+extra one. It is the line under the copy kept, and starts ticked (its name
+struck through) when the copies are the same Civitai file or have the same
+stored hash; untick it to keep both. An extra copy goes to
+the Recycle Bin with its `.civitai.info` and `.preview.png`, and its weights
+only when they are byte-identical to the kept copy's. Any other file of its name
+(an archive, a backup) stays where it is.
+
+The naming model gets roughly three in four names exactly right on models it
+has not seen before. Read the list before you apply it.
+
+Your edits are remembered per model and win over the naming model on every
+later dry run. Applied names are locked: a creator retitling the model on
+Civitai does not bring up a new name for files you already renamed, until you
+click **Ask again**.
+
+#### What is not renamed
+
+The dry run lists these as kept, with the reason:
+
+- Models or releases Civitai no longer serves. Their sidecars do not hold
+  enough to rebuild a name from.
+- Files whose Civitai match is not the release's main model file, or whose
+  Civitai type does not fit the folder (a text encoder in `unet`, say).
+- Files kept with **Keep current name** in an earlier version; ticking one renames it after all.
+
+Two kinds are left alone without being listed:
+
+- Files without Civitai metadata: no `.civitai.info` with a model and version
+  id, as with merges, conversions and your own trainings. Run **Fetch Missing
+  Metadata** first, so every file Civitai knows has one. A file that only
+  the [preview fallback](#previews-from-other-sources) identified is named from the info it found.
+- The VAE folder. One VAE serves several base models, and Civitai matches it by
+  hash to whoever attached it to their release.
+
+#### Before you apply
+
+There is no backwards compatibility. Saved workflows, and images with their
+workflow, that use the old names show those LoRAs and models as missing.
+Re-pick them.
+
+If ComfyUI stops in the middle of a rename, a journal remembers where it got
+to, and the Rename view offers **Finish** or **Undo** on the next start. A file
+that already has the new name is never overwritten, and a file Windows has
+locked (a model loaded right now) is skipped and reported.
+
+Every file the renamer moves is recorded in `ComfyUI/user/warp-studio/updater/rename_log.jsonl`: one JSON line per file with the time, the kind
+(`rename`, `trash` for a removed copy, `undo` for a rename that **Undo** put
+back), the old and the new path (for a removed copy, the kept copy's file),
+and the run. The log is never cleared, so you can rename copies of the same files elsewhere (an
+archive disk, say) to match.
+
+### Settings
+
+Under **Settings → Warp Studio** (the groups that start with "Civitai"):
+
+- **API key** — optional, but some restricted resources need one.
+- **Cache duration** — how long **Check for Updates** shows the saved results
+  instead of checking again. Changing **Model Scope**, adding or removing model
+  files, or clicking **Refresh** runs a real check inside that window.
+- **Timeout, retries, delay between models** — for slow or rate-limited runs.
+- **Treat `.civitai.info` as installed** — count a valid orphan sidecar as an
+  installed version, so a model you deleted but still track keeps reporting
+  updates. On by default.
+- **Mature content** — **Show** everything, **Blur previews** (the image only;
+  titles stay readable so you can still tell which model it is), or **Hide
+  mature models**, which removes them from results and reports how many were
+  left out rather than quietly shrinking the list.
+- **Path sources** — ComfyUI's own folders, `extra_model_paths.yaml`, and
+  custom roots per model type (checkpoint, LoRA, VAE, UNet, embedding).
+- **Naming model** — the text encoder the renamer runs. See
+  [The naming model](#the-naming-model).
+
+### Why civitai.red
+
+Since Civitai split into two domains in April 2026, `civitai.com` serves
+SFW-filtered API responses. Hash lookups for mature models come back empty
+there, which showed up as models that could never be identified. This
+extension talks to `civitai.red`, which serves the full catalogue, and links
+to it as well. Set your API key if a resource still refuses to resolve.
 
 ---
 
@@ -672,7 +1014,7 @@ of slots (**✨ AI** on a narrow node). An LLM writes and rewrites an image prom
 a version into a Prompt + LoRAs. It lives in the
 browser (`web/prompt_writer.js`), never appears in the prompt ComfyUI receives,
 and writing a prompt never queues an image. Every call goes through the
-`/warppipe/llm` routes, so the browser never sees a key.
+`/warp-studio/llm` routes, so the browser never sees a key.
 
 **Layout:** the rail holds **Prompt Writer** with the settings cog, **New chat** and the
 chats; the open chat has its title (click to rename), **For** (the Prompt + LoRAs this
@@ -683,7 +1025,7 @@ with a read-only preview, temperature, title model, server, the API key field wi
 **Save** (cleared after sending; it only reports whether a key is set) and **Refresh
 lists** (the backend caches a model list for an hour).
 
-**Settings** (`WarpPipe.PromptWriter.*`):
+**Settings** (`WarpStudio.PromptWriter.*`):
 
 | Setting | Notes |
 | --- | --- |
@@ -692,12 +1034,12 @@ lists** (the backend caches a model list for an hour).
 | `SystemPrompt` | one of the `.txt` files directly in `SystemPromptDir` |
 | `Temperature` | 0–2, default 0.6 |
 | `ReasoningEffort` | `none` … `max`, sent as `reasoning_effort`; empty (the default) sends nothing |
-| `SystemPromptDir` | Settings → WarpPipe → Prompt Writer |
+| `SystemPromptDir` | Settings → Warp Studio → Prompt Writer |
 
 **Chats and versions:** the left rail lists the chats, newest first. Each version is
 one line, `v2` and its title (named by the title model while it is written: what it
 shows for a new prompt, what it changes for an edit, `"kind": "edit"` in
-`POST /warppipe/llm/title`, which answers with the `kind` it named; the request until then;
+`POST /warp-studio/llm/title`, which answers with the `kind` it named; the request until then;
 versions from before titles are named once when the pop-up opens, only by a server that
 answers with that `kind`). One version is open at a time,
 and the line you click stays where it is on the screen. An open version has
@@ -718,7 +1060,7 @@ those made from it, after asking). Version numbers are saved, so a deleted one l
 **Questions:** the LLM is told to start a reply that asks instead of writing with
 `===QUESTION===`. That reply is a **Question** card, not a version; the send button then
 answers, and the answer goes with the request, what it edits and the earlier
-questions and answers (`turns` in `POST /warppipe/llm/write`).
+questions and answers (`turns` in `POST /warp-studio/llm/write`).
 
 **LoRAs:** **LoRAs** in the composer (setting `LoraScope`) is **Off**, **List**
 (the LoRAs switched off in the target's own lists) or **All** (every LoRA that fits the
@@ -745,8 +1087,8 @@ card with **Retry**; it is kept with the chat until it is retried, taken back or
 is deleted, and **Retry** uses the current settings.
 
 **Storage:** chats are saved in the ComfyUI user folder as
-`warppipe_prompt_chats.json`, never in a workflow or in images. Each request is also
-logged to `ComfyUI/user/warppipe_llm_log.jsonl`: a `request` line when it is sent
+`warp_studio_prompt_chats.json`, never in a workflow or in images. Each request is also
+logged to `ComfyUI/user/warp-studio/llm_log.jsonl`: a `request` line when it is sent
 and a `result` line with the same `id` when it ends (text, question, error or
 stopped, with usage, cost and seconds). No key and no image data is written; the
 file moves to `.1` at about 20 MB, and a log that cannot be written never stops a
@@ -755,10 +1097,10 @@ request.
 **Keys** are bound to hosts and used only when `base_url`'s host is the key's
 host, so a workflow pointing at another server never receives your key.
 The node's key field saves the typed key for `base_url`'s host (both NanoGPT
-hosts at once) into `ComfyUI/user/warppipe_llm_keys.json`; the browser can only
+hosts at once) into `ComfyUI/user/warp-studio/llm_keys.json`; the browser can only
 ask whether a key is set. `NANOGPT_API_KEY` covers `nano-gpt.com` and `api.nano-gpt.com`;
-`ComfyUI/user/warppipe_llm_keys.json` holds `{"host": "key"}` for others. Local
-servers get no key unless the file names them. WarpPipe never logs or returns a
+`ComfyUI/user/warp-studio/llm_keys.json` holds `{"host": "key"}` for others. Local
+servers get no key unless the file names them. Warp Studio never logs or returns a
 key and writes it only on **save key**.
 
 ---
@@ -766,7 +1108,7 @@ key and writes it only on **save key**.
 ### 🌀 Warp Compare
 
 Compares two images with a slider. An output node, and the replacement for
-rgthree's Image Comparer in WarpPipe workflows.
+rgthree's Image Comparer in Warp Studio workflows.
 
 | Input | Type | Notes |
 | --- | --- | --- |
@@ -808,8 +1150,11 @@ naming it rather than quietly dropping it.
 
 ## HTTP API
 
-Nine routes, registered on ComfyUI's own `PromptServer` at import. They exist
-for WarpPipe's frontend; nothing stops you calling them yourself.
+Every route starts with `/warp-studio/`, and is registered on ComfyUI's own
+`PromptServer` at import. They exist for Warp Studio's frontend; nothing stops
+you calling them yourself. The first group serves the nodes and the Prompt
+Writer. The Civitai panel's routes, under `/warp-studio/updater/`, are
+[further down](#civitai-panel-routes).
 
 If `aiohttp` or `server` cannot be imported — running the module outside
 ComfyUI, for tests or a lint — registration is skipped and the nodes still work.
@@ -817,17 +1162,17 @@ The frontend degrades with it: tags go uncoloured and the browser says the
 library is unavailable.
 
 ```
-GET /warppipe/loras
-GET /warppipe/embeddings
-GET /warppipe/model/base?name=<name>
-GET /warppipe/lora/thumbnail?name=<name>&kind=<loras|embeddings>[&full=1]
-GET  /warppipe/llm/models?base_url=<url>[&refresh=1]
-GET  /warppipe/llm/system_prompts
-GET  /warppipe/llm/system_prompt?name=<name>
-GET  /warppipe/llm/key_status?base_url=<url>
-POST /warppipe/llm/key
-POST /warppipe/llm/title
-POST /warppipe/llm/write
+GET /warp-studio/loras
+GET /warp-studio/embeddings
+GET /warp-studio/model/base?name=<name>
+GET /warp-studio/lora/thumbnail?name=<name>&kind=<loras|embeddings>[&full=1]
+GET  /warp-studio/llm/models?base_url=<url>[&refresh=1]
+GET  /warp-studio/llm/system_prompts
+GET  /warp-studio/llm/system_prompt?name=<name>
+GET  /warp-studio/llm/key_status?base_url=<url>
+POST /warp-studio/llm/key
+POST /warp-studio/llm/title
+POST /warp-studio/llm/write
 ```
 
 The seven `llm` routes serve the 🌀 Prompt Writer pop-up. `models` returns
@@ -848,7 +1193,7 @@ stops the request at the provider.
 
 ---
 
-### `GET /warppipe/loras`
+### `GET /warp-studio/loras`
 
 Every LoRA in the configured folders, with everything the browser needs and no
 image data.
@@ -870,7 +1215,7 @@ image data.
       "triggers": ["highly detailed", "intricate detail"],
       "has_preview": true,
       "kind": "loras",
-      "thumbnail": "/warppipe/lora/thumbnail?name=sdxl%2F...&kind=loras"
+      "thumbnail": "/warp-studio/lora/thumbnail?name=sdxl%2F...&kind=loras"
     }
   ]
 }
@@ -896,7 +1241,7 @@ hundred kilobytes of JSON.
 
 ---
 
-### `GET /warppipe/embeddings`
+### `GET /warp-studio/embeddings`
 
 Identical, keyed `embeddings`. Every entry carries `"kind": "embeddings"`, which
 is how the frontend knows to insert `embedding:name` rather than a `<lora:>`
@@ -904,13 +1249,13 @@ tag.
 
 ---
 
-### `GET /warppipe/model/base`
+### `GET /warp-studio/model/base`
 
 The base model of one file, for matching LoRAs against the checkpoint that is
 wired in.
 
 ```
-GET /warppipe/model/base?name=demo%20-%20Illustrious%20Base%20-%20v1.0%20(SDXL).safetensors
+GET /warp-studio/model/base?name=demo%20-%20Illustrious%20Base%20-%20v1.0%20(SDXL).safetensors
 ```
 
 ```json
@@ -923,7 +1268,7 @@ Looked up across `loras`, `checkpoints`, `diffusion_models`, `unet` and
 
 ---
 
-### `GET /warppipe/lora/thumbnail`
+### `GET /warp-studio/lora/thumbnail`
 
 The preview image beside a model.
 
@@ -953,14 +1298,235 @@ These routes are unauthenticated, exactly as the rest of ComfyUI's are. Anyone
 who can reach your ComfyUI can list your model library through them, which is
 worth knowing if you have bound the server to something other than localhost.
 
+### Civitai panel routes
+
+The panel's routes all start with `/warp-studio/updater/`, and return JSON.
+
+Every request must send the header `X-Civitai-Updater: 1`, and a POST body must
+be sent as `Content-Type: application/json`. A request whose `Origin` is not the
+ComfyUI page itself, or that the browser marks `Sec-Fetch-Site: cross-site`, is
+refused. Refused requests get `403` with `{"error": "..."}`. This keeps other web
+pages from using ComfyUI's unauthenticated server to change the settings or start
+scans. Example:
+
+```bash
+curl -H "X-Civitai-Updater: 1" http://127.0.0.1:8188/warp-studio/updater/config
+```
+
+#### `GET /warp-studio/updater/config`
+
+Returns:
+
+- `config`: public config (`apiKey` is always empty; `hasApiKey` says whether one is stored)
+- `supportedModelTypes`
+- `effectiveRoots`: resolved roots per model type (Comfy defaults + `extra_model_paths.yaml` + configured custom paths)
+
+#### `POST /warp-studio/updater/config`
+
+Every field is optional; only the fields present in the request are updated.
+
+- `apiKey`: string
+- `cacheTtlMinutes`: integer, 0–10080 (used by the panel to decide when a re-check is suggested)
+- `requestTimeoutSeconds`: integer, 5–300
+- `maxRetries`: integer, 0–10
+- `requestDelayMs`: integer, 0–3000
+- `useComfyPaths`, `useExtraModelPaths`, `useCustomPaths`: boolean path-source toggles
+- `treatSidecarsAsInstalled`: boolean (defaults to `true`)
+- `matureMode`: `show` | `blur` | `hide` (defaults to `show`)
+- `namingModel`: string, the text encoder file the renamer runs
+- `fallbackCivarchive`: boolean, look up previews on civarchive (off by default)
+- `fallbackHuggingFace`, `fallbackAiToolkitFolders`: a list or a string separated by `;` or new lines. Hugging Face authors or `owner/name` repos; folders that hold ai-toolkit runs
+- `fallbackOwnCreator`: string, the creator name your own trainings are filed under
+- `customPaths`: object keyed by model type (`checkpoint|lora|vae|unet|embedding`); a value is a list of paths or a string separated by `;` or new lines. Only the keys present in the request are updated.
+
+A newly added custom path must be an existing absolute folder and not a whole
+drive or the filesystem root. Paths that fail this are left out of the saved
+config; paths already saved are kept as they are.
+
+Response: `config` (public) and `effectiveRoots`, as for `GET`, plus
+`pathWarnings`: one message per custom path that was not saved.
+
+#### `POST /warp-studio/updater/jobs/scan`
+
+Starts a metadata scan job (the **Fetch Missing Metadata** button).
+
+Request body:
+
+- `modelTypes`: string array (defaults to all)
+- `includeCustomPaths`: boolean (defaults to `true`)
+- `refetchMetadata`: boolean
+- `forceRehash`: boolean
+
+Response: `jobId`. Returns HTTP 409 with `error` when another job is running.
+
+#### `POST /warp-studio/updater/jobs/check-updates`
+
+Starts an update-check job.
+
+Request body: same as the scan job.
+
+Response: `jobId`, or HTTP 409 as above.
+
+The job is seeded with every item of the previous check so the panel keeps
+showing them (marked provisional) while models are re-checked. Once the job has
+listed the files of the checked types, those seeds are aligned with the disk:
+seeds for deleted files are dropped, and new files with a usable
+`.civitai.info` get a seed built from it, so a release downloaded since the
+last check is not offered as new. When the job finishes, the items of the checked model types are replaced and the items of
+any other type are carried over, then the whole set is saved as the new cache.
+
+#### `GET /warp-studio/updater/jobs/active`
+
+Returns `job` (the job record without items) for the running, queued, or
+paused job, or `null`.
+
+#### `GET /warp-studio/updater/jobs/{job_id}`
+
+Returns job state:
+
+- `status`: `queued|running|paused|completed|failed|cancelled`
+- `progress`, `total`, `message`
+- `summary`
+- `itemCount`
+- `items` (optional compatibility payload; avoid for UI paging path)
+- `errors`
+
+Query:
+
+- `includeItems`: `0|1` (default `0`)
+
+Summary shape depends on mode:
+
+- scan: `total`, `refreshed`, `skipped`, `notFound`, `errors`
+- check: `total`, `resolved`, `withUpdates`, `hiddenUpdates`, `notFound`, `errors`
+
+Both carry `sidecarWarnings`, `modelTypes`, and `includeCustomPaths`.
+
+#### `GET /warp-studio/updater/jobs/{job_id}/items`
+
+Query parameters:
+
+- `offset`, `limit`: paging over cards (limit is capped at 500)
+- `mode`: `updates` to list only models with a newer release, `issues` to list
+  only models with a file Civitai could not match (`not_found`) or check
+  (`error`); omitted lists every model
+- `modelType`, `baseModel`: repeatable filters
+- `showHidden`: `1` to include releases you hid
+- `sort`: `name` | `name-desc` | `type` | `latest-date` | `latest-date-desc` | `behind`
+- `groupBy`, `thenBy`: `none` | `type` | `baseFamily` (a value equal to `groupBy` is ignored)
+- `collapsed`: repeatable group key, either `Checkpoint` or `Checkpoint||SDXL`
+- `mature`: `show` | `blur` | `hide`; omitted falls back to the stored setting
+
+Response fields: `jobId`, `totalItems`, `offset`, `limit`, `mode`, `facets`,
+`groups` (the outline with counts for the whole result set), `grouping`,
+`startsMidPrimary` / `startsMidSecondary` (whether the page opens inside a
+group that began earlier), `matureHidden`, `matureMode`, `modeCounts`
+(`{updates, issues}`: how many models each view lists under the same filters),
+`items`.
+
+Each item is one model and carries `groupPrimary`, `groupSecondary`,
+`groupPrimaryKey`, `groupPathKey`, and:
+
+- `localVersions`
+- `newVersions`
+- `hiddenNewVersions`
+- `isProvisional`: the card still comes from the previous check's results
+  while a check runs
+- `issueCount`: how many of its local versions are `error` or `not_found`
+
+Each new or hidden version carries `paid`: `permanent` (downloading costs Buzz,
+with no free date), `early` (early access, free from `paidUntil`, which is empty
+when Civitai gives no end), or empty. An early-access window that has closed
+since the check reads as empty.
+
+Each local version carries the file's check `status` (`ok`, `error`,
+`not_found`) and, for `error`, the `error` message. It also includes
+`metadataOnly`, which is `true` when the installed
+version is represented only by a valid `.civitai.info` sidecar. `modelPath` is
+the file the entry was found through (the sidecar, for a metadata-only entry);
+`filePath` is always the weights file, where it would be for a metadata-only
+entry, with the extension the sidecar names (`.safetensors` when it names none).
+
+#### `GET /warp-studio/updater/last-check`
+
+Returns `sidecarWarnings` and `data`:
+
+- `null` when no check has been saved; `cacheInvalid: true` is added when the
+  saved file is from an older schema
+- while a check is running: `jobId`, `checkedAt`, `summary`, `itemCount`, `inProgress: true`
+- otherwise the saved check: `jobId` (always `cached`), `checkedAt`, `summary`,
+  `itemCount`, `inProgress: false`, `filesChanged`, `filesAdded`, `filesRemoved`
+
+The saved check is loaded as a job with id `cached`, so its items can be paged
+through `GET /warp-studio/updater/jobs/cached/items`.
+
+#### `POST /warp-studio/updater/archived-updates`
+
+Persistently hides one or more remote version IDs for a model.
+
+Request body:
+
+- `modelId`: string
+- `versionIds`: string array
+
+Response: `modelId`, `archivedVersionIds`.
+
+#### `POST /warp-studio/updater/archived-updates/restore`
+
+Removes previously hidden remote version IDs for a model. Same body and response.
+
+#### `POST /warp-studio/updater/jobs/{job_id}/pause`
+
+Pauses a running job.
+
+#### `POST /warp-studio/updater/jobs/{job_id}/resume`
+
+Resumes a paused job.
+
+#### `POST /warp-studio/updater/jobs/{job_id}/stop`
+
+Requests cancellation of a running or paused job.
+
+#### Rename and other panel routes
+
+These serve the Rename view. Same guard as above; every one answers JSON.
+
+```
+GET  /warp-studio/updater/rename/status
+POST /warp-studio/updater/jobs/rename-dry-run
+GET  /warp-studio/updater/rename/rows
+POST /warp-studio/updater/rename/decision
+POST /warp-studio/updater/rename/base-code
+POST /warp-studio/updater/jobs/rename-apply
+POST /warp-studio/updater/rename/recover
+POST /warp-studio/updater/rename/reveal
+POST /warp-studio/updater/reveal
+POST /warp-studio/updater/local-preview
+POST /warp-studio/updater/jobs/download-naming-model
+```
+
+- `rename/status` says whether the renamer can run (a ComfyUI with **Generate Text**, a naming model) and, if not, why. It also carries the id of the last saved dry run.
+- `jobs/rename-dry-run` and `jobs/rename-apply` start jobs like the update jobs, and answer HTTP 409 while another job runs or a rename journal is waiting to be finished or undone. Poll them through `jobs/{job_id}`.
+- `rename/rows` pages the dry run's rows; `rename/decision` saves an edit, a keep or an **Ask again** for one model; `rename/base-code` saves a base code.
+- `rename/recover` finishes or undoes an interrupted rename.
+- `rename/reveal` and `reveal` show a file in its folder; `local-preview` returns a local preview image to the panel.
+- `jobs/download-naming-model` downloads the default naming model into the first `text_encoders` folder, unless it is already in one.
+
 ---
 
 ## Architecture
 
 ```
 warp_pipe.py          every node, the storage, the resource scan, the routes
-__init__.py           picks a registration path and re-exports it
+prompt_writer.py      the Prompt Writer's backend and its /warp-studio/llm routes
+comfy_updater/        the Civitai panel's backend, see below
+studio/               the first-start data migration and the check for old packages
+standdown/            the notice shown when an old package is still active
+__init__.py           starts both halves, or stands down for an old package
 web/
+  civitai_updater.js  the Civitai sidebar panel
+  rename_view.js      its Rename view
+  storage_migration.js  carries the Rename view's saved choices over
   prompt_ui.js        the coloured prompt box, the strip, inline completion
   lora_browser.js     the library modal
   model_base.js       which base model a node is wired to
@@ -1002,7 +1568,7 @@ Sampler and scheduler sockets are the awkward part of this pack.
 
 ComfyUI types a combo socket by its list of options, so a `sampler_name` coming
 out of another node pack with a wider list is a *different type* to ComfyUI's
-own, and the link is refused. WarpPipe wants those links to work.
+own, and the link is refused. Warp Studio wants those links to work.
 
 Earlier versions patched ComfyUI's global prompt validator, which affected every
 node in the process. That is gone. Instead each node declares
@@ -1053,7 +1619,7 @@ image that was not made.
 ### Hashes and metadata
 
 Civitai matches a resource by AutoV2 — the first ten hex characters of the
-file's SHA256. WarpPipe takes it from the sidecar when one is there and hashes
+file's SHA256. Warp Studio takes it from the sidecar when one is there and hashes
 the file when it is not, caching by path, size and mtime so a replaced file
 re-hashes and an unchanged one never does.
 
@@ -1106,7 +1672,7 @@ would keep reading as unknown.
 
 ComfyUI invokes `refreshComboInNodes` on every extension when node definitions
 are reloaded - the `r` key, or the menu - which is the same moment every other
-node's model lists update. WarpPipe uses it to drop three things: the shared
+node's model lists update. Warp Studio uses it to drop three things: the shared
 library, the base model asked of the server per checkpoint, and each node's own
 memo of what it had resolved. Nodes register themselves in a set while they
 live, because walking the root graph would miss any inside a subgraph.
@@ -1141,6 +1707,56 @@ import work; it is not a simulation of ComfyUI.
 other packs accept a workflow built around RES4LYF's schedulers even when
 RES4LYF has not loaded. Startup logs which names it stood in for.
 
+
+### The Civitai panel
+
+The panel has two layers: a backend service (`comfy_updater/`) and a frontend sidebar tab (`web/civitai_updater.js`). Both are started from `__init__.py`.
+
+#### Backend modules
+
+- `plugin.py`: bootstraps the config store, archive store, job manager, and route registration
+- `routes.py`: HTTP endpoints under `/warp-studio/updater/*`, the check-result cache, and merging of partial checks
+- `jobs.py`: thread-based background job manager, result grouping, sorting, and the group outline
+- `updater_service.py`: scan/check pipeline for one model file at a time
+- `path_resolver.py`: resolve Comfy roots + `extra_model_paths.yaml` + custom roots, discover model files and orphan sidecars
+- `hashing.py`: SHA256 file hashing
+- `civitai_client.py`: Civitai API client with retries, preview download, and video frame extraction
+- `sidecar.py`: sidecar file read/write helpers and corrupt-file quarantine
+- `config_store.py`: persistent settings in `user/warp-studio/updater/config.json`
+- `archived_updates.py`: persistent list of hidden releases in `user/warp-studio/updater/archived_updates.json`
+- `base_models.py`: rolls Civitai base-model strings up into families for grouping
+- `constants.py`: API URLs, supported types and extensions, sidecar suffixes, plugin version
+- `node_info.py`: the status node. ComfyUI registers it from the legacy mappings; the V3 `comfy_entrypoint` is only a fallback that ComfyUI does not reach while those mappings exist
+
+#### Frontend module
+
+`web/civitai_updater.js`:
+
+- registers sidebar tab with `registerSidebarTab`
+- registers native Comfy settings via `app.registerExtension({ settings: [...] })`
+- syncs settings to backend config route
+- starts/polls jobs and renders result cards with thumbnails
+- reconnects to a running job after a page reload, and falls back to the
+  on-disk cache when the server forgets a job (for example after a restart)
+
+#### Data flow
+
+1. UI starts scan/check job via backend route.
+2. Job manager launches a worker thread.
+3. Updater service enumerates model files.
+4. Service identifies files (sidecar ids, stored hash, or a fresh hash) and queries Civitai.
+5. Sidecar files are updated.
+6. Job output is polled by UI and rendered as result cards.
+7. A finished check is written to `user/warp-studio/updater/last_check.json`; a check
+   limited to some model types replaces only those types in the file.
+
+#### Design constraints
+
+- Keep v1 read-only regarding model file replacement.
+- Keep sidecar files human-readable JSON.
+- Keep Civitai auth optional.
+- Never overwrite a user data file that failed to parse; move it aside first.
+
 ---
 
 ## Development
@@ -1151,13 +1767,13 @@ Clone anywhere and link it into ComfyUI rather than working inside
 `custom_nodes`:
 
 ```powershell
-$src = "C:\path\to\ComfyUI-WarpPipe"
-$dst = "C:\path\to\ComfyUI\custom_nodes\warppipe"
+$src = "C:\path\to\ComfyUI-WarpStudio"
+$dst = "C:\path\to\ComfyUI\custom_nodes\warp-studio"
 New-Item -ItemType Junction -Path $dst -Target $src
 ```
 
 ```bash
-ln -s /path/to/ComfyUI-WarpPipe /path/to/ComfyUI/custom_nodes/warppipe
+ln -s /path/to/ComfyUI-WarpStudio /path/to/ComfyUI/custom_nodes/warp-studio
 ```
 
 ### Checks
@@ -1262,7 +1878,8 @@ change that makes an existing workflow load differently is a major. 3.0.0 was
 the `CONTROL` → `WARPPIPE` rename. 4.0.0 is the prompt box and the Civitai save
 node — nothing breaks, but it is a different pack to use. 5.0.0 is the same
 again: the Prompt Writer, Warp Send and Select, and the prompt boxes as a code
-editor.
+editor. Warp Studio starts again at 1.0.0; the numbers of the two packages before it are
+linked at the end of the [changelog](CHANGELOG.md).
 
 ### Registry metadata
 
@@ -1277,7 +1894,9 @@ Those two are the sized, quantised copies — the originals live in
 
 ### The nodes do not appear
 
-Restart ComfyUI after installing, then check the startup log. WarpPipe logs
+Restart ComfyUI after installing, then check the startup log. If Warp Studio says it is
+switched off, an old WarpPipe or Civitai Updater is still active: update or remove it, see
+[Coming from WarpPipe or Civitai Updater](#coming-from-warppipe-or-civitai-updater). Otherwise it logs
 `WarpPipe LoRA library routes registered` when it has loaded; an import failure
 appears above that as a traceback naming the file.
 
@@ -1286,7 +1905,7 @@ with `__init__.py` at its top level.
 
 ### Some nodes are missing, but not all
 
-If `WARPPIPE_ENABLE_V3` is set in your environment, WarpPipe registers through
+If `WARPPIPE_ENABLE_V3` is set in your environment, Warp Studio registers through
 ComfyUI's V3 API. Should a node ever lack a V3 schema, startup logs an error
 naming it. Unset the variable to fall back to the legacy path, which registers
 everything.
@@ -1294,7 +1913,7 @@ everything.
 ### The prompt box is a plain text field
 
 No colouring, no strip, no `/` completion means the frontend did not load. Check
-the browser console for a failed import of `/extensions/warppipe/prompt_ui.js`.
+the browser console for a failed import of `prompt_ui.js` under `/extensions/`.
 
 If you installed from the registry with a version before 4.0.0, the wheel did
 not ship the JavaScript at all — `package-data` listed only the documentation.
@@ -1303,10 +1922,10 @@ Upgrading fixes it.
 ### Every tag is red
 
 Red means no file matched. If *every* tag is red, the library did not load
-rather than every name being wrong. Open `/warppipe/loras` directly:
+rather than every name being wrong. Open `/warp-studio/loras` directly:
 
 ```
-http://127.0.0.1:8188/warppipe/loras
+http://127.0.0.1:8188/warp-studio/loras
 ```
 
 An error or an empty list points at ComfyUI's LoRA folder configuration, not at
@@ -1332,8 +1951,7 @@ being skipped with a warning nobody reads. Fix the tag, or comment it out with
 
 Previews are read off the disk: an image beside the model file named
 `<model>.preview.png`, `.preview.jpg`, `.preview.webp`, or just `<model>.png`.
-[Civitai Updater](https://github.com/gregory-richard/comfyui-civitai-updater)
-downloads them; so do most model managers.
+The [Civitai panel](#civitai-panel) downloads them (**Fetch Missing Metadata**); so do most model managers.
 
 If the files are there but the cards are blank, the thumbnail cache has nowhere
 to write. It goes next to ComfyUI's user directory; check that is writable, and
@@ -1344,7 +1962,7 @@ that Pillow is importable in ComfyUI's Python.
 The library is read once and cached in the browser, so a file added since the
 tab was opened is not there yet. Press `r`, or pick **Refresh Node Definitions**
 from the menu — the same thing that reloads every other node's model lists now
-drops WarpPipe's cache as well. The prompt box recolours and the browser lists
+drops Warp Studio's cache as well. The prompt box recolours and the browser lists
 it without a page reload.
 
 The same applies to a `.civitai.info` written since: refresh and the trigger
@@ -1353,15 +1971,15 @@ words, base model and link appear.
 ### No trigger words anywhere
 
 Trigger words come only from `.civitai.info` sidecars — there is no fallback,
-because nothing else on disk knows them. Run Civitai Updater's **Scan Metadata
-Only** to fetch them without checking for updates.
+because nothing else on disk knows them. Run the Civitai panel's **Fetch Missing
+Metadata** to fetch them without checking for updates.
 
 `Tab` on a tag always answers: it says the LoRA declares none rather than doing
 nothing, so you can tell a missing sidecar from a key that did not register.
 
 ### Everything is grouped under folder names, not base models
 
-Same cause. `baseModel` comes from the sidecar; without one, WarpPipe falls back
+Same cause. `baseModel` comes from the sidecar; without one, Warp Studio falls back
 to the folder, which is right for collections filed that way and meaningless for
 the rest.
 
@@ -1413,7 +2031,7 @@ PNG if you want the graph in the file.
 
 ### Schedulers named beta57 or bong_tangent behave oddly
 
-WarpPipe registers those names globally so other packs — FaceDetailer especially
+Warp Studio registers those names globally so other packs — FaceDetailer especially
 — accept a workflow built around them. Until RES4LYF itself is installed they
 are karras under another label, which is logged at startup. Install RES4LYF for
 the real implementations.
@@ -1430,6 +2048,47 @@ inventing a default. If a sampler is complaining about a missing value, connect
 it into the Warp — or check that the Warp you are unpacking is the one you
 think, since a chained Warp only carries what it was given plus what it was told.
 
+
+### The Civitai panel
+
+#### The Civitai tab is not in the sidebar
+
+1. Confirm the folder is directly under Comfy `custom_nodes`, and that Warp Studio is not switched off (see above).
+2. Confirm restart was a full process restart.
+3. Check terminal logs for `Civitai updater: routes registered`.
+4. Check browser console for JS import/runtime errors.
+
+#### Deprecation warnings in the startup log
+
+Warnings such as:
+
+- `Detected import of deprecated legacy API: /scripts/ui.js`
+
+usually originate from other custom nodes using old APIs. They are not automatically a Warp Studio failure.
+
+#### The panel finds no models
+
+1. Verify selected model types.
+2. Verify the effective root counts under `Resolved Roots` in the panel's settings and click `Show`.
+3. Check the path source toggles under **Civitai Path Sources**.
+4. Add custom paths under **Civitai Custom Paths**.
+5. Re-run scan/check.
+
+#### Many models are counted as `not found`
+
+This means Civitai has no hash match for those local files. Typical reasons:
+
+- converted/pruned/repacked files
+- unpublished/private resources
+- legacy models missing hash records on Civitai
+
+#### Civitai refuses some models
+
+If gated resources fail:
+
+1. Set the API key under **Settings → Warp Studio → Civitai Network**.
+2. Re-run the check.
+
 ### Reporting something else
 
 Turn on debug logging and include the startup lines plus whatever the run
@@ -1441,4 +2100,4 @@ import logging
 logging.getLogger("WarpPipe").setLevel(logging.DEBUG)
 ```
 
-Issues: <https://github.com/gregory-richard/ComfyUI-WarpPipe/issues>
+Issues: <https://github.com/gregory-richard/ComfyUI-WarpStudio/issues>

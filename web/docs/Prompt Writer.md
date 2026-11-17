@@ -109,20 +109,20 @@ The chip then shows a check. Press it again to undo that: a line that was added 
 
 ## Setup
 
-- **System prompt folder** — Settings → WarpPipe → Prompt Writer. Only `.txt` files directly in that folder are listed.
-- **API key** — Paste it once in the settings and click **Save**. The backend stores it in `ComfyUI/user/warppipe_llm_keys.json` for the host of the base URL, it survives restarts, and the browser can never read it back; the field only shows whether a key is set. Alternatively set the environment variable `NANOGPT_API_KEY`. For other servers you can also put `{"host": "key"}` entries in `ComfyUI/user/warppipe_llm_keys.json`. A key is sent only to its own host. Local servers get no key unless the file names them.
+- **System prompt folder** — Settings → Warp Studio → Prompt Writer. Only `.txt` files directly in that folder are listed.
+- **API key** — Paste it once in the settings and click **Save**. The backend stores it in `ComfyUI/user/warp-studio/llm_keys.json` for the host of the base URL, it survives restarts, and the browser can never read it back; the field only shows whether a key is set. Alternatively set the environment variable `NANOGPT_API_KEY`. For other servers you can also put `{"host": "key"}` entries in `ComfyUI/user/warp-studio/llm_keys.json`. A key is sent only to its own host. Local servers get no key unless the file names them.
 
-The key is never stored in a workflow, in image metadata or in the browser. WarpPipe never writes, logs or returns it.
+The key is never stored in a workflow, in image metadata or in the browser. Warp Studio never writes, logs or returns it.
 
 ## Where chats are stored
 
-Chats are stored in the ComfyUI user folder, in `warppipe_prompt_chats.json` (`ComfyUI/user/default/` on a single-user install). They are never stored in a workflow or in images. The base URL, model, system prompt and temperature are ComfyUI settings. Each chat also keeps the text of the system prompts its versions were written with, once per text however many versions share it, and drops one when no version uses it any more.
+Chats are stored in the ComfyUI user folder, in `warp_studio_prompt_chats.json` (`ComfyUI/user/default/` on a single-user install). They are never stored in a workflow or in images. The base URL, model, system prompt and temperature are ComfyUI settings. Each chat also keeps the text of the system prompts its versions were written with, once per text however many versions share it, and drops one when no version uses it any more.
 
 ## Request log
 
-Every request is also written to `warppipe_llm_log.jsonl` in the ComfyUI user folder (`ComfyUI/user/` itself), one JSON object per line, on this machine only:
+Every request is also written to `llm_log.jsonl` in `ComfyUI/user/warp-studio/`, one JSON object per line, on this machine only:
 
 - **When it is sent** — `"event": "request"` with the time, an `id`, the chat, the server's host, model, system prompt name, temperature, thinking level, your request (`idea`), the prompt it edits (`previous_result`), the image names, the questions and answers so far, and the LoRA choice with how many LoRAs were offered and active. It is written at once, so it is there even if ComfyUI stops before the answer.
 - **When it ends** — `"event": "result"` with the same `id` and the outcome: `text` (with the thinking and the LoRA suggestions), `question`, `error` or `stopped`, plus tokens, cost and seconds. The system prompt's text goes back to the page for **Generation info**, but the log keeps only its name.
 
-The log never holds the API key or the images themselves, and a key in an error message is replaced by `***`. When the file passes about 20 MB it is renamed to `warppipe_llm_log.jsonl.1`, replacing an older one, and a new log starts. If the log cannot be written, the request still goes ahead and ComfyUI's console says why. The log holds your requests and prompts in plain text: delete it whenever you like.
+The log never holds the API key or the images themselves, and a key in an error message is replaced by `***`. When the file passes about 20 MB it is renamed to `llm_log.jsonl.1`, replacing an older one, and a new log starts. If the log cannot be written, the request still goes ahead and ComfyUI's console says why. The log holds your requests and prompts in plain text: delete it whenever you like.

@@ -342,8 +342,8 @@ title it is. A fold is one step of the workflow's undo; in a box, `Ctrl+Z` and
 
 Every box is a code editor, and each thing you do to it - a weight, a moved line,
 a comment, a tag from `/` - is one step of its undo. To have plain text boxes
-instead, turn off **WarpPipe > Prompt boxes > Code editor** in the settings
-(`WarpPipe.CodeEditor`). A plain box does not fold: its `////` lines are ordinary
+instead, turn off **Warp Studio > Prompt boxes > Code editor** in the settings
+(`WarpStudio.CodeEditor`). A plain box does not fold: its `////` lines are ordinary
 notes there.
 
 ## Trigger words

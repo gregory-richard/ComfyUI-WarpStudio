@@ -1,22 +1,33 @@
-![WarpPipe](assets/registry/banner.png)
+![Warp Studio](assets/registry/banner.png)
 
-# WarpPipe
+# Warp Studio
 
-ComfyUI nodes for people who switch models a lot and like their LoRAs in the prompt.
+An all-in-one ComfyUI node suite that simplifies model management, streamlines workflows, and makes prompting easier.
+
+It is WarpPipe and Civitai Updater in one package, for people who switch models a lot and like their LoRAs in the prompt.
 
 - **Prompt + LoRAs**: LoRAs are tags in the text, and colours tell you what will load before you queue.
 - **Prompt Writer**: an LLM chat behind every prompt box. Each answer is a version you can compare and send back.
 - **Warp / Unwarp**: a whole generation in one wire.
 - **Warp Send / Select**: switch between model groups without moving a wire.
 - **Save Image (Civitai)**: metadata Civitai reads, so an upload credits the right model and LoRAs.
+- **Civitai panel**: a sidebar panel that tells you which of your models have a newer release, and renames your files into one scheme.
 
 ## Install
 
 ```bash
-comfy node install warppipe
+comfy node install warp-studio
 ```
 
-Or clone into `ComfyUI/custom_nodes` and restart. Python 3.9+, no extra dependencies.
+Or clone `https://github.com/gregory-richard/ComfyUI-WarpStudio` into `ComfyUI/custom_nodes`, run `pip install -r requirements.txt` with ComfyUI's Python, and restart. Python 3.9+. The registry installs the requirements for you.
+
+## Coming from WarpPipe or Civitai Updater
+
+1. Install Warp Studio.
+2. Update the old package, or remove it. Warp Studio switches itself off, with a message, while WarpPipe before 5.1.0 or Civitai Updater before 1.10.0 is still active.
+3. Restart ComfyUI. Your settings, chats, API keys, hashes and the updater's data are copied once into `ComfyUI/user/warp-studio/`. The old files stay where they were.
+
+Nothing looks different: the nodes, the Prompt Writer, the LoRA browser and the **Civitai** panel work as before. Settings now sit under **Warp Studio** in ComfyUI's settings, and the updater's groups read "Civitai Network", "Civitai General" and so on. The HTTP routes start with `/warp-studio/`.
 
 ## Prompt + LoRAs
 
@@ -63,8 +74,8 @@ each version's **Generation info** shows its request, the prompt it edited, the
 model and settings, the system prompt, the cost and the thinking.
 
 - Works with NanoGPT out of the box, or any OpenAI-compatible server (LM Studio, Ollama, llama.cpp).
-- The API key stays on the ComfyUI server (`user/warppipe_llm_keys.json` or `NANOGPT_API_KEY`). It never reaches the browser, a workflow or an image.
-- Bring your own system prompts: a folder of `.txt` files, set under Settings → WarpPipe.
+- The API key stays on the ComfyUI server (`user/warp-studio/llm_keys.json` or `NANOGPT_API_KEY`). It never reaches the browser, a workflow or an image.
+- Bring your own system prompts: a folder of `.txt` files, set under Settings → Warp Studio.
 - It knows your LoRAs for the connected model and can suggest some. Nothing lands in your list until you press **+**.
 - Chats are saved in the ComfyUI user folder and keep writing after you close the pop-up.
 
@@ -113,13 +124,79 @@ a red bicycle by a lake, early morning mist <lora:film-grain-xl:0.8>
 Steps: 30, Sampler: dpmpp_2m, Schedule type: karras, CFG scale: 5.0, Seed: 44,
 Size: 1024x1024, Model hash: 4c2b8e1f0a, Model: demo-sdxl,
 Lora hashes: "film-grain-xl: 3b1f0c2a9d",
-Hashes: {"model":"4c2b8e1f0a","lora:film-grain-xl":"3b1f0c2a9d"}, Version: ComfyUI-WarpPipe
+Hashes: {"model":"4c2b8e1f0a","lora:film-grain-xl":"3b1f0c2a9d"}, Version: ComfyUI-WarpStudio
 ```
 
 It also shows what it saved next to the before image, in the same slider.
 
-If you use [Civitai Updater](https://github.com/gregory-richard/comfyui-civitai-updater),
-WarpPipe reads its `.civitai.info` files for trigger words, base models and titles.
+Trigger words, base models and titles come from the `.civitai.info` files the
+Civitai panel (below) keeps next to your models.
+
+## Civitai panel
+
+The **Civitai** tab in ComfyUI's sidebar checks the models on your disk against
+their Civitai releases and lists the ones that have moved on without you.
+
+![The Civitai panel in the ComfyUI sidebar](assets/docs/panel-sidebar.png)
+
+It identifies each file by its SHA256 hash, reads the `.civitai.info` files you
+already have, and writes only `.civitai.info` and `.preview.png` files next to
+your models. Checking downloads no model; a card links you to the release page.
+
+Three views sit above the list:
+
+- **Updates**: models with a release newer than your newest local version. A card is a ledger of that model's releases, one row per version. Red means one thing: a release exists that you do not have. A **Buzz** badge marks a release that costs Buzz.
+- **Issues**: files Civitai had no release for (a merge, a conversion, a file never uploaded) or could not be asked about (removed, needs an API key). The reason is under each row.
+- **Rename**: see below.
+
+**Check for Updates** scans and compares. **Fetch Missing Metadata** only
+downloads sidecars and previews for models that lack them. Both can be paused,
+resumed and stopped, and survive a page reload. **Arrange** groups the list by
+model type and base model and sorts it. Any release you don't want can be hidden.
+
+The API key, cache time, extra model folders and how mature models show are in
+the settings, under **Warp Studio** in the groups that start with "Civitai".
+
+### Previews from other sources
+
+Some models Civitai no longer serves. For those files, **Fetch Missing Metadata**
+can ask other sources, in order, and the first answer wins:
+
+- **ai-toolkit**: your own trainings. Point it at the folders that hold your runs and their sample images become previews.
+- **Hugging Face**: authors or repos you name, matched by file hash.
+- **civarchive**: looked up by hash. Only the hash is sent.
+
+A hit writes a preview and fills only the empty fields of the info file. It
+never replaces a preview you have, and never changes a file that Civitai
+identifies. The row says the file was found elsewhere. The sources are set under
+**Civitai Preview Fallback** in the settings; civarchive is off until you turn
+it on.
+
+### Renaming your library
+
+The **Rename** view renames your model files after their current Civitai
+releases, in one scheme, all lowercase:
+
+```text
+creator - title - version [precision] (base)
+some_artist - watercolor style - v2 (sdxl)
+some_studio - photo mix - v3 fp16 (sdxl)
+```
+
+A local text model cleans the names. ComfyUI's own **Generate Text** node runs it
+through the queue, and nothing goes to the cloud. Pick it under **Civitai
+Rename** in the settings, or let the view download one (9.75 GB).
+
+1. **Start dry run** lists every old name next to its new one. Nothing on disk changes.
+2. **Review.** Rows that need a look come first and start unticked: a word that is not in Civitai's text, two files with one name, a new base code. Edit any part, or **Ask again**. Files Civitai can't serve, named from the info the preview fallback found, start unticked too.
+3. **Apply selected** renames the ticked rows, together with their `.civitai.info`, previews and any other file that shares the name. Extra copies go to the Recycle Bin.
+
+The naming model gets about three in four names exactly right, so read the list.
+A rename cut off by a crash can be finished or undone on the next start. Saved
+workflows that use the old names will show those models as missing; re-pick
+them. Every move is recorded in `ComfyUI/user/warp-studio/updater/rename_log.jsonl`.
+What is never renamed, and the rest of the details, are in the
+[wiki](WIKI.md#civitai-panel).
 
 ## Example workflow
 
@@ -144,10 +221,17 @@ has the workflow inside: drag it into ComfyUI to open it, or grab the
 | 🌀 Scheduler Adapter for FaceDetailer | KSampler schedulers for FaceDetailer |
 | 🚫 Dead End | Takes anything, does nothing. Parks a branch |
 
+The **Civitai** sidebar panel is not a node; it is described above.
+
 Each node has its own help behind the `?` in ComfyUI. Everything else, every
-input and the HTTP routes are in the **[wiki](WIKI.md)**.
+input and the HTTP routes are in the **[wiki](WIKI.md)**. What changed, release by
+release, is in the [changelog](CHANGELOG.md).
 
 ## Credits
 
-Screenshots use demo LoRAs and stand-in images, not anyone's real models.
-Developed with AI assistance (Claude Opus 5). [MIT License](LICENSE).
+Screenshots use demo LoRAs and stand-in images, not anyone's real models. The
+panel screenshot lists real, publicly listed Civitai models with stand-in
+thumbnails. The panel builds on ideas from
+[Stable-Diffusion-Webui-Civitai-Helper](https://github.com/zixaphir/Stable-Diffusion-Webui-Civitai-Helper).
+Developed with AI assistance (GPT-5.3-Codex, Claude Opus 4.6, Claude Opus 5).
+[MIT License](LICENSE).
