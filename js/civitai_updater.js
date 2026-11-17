@@ -446,7 +446,9 @@ async function loadCachedResults() {
   } finally {
     state.startupLoading = false;
     setLoading("startup", false);
-    state.lastRenderSignature = null;
+    // No forced redraw: cards already drawn stay, so their entry animation
+    // plays out. The loading note cleared the signature itself, so it is
+    // still replaced.
     renderCacheInfo();
     renderResults();
   }
