@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+class SourceUnavailable(Exception):
+    """A fallback source could not answer (network error, non-200, refused redirect, oversized body)."""
+
+
+@dataclass
+class FallbackResult:
+    source: str
+    url: str
+    title: str = ""
+    creator: str = ""
+    version_name: str = ""
+    base_model: str = ""
+    description: str = ""
+    trained_words: list[str] = field(default_factory=list)
+    nsfw: bool = False
+    image_url: str = ""
+    image_path: Path | None = None
+    image_nsfw_level: int = 0
+    civitai_model_id: str = ""
+    civitai_version_id: str = ""
+    final: bool = False
