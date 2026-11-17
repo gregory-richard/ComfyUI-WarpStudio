@@ -4,16 +4,16 @@ Have an LLM write and rewrite an image prompt in a chat, and put the version you
 
 ## Overview
 
-Every **Prompt + LoRAs** has an **✨ AI** button on the top-right corner of its text box. It opens the Prompt Writer, a pop-up with your chats on the left and the conversation on the right. Say what you want and press the round **↑** in the input (or Ctrl+Enter). Each answer is a new version in the chat. Press **Send to prompt** on a version to write it into a Prompt + LoRAs. Writing a prompt never queues an image, and the Prompt Writer takes no part in a run.
+Every **Prompt + LoRAs** has an **✨ AI Prompt Writer** button just above its prompt box, in the middle of the node's last row of inputs and outputs, so it takes no room from the text (on a narrow node it says only **✨ AI**). It opens the Prompt Writer, a pop-up with your chats on the left and the conversation on the right. Say what you want and press the round **↑** in the input (or Ctrl+Enter). Each answer is a new version in the chat. Press **Send to ComfyUI** on a version to write it into a Prompt + LoRAs. Writing a prompt never queues an image, and the Prompt Writer takes no part in a run.
 
-Writing goes on in the background. You can close the pop-up (Esc or ×; clicking outside it does nothing), start something in another chat, or go back to the canvas. The **✨ AI** button turns yellow while a chat opened from that node is writing and shows a green dot when one has finished and you have not looked at it yet. A toast says when a prompt is ready.
+Writing goes on in the background. You can close the pop-up (Esc, ×, or a click outside it), start something in another chat, or go back to the canvas. The **✨ AI Prompt Writer** button turns yellow while a chat opened from that node is writing and shows a green dot when one has finished and you have not looked at it yet. A toast says when a prompt is ready.
 
 ## Layout
 
 The left rail holds **Prompt Writer** with its settings (the cog), **New chat** and your chats. On the right is the open chat: its title and **For** at the top, the versions in a reading column, and the input at the bottom.
 
 - **Title** — Click to rename the chat. A new chat is named after your first request.
-- **For** — The Prompt + LoRAs this chat writes for. **Send to prompt**, **Edit current prompt** and the LoRA suggestions all use it. Each chat remembers its own choice by the node's label (its group title, else its own title). A new chat starts on the node you opened it from, and if a remembered label is no longer in the workflow the chat falls back to that node, else to the first one.
+- **For** — The Prompt + LoRAs this chat writes for. **Send to ComfyUI**, **Edit current prompt** and the LoRA suggestions all use it. Each chat remembers its own choice by the node's label (its group title, else its own title). A new chat starts on the node you opened it from, and so does an empty chat you pick from the list (one with no version and nothing typed), and if a remembered label is no longer in the workflow the chat falls back to that node, else to the first one.
 
 ## Settings
 
@@ -30,34 +30,51 @@ The cog in the rail opens everything that is set once and then left alone:
 
 ## Chats
 
-The **✨ AI** button of a node opens the most recent chat for that node, or a new empty chat if it has none; while the pop-up is open it switches the same way. A node that is writing or has an unseen result opens that chat first.
+The **✨ AI Prompt Writer** button of a node opens the most recent chat for that node, or a new empty chat if it has none; while the pop-up is open it switches the same way. A node that is writing or has an unseen result opens that chat first.
 
 **New chat** is at the top of the left rail. Each chat shows how many versions it has and when it last changed, a yellow `Writing 4 s` while it writes, `Waiting for your answer` while the AI has a question, and a green check (a ? for a question) until you open it. Its **⋮** menu renames or deletes it; deleting asks first. Several chats can write at the same time.
 
 ## Versions
 
-Each **Write** is one card: its version number, what it changed (`edit of v2`, `edit of the current prompt` or `new prompt`), what it cost and how long it took (e.g. `Finished · 0.3 ¢ · 8 s · 1,812 → 640 tokens`), then what you asked for with its images and any questions the AI asked on the way, and then the prompt it wrote. The LLM sees only what it edits, your request and those questions and answers, never the rest of the chat, which is why it is not shown as a conversation.
+Versions are numbered in the order they were made (v1, v2, v3…) and keep that order, the newest at the bottom. A number stays with its version: deleting one leaves a gap, and only the newest version's number is given out again. Each version is one line, its number and its title, and one version is open at a time: click a line to open it, and the one that was open closes. The version you clicked stays where it is on the screen. A new version opens by itself when it is done.
 
-The newest version is open and editable; your edit is saved when you click away. Older versions are one line with your request; click to read them.
+**Titles.** While a version is written, the cheap title model (**Title model** in the settings, about 0.002 ¢ per title) names it in a few words: what it shows for a new prompt, what it changes for an edit (`Fishing Rod and Mist`). Until the title comes, or if it fails, the line shows your request. Hand edits read `Edited by hand` with how many words changed, prompts taken from a node `Taken from the node`. A **Recreate** with the request unchanged keeps the title of the version it wrote again, and a **Retry** keeps its own. Versions from before titles are named once, in the background, the first time you open the Prompt Writer after updating: a few at a time, in every chat, for about 0.002 ¢ each. That needs ComfyUI restarted after the update, so the server names edits for what they change; until then they keep showing their request.
 
-Above the prompt a line says what changed from the version it edits, counted in words (`Changes from v2 +38 −12 words`), or that it is the same. **Show changes** switches the prompt for its changes: the new text reads as it is, with a margin line by each line that changed; what is new is lightly green, and right above each changed piece is, small and red, what it replaced (or, where something was only taken out, what went, over a thin red mark); a line that was taken out stays, small and red; when most of it is new (`Mostly rewritten from v2`), the two versions stand side by side instead. **Show prompt** switches back.
+An open version shows, above its prompt, a row of switches:
 
-- **→ Send to prompt** — Writes the version's text, exactly as it is, into the Prompt + LoRAs chosen under **For**, as one undo step. That node flashes and the pop-up closes. It writes only the prompt and never touches the LoRA lists.
-- **Pencil** — On older versions: the next request edits this version.
-- **Again arrow** (appears on hover) — Puts that request back into the input with its images and what it edited, above anything you had typed there. Nothing is deleted: what you send becomes the next version. It is not there while the AI waits for an answer, since the answer goes in the same box.
-- **Chat titles** — While the first version is being written, a cheap model names the chat from your message (**Title model** in the settings, about 0.002 ¢ per title). A title you typed always stays; an empty field or a failure keeps the first words of your message.
+- **Request** — Open on every version until you close it: what you asked for, the questions the AI asked on the way with your answers, and the images you sent.
+- **Changes** — What changed from the version it was made from, in words added and removed (`Changes +38 −12`, `Rewritten` when most of it is new, or `Same as v2`). Open, the prompt below shows its changes: the new text reads as it is, with a margin line by each line that changed; what is new is lightly green, and right above each changed piece is, small and red, what it replaced (or, where something was only taken out, what went, over a thin red mark); a line that was taken out stays, small and red; a rewrite shows the two versions side by side. Click it again for the prompt.
+- **LoRAs** — How many were on and how many the AI suggests; open, they show under the row. See LoRA suggestions.
+
+The switches sit above the prompt, so opening one never moves it. Under the prompt is the one button: **Send to ComfyUI (Group)**, named for the group (or node) chosen under **For**. It writes the version's text, exactly as it is, into that Prompt + LoRAs's prompt box, as one undo step. That node flashes and the pop-up closes. It writes only the prompt and never touches the LoRA lists.
+
+The newest version, when it is open, is editable. When you click away, what the AI wrote stays as it was and your text becomes a new version under it, a hand edit. Until that hand edit is sent to a node or a request starts from it, more typing changes it instead of adding another; an edit that only changes spacing is not kept.
+
+**The ⋮ of a version** (on a closed line it shows while you point at it) holds everything else, each with a line that says what it does:
+
+- **Generation info** — Everything about how the version came to be, together: what it was made from, when it was written, the model, temperature, thinking level, the LoRAs offered and the server, what it cost, how long it took and its tokens in and out, your request with its images, the questions the AI asked on the way, the prompt it edited, the system prompt as the server read it for that write (so a version stays readable after you change the file), and the model's thinking. Esc or a click outside closes it. Versions written before the settings were kept show only the model and the system prompt's name.
+- **Use as input** — Your next request edits this version: it is chosen under **Edit …** in the input below, which lights up. Nothing is sent. A click on the version's dot in the graph does the same.
+- **Retry** (on versions the AI wrote) — Writes the version again, at once, from the same request, images, answered questions and the version it edited, and replaces it with the new answer: same number, same place. It uses the model and settings chosen now. It is greyed out once other versions were made from this one, since they came from what it says now; use Recreate there. Stop leaves the version as it was. If the AI asks a question first, your answer still finishes the retry, and a failed retry keeps its own **Retry**.
+- **Recreate** (on versions the AI wrote) — Opens the version with its request in a field, where it was shown, to change or leave as it is. **Recreate** under it (or Ctrl+Enter) writes a new version beside this one, from the same version it edited, with the same images and the model and settings chosen now. This one stays, so you can compare the two. Unchanged, the request takes its answered questions and its title along; changed, it is a request of its own: the AI may ask again, the new version gets its own title, and Stop puts it into the input. **Cancel**, Esc or opening another version leaves it as it was.
+- **Delete** — Asks first, in the menu, and says how many versions made from this one go with it (`Delete v3 and the 2 versions made from it?`). It cannot be undone. The other versions keep their numbers. It is greyed out while a write, a question or a failed request starts from the version or one made from it.
+
+Retry and Recreate wait while the chat is writing or while the AI waits for an answer, since the answer goes in the input.
+
+**The graph** on the left of the versions shows which version came from which, like git history: a dot for each version (filled: written by the AI, hollow: edited by hand, square: taken from the node) and a line to every version made from it. A version's first follow-up continues its line; trying something else on a version that already has one branches off into a line of its own. **Click a dot to use that version as the input** of your next request: the chosen dot has a ring, and it and its path back to the start are lit. Left of the graph, a **−** beside a version folds the versions made from it that lead away from where you are working, and its line shows how many (`+2`); **+** shows them again. The newest version, the one the next request edits and their paths never fold away. Folds are saved with the chat.
+
+- **Chat titles** — While the first version the AI writes is being written, the title model names the chat from your message. A title you typed always stays; an empty field or a failure keeps the first words of your message.
 - **⋮ on a chat** — **Rename** or **Delete** it.
 
 A request that fails shows a red card with the message and **Retry**, and does not count as a version. The card is kept with the chat, so it is still there after a reload. **Retry** sends the request again with the settings as they are now (model, system prompt, temperature, server); the undo arrow takes it back into the input instead.
 
 ## Writing a request
 
-The box at the bottom grows with your text. Images you add show above the text, and a row of tools sits under it:
+The box at the bottom lines up with the versions above it and grows with your text. The settings of the next request are a bar along its top, the images you add show under that bar, and **↑** sits in the corner of the text:
 
 - **Image** — Add images; drag and drop and Ctrl+V work too. Up to 8 per request, uploaded to `input/`. They are sent only when the model has vision; otherwise they are left out and the Prompt Writer says so.
 - **What the next request does** — Sent to the LLM with your request, so a change request returns the complete updated prompt:
-  - **Edit v3 · newest** (or an older version) — The newest is chosen until you pick another; the pencil on an older version picks it too.
-  - **Edit current prompt** — The text in the prompt box of the **For** node, read when you press **↑**. The card keeps it under "The current prompt it edited", so you can see what went.
+  - **Edit v3 (newest)** (or the version you chose) — The newest is chosen until you choose another by clicking its dot in the graph, or with **Use as input** in its ⋮. The list holds only that one version, not all of them.
+  - **Edit current prompt** — The text in the prompt box of the **For** node, read when you press **↑**. It becomes a version of the chat first, so you can go back to it even after **Send to ComfyUI** has replaced it in the node: a version that holds exactly that text is simply edited; a tweak of a version (at most 60% of its words changed) is added as a hand edit of it, `in the node`; anything else is added as a new start `from` that node.
   - **New prompt** — A new prompt from your request alone.
   - Editing with an empty box asks the LLM to optimise the prompt.
 - **LoRAs** — **Off**, **List** or **All**; the choice is kept and the numbers say how many LoRAs each offers. See LoRA suggestions.
@@ -65,7 +82,7 @@ The box at the bottom grows with your text. Images you add show above the text, 
 
 ## While it writes
 
-The card shows what the model is doing (waiting, thinking or writing), the seconds, and an estimate of the tokens it has answered so far; the exact count replaces it when the version is done. Models that send their thinking show it under **Thinking** as it comes, scrolled to the newest line, and the prompt appears as it is written. Once the prompt starts, the thinking folds away, and a finished version keeps it, folded, under its request. Whether a model sends its thinking depends on the model: the `:thinking` variants in NanoGPT's list do.
+The card shows what the model is doing (waiting, thinking or writing), the seconds, and an estimate of the tokens it has answered so far; the exact count replaces it when the version is done. Models that send their thinking get a **Thinking** switch, closed; open it to watch it come, scrolled to the newest line. The prompt appears as it is written, and a finished version keeps the thinking in its **Generation info**. Whether a model sends its thinking depends on the model: the `:thinking` variants in NanoGPT's list do.
 
 ## Questions
 
@@ -81,9 +98,9 @@ With **LoRAs** on **List** or **All**, each **Write** tells the LLM about your L
 
 With **Off**, the LLM hears nothing about LoRAs and suggests none.
 
-Under each version, **Active LoRAs** shows what was on when it was written, with its strength and a check while it is still on. Press the check to comment its line out and **+** to switch it on again; the version's text stays as it is. A LoRA written in the prompt text shows a check but is not switched from here.
+Above an open version's prompt, the **LoRAs** switch says how many LoRAs were on and how many the AI suggests; it starts closed, and stays open while the pop-up is open once you open it. Inside, **On when it was written** shows what was on when it was written, with its strength and a check while it is still on. Press the check to comment its line out and **+** to switch it on again; the version's text stays as it is. A LoRA written in the prompt text shows a check but is not switched from here.
 
-The LLM may answer with LoRAs that would clearly help the image: with LoRAs active at most two, and only for something they do not already cover; with none active up to five. They appear under the version as **Suggested LoRAs**, each with its preview, a strength and a short reason. **Nothing is added on its own.** Press **+** on a suggestion to:
+The LLM may answer with LoRAs that would clearly help the image: with LoRAs active at most two, and only for something they do not already cover; with none active up to five. They appear under the version's **LoRAs** switch as **Suggested**, each with its preview, a strength and a short reason. **Nothing is added on its own.** Press **+** on a suggestion to:
 
 - switch on its commented line if the LoRA is already in the list, keeping the weight written there, or otherwise add `<lora:name:0.80>` as a new last line of the LoRA list of the **For** node, as one undo step;
 - put the LoRA's trigger words, if it has any, as a new first line of that version.
@@ -99,13 +116,13 @@ The key is never stored in a workflow, in image metadata or in the browser. Warp
 
 ## Where chats are stored
 
-Chats are stored in the ComfyUI user folder, in `warppipe_prompt_chats.json` (`ComfyUI/user/default/` on a single-user install). They are never stored in a workflow or in images. The base URL, model, system prompt and temperature are ComfyUI settings.
+Chats are stored in the ComfyUI user folder, in `warppipe_prompt_chats.json` (`ComfyUI/user/default/` on a single-user install). They are never stored in a workflow or in images. The base URL, model, system prompt and temperature are ComfyUI settings. Each chat also keeps the text of the system prompts its versions were written with, once per text however many versions share it, and drops one when no version uses it any more.
 
 ## Request log
 
 Every request is also written to `warppipe_llm_log.jsonl` in the ComfyUI user folder (`ComfyUI/user/` itself), one JSON object per line, on this machine only:
 
 - **When it is sent** — `"event": "request"` with the time, an `id`, the chat, the server's host, model, system prompt name, temperature, thinking level, your request (`idea`), the prompt it edits (`previous_result`), the image names, the questions and answers so far, and the LoRA choice with how many LoRAs were offered and active. It is written at once, so it is there even if ComfyUI stops before the answer.
-- **When it ends** — `"event": "result"` with the same `id` and the outcome: `text` (with the thinking and the LoRA suggestions), `question`, `error` or `stopped`, plus tokens, cost and seconds.
+- **When it ends** — `"event": "result"` with the same `id` and the outcome: `text` (with the thinking and the LoRA suggestions), `question`, `error` or `stopped`, plus tokens, cost and seconds. The system prompt's text goes back to the page for **Generation info**, but the log keeps only its name.
 
 The log never holds the API key or the images themselves, and a key in an error message is replaced by `***`. When the file passes about 20 MB it is renamed to `warppipe_llm_log.jsonl.1`, replacing an older one, and a new log starts. If the log cannot be written, the request still goes ahead and ComfyUI's console says why. The log holds your requests and prompts in plain text: delete it whenever you like.

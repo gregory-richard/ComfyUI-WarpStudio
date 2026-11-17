@@ -15,7 +15,7 @@ import {
   loadCodeEditor,
   mountCodeEditor,
 } from "./prompt_editor.js";
-import { writeButtonFor } from "./prompt_writer.js";
+import { writeBarFor } from "./prompt_writer.js";
 import { escapeAttr, escapeHTML, stemOf, toggleCommentLines } from "./text.js";
 import { keepWidgetValuesByName } from "./widget_values.js";
 
@@ -168,7 +168,7 @@ body.wpe-own-tip .p-tooltip { display: none !important; }
 }
 
 /* The code editor, laid over its textarea by its own measure(), under the strip,
-   the grip and the AI button. The textarea is still there and still laid out,
+   the grip and the AI Prompt Writer button. The textarea is still there and still laid out,
    so a box goes on being sized from it; it just cannot be seen or pressed. */
 .wpc-host {
   position: absolute; z-index: 1; overflow: hidden;
@@ -1571,6 +1571,11 @@ app.registerExtension({
       const holder = el?.parentElement;
       if (!holder) return;
       if (strip.el.parentElement !== holder) holder.appendChild(strip.el);
+      // The AI Prompt Writer button floats just above the field, in the empty
+      // middle of the last row of slots, so it never sits over the text and
+      // takes no room from it.
+      const bar = writeBarFor(node);
+      if (bar.parentElement !== holder) holder.appendChild(bar);
       const want = `${STRIP_H}px`;
       if (el.style.paddingBottom !== want) {
         el.style.paddingBottom = want;
@@ -2174,10 +2179,6 @@ app.registerExtension({
         box.grip = grip;
       }
       if (box.grip.parentElement !== holder) holder.appendChild(box.grip);
-      if (box === prompt) {
-        const write = writeButtonFor(node);
-        if (write.parentElement !== holder) holder.appendChild(write);
-      }
     };
 
     /** Give a widget a fixed height, or no room at all to hide it.

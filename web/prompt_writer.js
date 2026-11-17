@@ -1,5 +1,5 @@
-// 🌀 Prompt Writer: a chat-style pop-up, opened from the ✨ AI button on each
-// 🌀 Prompt + LoRAs, where an LLM writes and rewrites an image prompt.
+// 🌀 Prompt Writer: a chat-style pop-up, opened from the ✨ AI Prompt Writer button above
+// the prompt of each 🌀 Prompt + LoRAs, where an LLM writes and rewrites an image prompt.
 //
 // It exists only in the frontend, so it never takes part in a queued prompt.
 // Every network call goes through the /warppipe/llm routes; the browser never
@@ -34,31 +34,54 @@ import {
   reasoningLevel,
   resolveTarget,
   splitLines,
-  statusParts,
   targetLoraTags,
 } from "./prompt_writer_core.js";
 import {
   CHATS_FILE,
   CURRENT_PROMPT,
+  KIND_HAND,
+  KIND_NODE,
+  KIND_WRITTEN,
   NEW_PROMPT,
   addVersion,
+  adoptText,
+  branchOf,
+  canFold,
   clearFailure,
   createChat,
   deleteChat,
+  deleteVersion,
   dropQuestion,
+  editVersion,
   emptyStore,
+  foldedCount,
+  hasFollowUps,
+  historyLayout,
   isStore,
+  keepSystemPrompt,
+  keptPaths,
   latestChatFor,
+  markSent,
   mergedDraft,
+  nextVersionNumber,
   normalizeStore,
   openQuestion,
+  originLabel,
+  pathTo,
   recordFailure,
   renameChat,
+  replaceVersion,
+  rowText,
   setAutoTitle,
+  setVersionTitle,
   sortedChats,
-  startLabel,
   startOptions,
   startValue,
+  systemPromptOf,
+  toggleFold,
+  unfoldTo,
+  untitledVersions,
+  visibleVersions,
 } from "./prompt_chats.js";
 
 const SETTING_DIR = "WarpPipe.PromptWriter.SystemPromptDir";
@@ -87,7 +110,7 @@ const LIVE_MS = 100;
 
 // The composer's height, in lines of its CSS line-height plus padding and border.
 const INPUT_LINE = 19;
-const INPUT_CHROME = 13;
+const INPUT_CHROME = 19;
 const INPUT_MIN_LINES = 3;
 const INPUT_MAX_LINES = 10;
 
@@ -95,15 +118,34 @@ const PLACEHOLDER_WRITE = "Describe the prompt, or the change you want. Ctrl+Ent
 const PLACEHOLDER_ANSWER = "Answer the question. Ctrl+Enter sends.";
 const ATTACH_TITLE = "Add images (or drop or paste them here)";
 const REWIND_TITLE = "Take this request back into the input";
-const AGAIN_TITLE =
-  "Write this request again: it goes into the input with its images and what it edited. Nothing is deleted.";
+const followedTitle = (n) =>
+  `Versions were made from v${n}, so writing over it would change what they came from. Recreate writes a new version beside it instead.`;
+
+// The AI Prompt Writer button floats just above the prompt box, in the middle of
+// the node's last row of slots, where nothing is drawn: it takes no room of its own.
+// Canvas pixels from the box's top edge to the button's bottom edge.
+const WRITE_BUTTON_GAP = 12;
+// Below this width (canvas pixels) the full name would run into the slot labels.
+const WRITE_BUTTON_SHORT = 280;
+// The height of a card's first line, which the graph's dots sit in the middle of.
+const HEAD_LINE = 30;
+// The side padding of the conversation and of the input, which line up.
+const COMPOSER_PAD = 24;
 
 const STYLE = `
-.wpw-open {
-  position: absolute; top: 4px; right: 14px; z-index: 4;
-  height: 26px; padding: 0 10px; font: 400 14px/26px var(--font-inter, Inter, Arial, sans-serif); cursor: pointer;
-  color: #fff; background: var(--primary-background, #0b8ce9); border: 0; border-radius: 6px;
+/* Above the prompt box, never over its text, in the empty middle of the node's last
+   row of slots. The row it spans lets every press through but the button's own, so
+   the slots and the node still drag as before; the canvas scales it with the box. */
+.wpw-open-bar {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + ${WRITE_BUTTON_GAP}px); z-index: 4; height: 20px;
+  display: flex; justify-content: center; pointer-events: none; container-type: inline-size;
 }
+.wpw-open {
+  position: relative; height: 20px; padding: 0 10px; cursor: pointer; white-space: nowrap; pointer-events: auto;
+  font: 500 12px/20px var(--font-inter, Inter, Arial, sans-serif);
+  color: #fff; background: var(--primary-background, #0b8ce9); border: 0; border-radius: 5px;
+}
+@container (max-width: ${WRITE_BUTTON_SHORT - 1}px) { .wpw-open-more { display: none; } }
 .wpw-open:hover { background: var(--primary-background-hover, #31b9f4); }
 .wpw-open.is-writing { color: #1a1a1a; background: #e8c44e; border-color: #e8c44e; }
 .wpw-open.has-unseen::after {
@@ -144,6 +186,8 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 }
 .wpw-modal button, .wpw-modal input, .wpw-modal select, .wpw-modal textarea { font: inherit; color: inherit; }
 .wpw-modal :focus-visible { outline: 2px solid var(--wpw-warp); outline-offset: 1px; }
+/* Parts given a display of their own still hide while they have nothing to show. */
+.wpw-modal [hidden] { display: none !important; }
 .wpw-modal .pi { font-size: inherit; line-height: 1; }
 .wpw-spacer { flex: 1; }
 
@@ -296,66 +340,159 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-convo > .wpw-hint { margin: auto; max-width: 420px; text-align: center; color: var(--wpw-muted); }
 .wpw-hint.is-error { color: var(--wpw-red); }
 
-.wpw-card { background: var(--wpw-panel); border: 1px solid var(--wpw-line); border-radius: 10px; padding: 12px 14px; }
-.wpw-card.is-newest { border-color: color-mix(in srgb, var(--wpw-warp) 45%, var(--wpw-rule)); }
-.wpw-card.is-writing, .wpw-card.is-question { border-color: color-mix(in srgb, var(--wpw-yellow) 55%, transparent); }
-.wpw-card.is-error { border-color: color-mix(in srgb, var(--wpw-red) 60%, transparent); }
-.wpw-card-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+/* The versions in the order they were made, with a graph on their left of what came from
+   what. A closed version is a light row and only an open one is a card, so the history
+   reads as a list and the open card is what stands out. */
+.wpw-history { position: relative; display: flex; flex-direction: column; gap: 2px; }
+.wpw-graph { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.wpw-edge { fill: none; stroke: var(--wpw-muted); stroke-width: 1.5; opacity: 0.55; }
+.wpw-edge.is-path { stroke: var(--wpw-warp); stroke-width: 2; opacity: 1; }
+.wpw-edge.is-next { stroke: var(--wpw-yellow); stroke-dasharray: 3 3; opacity: 0.8; }
+.wpw-node { fill: var(--wpw-muted); stroke: var(--wpw-muted); stroke-width: 1.5; }
+.wpw-node.is-path { fill: var(--wpw-warp); stroke: var(--wpw-warp); }
+.wpw-node.is-hand { fill: var(--wpw-ground); stroke-width: 2; }
+.wpw-node.is-next { fill: var(--wpw-ground); stroke: var(--wpw-yellow); stroke-dasharray: 2 2; }
+/* A version's dot is a button: it makes the version the input of the next request. The
+   chosen one has a ring; pointing at another shows where its ring would be. */
+.wpw-graph .wpw-pick { pointer-events: auto; cursor: pointer; }
+.wpw-graph .wpw-hit { fill: transparent; pointer-events: all; }
+.wpw-ring { fill: none; stroke: transparent; stroke-width: 1.5; }
+.wpw-pick:hover .wpw-ring { stroke: color-mix(in srgb, var(--wpw-warp) 55%, transparent); }
+.wpw-pick.is-chosen .wpw-ring { stroke: var(--wpw-warp); }
+/* Fold controls sit in the graph's margin, beside the dot of the version they fold. */
+.wpw-modal .wpw-fold {
+  position: absolute; left: 0; top: 0; z-index: 1; width: 16px; height: 16px; padding: 0;
+  border: 0; border-radius: 4px; background: transparent; opacity: 0.55;
+  color: var(--wpw-muted); cursor: pointer; font-size: 9px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wpw-modal .wpw-fold:hover { opacity: 1; color: var(--wpw-ink); background: var(--wpw-raised-hover); }
+
+.wpw-card { border: 1px solid transparent; border-radius: 8px; padding: 3px 10px; }
+.wpw-card:not(.is-open):hover { background: color-mix(in srgb, var(--wpw-ink) 4%, transparent); }
+/* Open, a card grows only downwards: its first line stays exactly where it was. */
+.wpw-card.is-open {
+  margin-bottom: 6px; padding: 3px 10px 12px; background: var(--wpw-panel); border-color: var(--wpw-line);
+}
+.wpw-card.is-writing, .wpw-card.is-question { border-color: color-mix(in srgb, var(--wpw-yellow) 45%, transparent); }
+.wpw-card.is-error { border-color: color-mix(in srgb, var(--wpw-red) 50%, transparent); }
+/* One line of one height, closed or open: the number, the title, the menu. */
+.wpw-card-head { display: flex; align-items: center; gap: 10px; height: ${HEAD_LINE}px; line-height: ${HEAD_LINE}px; }
 .wpw-card-head.is-toggle { cursor: pointer; }
-.wpw-ver { flex: none; font-size: 13px; font-weight: 600; }
-.wpw-from { flex: none; font-size: 12px; color: var(--wpw-muted); }
+.wpw-ver { flex: none; min-width: 20px; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.wpw-fold-count { flex: none; font-size: 11.5px; color: var(--wpw-muted); }
+.wpw-head-text {
+  flex: 1; min-width: 0; color: var(--wpw-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wpw-card.is-open .wpw-head-text { color: var(--wpw-ink); font-weight: 500; }
+.wpw-card .wpw-head-text.is-empty { font-style: italic; font-weight: 400; color: var(--wpw-muted); }
+/* A version's ⋮: always there on the open card, on a closed one while pointed at. */
+.wpw-modal .wpw-card-menu { width: 26px; height: 26px; }
+.wpw-card:not(.is-open):not(:hover) .wpw-card-menu:not(.is-active):not(:focus-visible) { opacity: 0; }
+.wpw-modal .wpw-card-menu.is-active { background: var(--wpw-raised-hover); color: var(--wpw-ink); }
+
+/* The menu of a version. Each line says what it does, so Retry and Recreate read apart. */
+.wpw-vmenu { position: fixed; width: 280px; display: flex; flex-direction: column; padding: 5px; }
+.wpw-vmenu-item {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 6px 8px; text-align: left;
+  background: none; border: 0; border-radius: 6px; cursor: pointer;
+}
+.wpw-vmenu-item .pi { flex: none; width: 14px; margin-top: 3px; font-size: 12px; color: var(--wpw-muted); }
+.wpw-vmenu-item:hover:not(:disabled) { background: var(--wpw-raised-hover); }
+.wpw-vmenu-item:disabled { cursor: default; opacity: 0.5; }
+.wpw-vmenu-item.is-danger, .wpw-vmenu-item.is-danger .pi { color: var(--wpw-red); }
+.wpw-vmenu-words { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.wpw-vmenu-label { font-size: 13px; }
+.wpw-vmenu-sub { font-size: 11.5px; color: var(--wpw-muted); }
+.wpw-vmenu-rule { height: 1px; margin: 4px 6px; background: var(--wpw-line); }
+.wpw-vmenu-confirm { padding: 8px 8px 10px; font-size: 12.5px; line-height: 1.45; }
+.wpw-vmenu-buttons { display: flex; justify-content: flex-end; gap: 6px; padding: 0 4px 4px; }
+
+/* Generation info: everything about how a version came to be, over the conversation. */
+.wpw-info-shade {
+  position: absolute; inset: 0; z-index: 7; padding: 28px;
+  display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45);
+}
+.wpw-info {
+  width: min(720px, 100%); max-height: 100%; display: flex; flex-direction: column; outline: none;
+  background: var(--wpw-ground); border: 1px solid var(--wpw-rule); border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+.wpw-info-head { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 18px; border-bottom: 1px solid var(--wpw-line); }
+.wpw-info-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wpw-info-body { overflow-y: auto; padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 16px; }
+.wpw-info-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 18px; margin: 0; font-size: 12.5px; }
+.wpw-info-grid dt { color: var(--wpw-muted); }
+.wpw-info-grid dd { margin: 0; overflow-wrap: anywhere; user-select: text; }
+.wpw-info-name { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--wpw-muted); }
+.wpw-info-text {
+  max-height: 220px; overflow-y: auto; padding: 8px 10px; border-radius: 6px; background: var(--wpw-panel);
+  font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
+}
+.wpw-info-text.is-note { padding: 0; background: none; font-style: italic; color: var(--wpw-muted); }
+.wpw-info-part .wpw-turns { margin-top: 8px; }
 .wpw-status {
-  flex: none; display: flex; align-items: center; gap: 12px; max-width: 65%; overflow: hidden;
+  flex: none; display: flex; align-items: center; gap: 8px; height: ${HEAD_LINE}px;
   font-size: 12px; color: var(--wpw-muted); white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 .wpw-card.is-writing .wpw-status, .wpw-card.is-question .wpw-status { color: var(--wpw-yellow); }
 .wpw-card.is-error .wpw-status { color: var(--wpw-red); }
-.wpw-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--wpw-green); margin-right: -4px; }
-.wpw-preview { flex: 1; min-width: 0; color: var(--wpw-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* What was asked: a quiet margin line, so the prompt below it is what stands out. */
-.wpw-ask {
-  position: relative; margin-top: 10px; padding: 2px 34px 2px 12px;
-  border-left: 2px solid color-mix(in srgb, var(--wpw-warp) 55%, transparent);
-}
-.wpw-said { display: flex; gap: 10px; align-items: baseline; }
-.wpw-said + .wpw-said { margin-top: 5px; }
-.wpw-who { flex: none; width: 26px; font-size: 11px; color: var(--wpw-muted); }
-.wpw-said-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.wpw-said.is-empty .wpw-said-text { font-style: italic; color: var(--wpw-muted); }
-.wpw-said.is-question .wpw-who, .wpw-said.is-question .wpw-said-text { color: var(--wpw-yellow); }
-.wpw-rewind {
-  position: absolute; top: 0; right: 0; width: 26px; height: 26px; padding: 0;
-  display: flex; align-items: center; justify-content: center;
+/* Puts the request back into the input. On a version only while pointed at. */
+.wpw-modal .wpw-rewind {
+  flex: none; width: 26px; height: 26px; margin-top: 2px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 6px; background: transparent; color: var(--wpw-muted);
-  font-size: 12px; cursor: pointer; opacity: 0; pointer-events: none;
+  font-size: 12px; cursor: pointer; opacity: 0;
 }
-.wpw-rewind.is-inline { position: static; flex: none; }
-.wpw-ask:hover .wpw-rewind, .wpw-card-head:hover .wpw-rewind, .wpw-rewind:focus-visible { opacity: 1; pointer-events: auto; }
-.wpw-rewind:hover { background: var(--wpw-raised-hover); color: var(--wpw-ink); }
-.wpw-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0 36px; }
+.wpw-card:hover .wpw-rewind, .wpw-modal .wpw-rewind:focus-visible, .wpw-modal .wpw-rewind.is-shown { opacity: 1; }
+.wpw-modal .wpw-rewind:hover { background: var(--wpw-raised-hover); color: var(--wpw-ink); }
+
+/* The images a request sent and the questions on the way, quiet under the request. */
+.wpw-turns { margin: 0 0 4px; font-size: 12.5px; }
+.wpw-said-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 10px; line-height: 19px; }
+.wpw-who { font-size: 11px; color: var(--wpw-muted); }
+.wpw-said { white-space: pre-wrap; overflow-wrap: anywhere; }
+.wpw-who.is-question, .wpw-said.is-question { color: var(--wpw-yellow); }
+.wpw-said.is-empty { font-style: italic; color: var(--wpw-muted); }
+/* Your request on an open version: quiet, with a rule so it does not read as the prompt. */
+.wpw-request { padding: 2px 0 2px 10px; border-left: 2px solid var(--wpw-line); font-size: 13px; }
+.wpw-request .wpw-thumbs { margin: 6px 0 2px; }
+/* Recreate: the request in a field of its own, in the place where it was shown. */
+.wpw-modal .wpw-recreate-input {
+  display: block; width: 100%; box-sizing: border-box; margin: 0; padding: 6px 10px; resize: none;
+  font-size: 13px; line-height: 19px; background: var(--wpw-ground); border-radius: 6px; outline: none;
+  border: 1px solid color-mix(in srgb, var(--wpw-warp) 70%, transparent);
+}
+.wpw-recreate-row { display: flex; justify-content: flex-end; gap: 6px; margin: 8px 0 2px; }
+.wpw-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 .wpw-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; display: block; }
-.wpw-quote { margin-bottom: 6px; font-size: 12px; }
-.wpw-quote summary { cursor: pointer; color: var(--wpw-muted); }
-.wpw-quote-text {
-  margin-top: 4px; padding: 6px 10px; max-height: 30vh; overflow-y: auto; white-space: pre-wrap;
-  overflow-wrap: anywhere; background: var(--wpw-ground); border-radius: 6px; user-select: text;
-}
 .wpw-hint-line { margin-top: 8px; font-size: 12px; color: var(--wpw-muted); }
-/* What changed from the version before: counts on a line, then marked or side by side. */
-.wpw-diff-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--wpw-muted); }
+
+/* Above the prompt, one row of switches: the changes and the LoRAs. An open switch shows
+   its part below the row, so the switch itself never moves. */
+.wpw-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; margin: 0 0 2px; font-size: 12px; color: var(--wpw-muted); }
+.wpw-modal .wpw-toggle {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0;
+  border: 0; background: none; color: var(--wpw-muted); cursor: pointer; font-size: 12px;
+}
+.wpw-modal .wpw-toggle:hover, .wpw-modal .wpw-toggle.is-open { color: var(--wpw-ink); }
+.wpw-modal .wpw-toggle .pi { font-size: 8px; transition: transform 0.12s ease; }
+.wpw-modal .wpw-toggle.is-open .pi { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .wpw-modal .wpw-toggle .pi { transition: none; } }
+.wpw-toggle-count { color: var(--wpw-muted); font-variant-numeric: tabular-nums; }
+.wpw-toggle-count.is-new { color: var(--wpw-ink); }
+.wpw-meta-note { line-height: 26px; }
+.wpw-panel { margin: 4px 0 6px; }
+/* The one button under the prompt, naming where it writes; a long group name is cut short. */
+.wpw-send-to { max-width: 100%; }
+.wpw-send-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .wpw-diff-added { color: var(--wpw-green); font-variant-numeric: tabular-nums; }
 .wpw-diff-removed { color: var(--wpw-red); font-variant-numeric: tabular-nums; }
-.wpw-modal .wpw-diff-toggle {
-  height: 24px; padding: 0 9px; font-size: 12px; color: var(--wpw-ink); cursor: pointer;
-  background: none; border: 1px solid var(--wpw-line); border-radius: 6px;
-}
-.wpw-modal .wpw-diff-toggle:hover { border-color: var(--wpw-warp); }
 .wpw-diff, .wpw-diff-col {
   background: var(--wpw-ground); border-radius: 8px; padding: 10px 12px; max-height: 60vh; overflow-y: auto;
   white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
 }
-.wpw-diff { margin-top: 12px; padding-left: 14px; font-size: 13.5px; line-height: 1.6; }
+.wpw-diff { margin-top: 6px; padding-left: 14px; font-size: 13.5px; line-height: 1.6; }
 /* The new text reads as it is; a changed line has its old self small above it. */
 .wpw-diff-row { min-height: 1lh; margin-left: -14px; padding-left: 12px; border-left: 2px solid transparent; }
 .wpw-diff-row.is-changed { border-left-color: color-mix(in srgb, var(--wpw-warp) 70%, transparent); }
@@ -380,33 +517,34 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
   display: inline-block; width: 2px; height: 1.05em; margin: 0 2px; vertical-align: -0.15em;
   border-radius: 1px; background: color-mix(in srgb, var(--wpw-red) 75%, transparent);
 }
-.wpw-diff-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 12px; }
+.wpw-diff-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-top: 6px; }
 .wpw-diff-col { font-size: 13px; line-height: 1.55; }
 .wpw-diff-col-name { margin-bottom: 6px; font-size: 11px; color: var(--wpw-muted); white-space: normal; }
 /* What the model thought: quiet, scrolled to its newest line while it comes. */
-.wpw-thinking { margin-top: 10px; font-size: 12px; }
-.wpw-thinking summary { cursor: pointer; color: var(--wpw-muted); width: max-content; }
 .wpw-thinking-text {
   margin-top: 6px; max-height: 180px; overflow-y: auto; padding: 8px 10px; border-radius: 6px;
-  background: var(--wpw-ground); color: var(--wpw-muted); line-height: 1.5;
+  background: var(--wpw-ground); color: var(--wpw-muted); font-size: 12px; line-height: 1.5;
   white-space: pre-wrap; overflow-wrap: anywhere; user-select: text;
 }
 .wpw-text.is-live { color: color-mix(in srgb, var(--wpw-ink) 80%, transparent); }
 
-/* The prompt itself, set for reading. */
+/* The prompt itself, set for reading: the one thing on a card with a field of its own. */
 .wpw-modal .wpw-editor, .wpw-text { font-size: 13.5px; line-height: 1.6; }
-.wpw-modal .wpw-editor {
-  display: block; width: 100%; box-sizing: border-box; margin-top: 12px; padding: 10px 12px; resize: none;
+.wpw-modal .wpw-editor, .wpw-text {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 10px 12px;
   background: var(--wpw-ground); border: 1px solid transparent; border-radius: 8px;
 }
+.wpw-modal .wpw-editor { resize: none; }
 .wpw-modal .wpw-editor:hover { border-color: var(--wpw-line); }
 .wpw-modal .wpw-editor:focus { border-color: color-mix(in srgb, var(--wpw-warp) 70%, transparent); outline: none; }
-.wpw-text { margin-top: 12px; padding: 0 2px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-.wpw-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex: none; }
-.wpw-actions.is-block { margin-top: 12px; }
+.wpw-text { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.wpw-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; flex: none; }
+.wpw-actions.is-block { margin-top: 10px; flex-wrap: wrap; }
+.wpw-vmenu-buttons .wpw-danger { background: color-mix(in srgb, var(--wpw-red) 22%, var(--wpw-raised)); color: var(--wpw-red); }
+.wpw-vmenu-buttons .wpw-danger:hover { background: color-mix(in srgb, var(--wpw-red) 32%, var(--wpw-raised)); }
 .wpw-error-text { margin-top: 10px; color: var(--wpw-red); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.wpw-suggest { margin-top: 12px; }
+.wpw-suggest + .wpw-suggest { margin-top: 10px; }
 .wpw-suggest-label { font-size: 12px; color: var(--wpw-muted); margin-bottom: 6px; }
 .wpw-suggest-row { display: flex; flex-wrap: wrap; gap: 6px; }
 /* A fixed box, and + and the check share one size: pressing moves nothing. */
@@ -439,20 +577,24 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-lora.is-compact .wpw-lora-thumb { width: 24px; height: 24px; }
 .wpw-lora.is-compact .wpw-lora-add { width: 22px; height: 22px; font-size: 10px; }
 
-/* The input: one box with the images, the text, and its tools. */
-.wpw-composer { flex: none; padding: 4px 24px 18px; }
+/* The input: one box with the settings of the next request on top, its images, its text,
+   and send in the corner. Its edges line up with the cards above (alignComposer). */
+.wpw-composer { flex: none; padding: 4px ${COMPOSER_PAD}px 18px; }
 .wpw-composer > * { max-width: 780px; margin-inline: auto; }
-.wpw-box { border: 1px solid var(--wpw-rule); border-radius: 12px; background: var(--wpw-panel); }
+.wpw-box { position: relative; border: 1px solid var(--wpw-rule); border-radius: 12px; background: var(--wpw-panel); }
 .wpw-box:focus-within { border-color: color-mix(in srgb, var(--wpw-warp) 75%, transparent); }
 .wpw-composer.is-drag .wpw-box { border-color: var(--wpw-warp); box-shadow: 0 0 0 3px color-mix(in srgb, var(--wpw-warp) 25%, transparent); }
-.wpw-attached { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px 0; }
+.wpw-attached { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px 0; }
 .wpw-attached:empty { display: none; }
 .wpw-input {
-  display: block; width: 100%; box-sizing: border-box; padding: 11px 14px 4px; resize: none;
+  display: block; width: 100%; box-sizing: border-box; padding: 11px 56px 10px 14px; resize: none;
   line-height: ${INPUT_LINE}px; background: transparent; border: 0;
 }
 .wpw-modal .wpw-input:focus-visible { outline: none; }
-.wpw-tools { display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px 8px; }
+.wpw-tools {
+  display: flex; align-items: center; gap: 6px; padding: 8px 8px 7px;
+  border-bottom: 1px solid var(--wpw-line);
+}
 .wpw-tools-left { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .wpw-tool {
   flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: none;
@@ -468,6 +610,15 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-chip-x { background: none; border: 0; padding: 0 1px; cursor: pointer; font-size: 14px; line-height: 1; color: var(--wpw-muted); }
 .wpw-chip-x:hover { color: var(--wpw-red); }
 .wpw-start-chip { gap: 6px; padding: 0 4px 0 10px; font-size: 11px; }
+/* Use as input changes this choice: it lights up so you see where it went. */
+.wpw-start-chip.is-flash { animation: wpw-flash 1.1s ease-out; }
+@keyframes wpw-flash {
+  0%, 35% {
+    background: color-mix(in srgb, var(--wpw-warp) 30%, var(--wpw-ground));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--wpw-warp) 40%, transparent);
+  }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
 .wpw-modal .wpw-start {
   height: 22px; max-width: 280px; padding: 0 2px; border: 0; background: transparent;
   color: var(--wpw-warp); font-size: 12px; font-weight: 500; cursor: pointer;
@@ -480,12 +631,14 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 .wpw-seg-label { padding: 0 8px 0 10px; color: var(--wpw-muted); white-space: nowrap; }
 .wpw-seg-btn { height: 100%; padding: 0 9px; background: none; border: 0; cursor: pointer; white-space: nowrap; }
 .wpw-seg-btn:hover { background: var(--wpw-raised-hover); }
-.wpw-seg-btn.is-on { background: var(--wpw-warp); color: #fff; }
+/* A quiet fill: the send button is the one solid colour in the input. */
+.wpw-seg-btn.is-on { background: color-mix(in srgb, var(--wpw-ink) 16%, transparent); color: var(--wpw-ink); }
 .wpw-seg-count { margin-left: 5px; opacity: 0.6; font-variant-numeric: tabular-nums; }
 .wpw-seg-btn.is-on .wpw-seg-count { opacity: 0.85; }
 /* Round and the same size whatever it does: write, answer or stop. */
 .wpw-send {
-  flex: none; width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 13px;
+  position: absolute; right: 10px; bottom: 10px;
+  width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 13px;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .wpw-send.is-stop { background: var(--wpw-yellow); color: #1a1a1a !important; }
@@ -510,8 +663,9 @@ const jobs = new Map();
 const unseen = new Map();
 /** chat id → the unsent composer. */
 const drafts = new Map();
-/** Prompt + LoRAs node → its Write button. */
+/** Prompt + LoRAs node → its AI Prompt Writer button, and the band it sits in. */
 const buttons = new WeakMap();
+const bars = new WeakMap();
 
 /** Settings changed from here, readable at once however the frontend stores them. */
 const written = new Map();
@@ -789,27 +943,38 @@ function syncButton(node) {
       : "Open the Prompt Writer";
 }
 
-/** The button for this node, made once; the caller places it over the text box. */
-export function writeButtonFor(node) {
-  let element = buttons.get(node);
-  if (element) return element;
+/**
+ * The AI Prompt Writer button for this node, in the row it floats in, made
+ * once. The caller puts it in the prompt box's holder; it sits just above it.
+ * On a narrow node it says only "✨ AI".
+ */
+export function writeBarFor(node) {
+  let bar = bars.get(node);
+  if (bar) return bar;
   ensureStyle();
-  element = el("button", {
-    type: "button",
-    class: "wpw-open",
-    text: "✨ AI",
-    // The canvas selects and drags on the same press underneath.
-    onPointerdown: (event) => event.stopPropagation(),
-    onDblclick: (event) => event.stopPropagation(),
-    onClick: (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openPromptWriter(node);
+  // The canvas selects and drags on the same press underneath.
+  const keep = (event) => event.stopPropagation();
+  const element = el(
+    "button",
+    {
+      type: "button",
+      class: "wpw-open",
+      onPointerdown: keep,
+      onDblclick: keep,
+      onClick: (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openPromptWriter(node);
+      },
     },
-  });
+    "✨ AI",
+    el("span", { class: "wpw-open-more", text: " Prompt Writer" })
+  );
+  bar = el("div", { class: "wpw-open-bar" }, element);
   buttons.set(node, element);
+  bars.set(node, bar);
   syncButton(node);
-  return element;
+  return bar;
 }
 
 // --- Drafts and the base of the next write ------------------------------------
@@ -850,11 +1015,11 @@ function nextStep(chat, draft) {
       request: pending.request,
       images: pending.images,
       baseId: pending.baseId,
-      basePrompt: pending.basePrompt,
-      baseText:
-        pending.basePrompt ?? chat.versions.find((v) => v.id === pending.baseId)?.text ?? "",
+      baseText: chat.versions.find((v) => v.id === pending.baseId)?.text ?? "",
       turns: [...pending.turns, { question: pending.question, answer: typed }],
       answer: typed,
+      // A Retry that was asked a question still writes over its version.
+      replaceId: pending.replaceId,
     };
   }
   const base = chosenBase(chat, draft);
@@ -864,7 +1029,8 @@ function nextStep(chat, draft) {
     request: typed,
     images: [...draft.images],
     baseId: base?.id ?? null,
-    basePrompt: base?.prompt ? base.text : null,
+    // The node's text, which becomes a version of the chat when the request is sent.
+    nodeText: base?.prompt ? base.text : null,
     baseText: base?.text ?? "",
     turns: [],
     answer: null,
@@ -915,13 +1081,75 @@ function findModel(id) {
   return lists.models.find((m) => m.id === id) ?? null;
 }
 
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Everything one request needs, with the model and settings chosen now: a
+ * Retry may be because of the model. `step` is what is asked and what it edits.
+ */
+function writeSpec(chat, step, images) {
+  const model = String(getSetting(SETTING_MODEL, ""));
+  const systemPrompt = String(getSetting(SETTING_SYSTEM_PROMPT, ""));
+  const temperature = clampTemperature(getSetting(SETTING_TEMPERATURE, DEFAULT_TEMPERATURE));
+  const thinkingLevel = reasoningLevel(getSetting(SETTING_REASONING, ""));
+  const scope = loraScope();
+  return {
+    request: step.request,
+    images,
+    baseId: step.baseId,
+    // The version a Retry writes over; null for a new version.
+    replaceId: step.replaceId ?? null,
+    turns: step.turns,
+    answer: step.answer,
+    model,
+    systemPrompt,
+    temperature,
+    thinkingLevel,
+    server: hostOf(baseUrl()),
+    originNode: view.promptNode,
+    loraScope: scope,
+    loraNode: view.targetNode,
+    payload: {
+      base_url: baseUrl(),
+      model,
+      system_prompt: systemPrompt,
+      temperature,
+      reasoning_effort: thinkingLevel,
+      idea: step.request,
+      previous_result: step.baseText,
+      references: images,
+      turns: step.turns,
+      // For the request log on the server.
+      chat_id: chat.id,
+      lora_scope: scope,
+    },
+  };
+}
+
+/** The images a request sends: none when the model chosen now cannot see them. */
+function imagesFor(images) {
+  const names = (images ?? []).filter((name) => typeof name === "string");
+  if (!names.length || findModel(String(getSetting(SETTING_MODEL, "")))?.vision) {
+    return { images: names, note: null };
+  }
+  return {
+    images: [],
+    note: { text: "Images left out: this model cannot see images.", isError: false },
+  };
+}
+
 function startWrite(chat) {
   if (jobs.has(chat.id)) return;
   flushEdits();
   refreshTargets();
   const draft = draftOf(chat.id);
-  const model = String(getSetting(SETTING_MODEL, ""));
-  if (!model) {
+  if (!String(getSetting(SETTING_MODEL, ""))) {
     setNote(chat.id, "Pick a model first.", true);
     return;
   }
@@ -935,43 +1163,19 @@ function startWrite(chat) {
     view.input.focus();
     return;
   }
-
-  // An answer goes with the images its request sent, unless the model changed to one that cannot see.
-  let images = step.images;
-  let note = null;
-  if (images.length && !findModel(model)?.vision) {
-    note = { text: "Images left out: this model cannot see images.", isError: false };
-    images = [];
+  if (step.nodeText != null) {
+    const base = adoptText(chat, step.nodeText, {
+      id: uid(),
+      now: Date.now(),
+      source: targetNow()?.label ?? null,
+    });
+    step.baseId = base.id;
+    save();
   }
 
-  const systemPrompt = String(getSetting(SETTING_SYSTEM_PROMPT, ""));
-  const spec = {
-    request: step.request,
-    images,
-    baseId: step.baseId,
-    basePrompt: step.basePrompt,
-    turns: step.turns,
-    answer: step.answer,
-    model,
-    systemPrompt,
-    originNode: view.promptNode,
-    loraScope: loraScope(),
-    loraNode: view.targetNode,
-    payload: {
-      base_url: baseUrl(),
-      model,
-      system_prompt: systemPrompt,
-      temperature: clampTemperature(getSetting(SETTING_TEMPERATURE, DEFAULT_TEMPERATURE)),
-      reasoning_effort: reasoningLevel(getSetting(SETTING_REASONING, "")),
-      idea: step.request,
-      previous_result: step.baseText,
-      references: images,
-      turns: step.turns,
-      // For the request log on the server.
-      chat_id: chat.id,
-      lora_scope: loraScope(),
-    },
-  };
+  // An answer goes with the images its request sent, unless the model changed to one that cannot see.
+  const { images, note } = imagesFor(step.images);
+  const spec = writeSpec(chat, step, images);
 
   draft.text = "";
   if (step.answer == null) {
@@ -981,6 +1185,55 @@ function startWrite(chat) {
   draft.note = note;
   view.input.value = "";
   growInput();
+  launch(chat, spec);
+}
+
+/**
+ * A version the AI wrote, written again from its own base and images: over
+ * itself with its own request and answers (Retry), or as a new version beside
+ * it (Recreate), with the request as it was or as you changed it. Sent at once.
+ */
+function writeAgainNow(chat, version, { replace, request = version.request }) {
+  if (jobs.has(chat.id) || chat.pending) return;
+  flushEdits();
+  refreshTargets();
+  if (!String(getSetting(SETTING_MODEL, ""))) {
+    setNote(chat.id, "Pick a model first.", true);
+    return;
+  }
+  // Typing in it just now may have made a version from it.
+  if (replace && hasFollowUps(chat, version.id)) {
+    setNote(chat.id, followedTitle(version.n), true);
+    return;
+  }
+  const asked = String(request ?? "").trim();
+  const changed = asked !== String(version.request ?? "").trim();
+  if (!asked && !version.baseId) {
+    setNote(chat.id, "Type what you want first.", true);
+    return;
+  }
+  const { images, note } = imagesFor(version.images);
+  const baseText = chat.versions.find((v) => v.id === version.baseId)?.text ?? "";
+  const spec = writeSpec(
+    chat,
+    {
+      request: changed ? asked : version.request,
+      baseId: version.baseId,
+      replaceId: replace ? version.id : null,
+      // The answers were to its own request; a changed one may be asked again.
+      turns: changed ? [] : version.questions,
+      answer: null,
+      baseText,
+    },
+    images
+  );
+  spec.titleAsked = true;
+  // Same request, same title: a Retry keeps its own, a Recreate takes it along.
+  // A changed request is a request of its own: it is named, and a Stop puts it in the input.
+  spec.fromVersion = !changed;
+  spec.title = changed ? null : version.title;
+  if (view.recreating?.id === version.id) view.recreating = null;
+  draftOf(chat.id).note = note;
   launch(chat, spec);
 }
 
@@ -1002,10 +1255,13 @@ async function launch(chat, spec) {
   syncButton(spec.originNode);
   ticker ??= setInterval(tick, TICK_MS);
   refresh(chat.id);
-  if (!chat.versions.length && !spec.titleAsked && spec.answer == null) {
+  const named = chat.versions.some((v) => v.kind === KIND_WRITTEN);
+  if (!named && !spec.titleAsked && spec.answer == null) {
     spec.titleAsked = true;
     nameChat(chat, spec);
   }
+  // The version's own title is asked for while it is written, so it is there when it is done.
+  if (!spec.title && !spec.fromVersion) askTitle(spec.request, titleKind(spec));
 
   let out = null;
   let message = null;
@@ -1031,8 +1287,10 @@ async function launch(chat, spec) {
   syncButton(spec.originNode);
   if (job.dropped) return;
 
-  if (cancelled) restoreDraft(chat, spec);
-  else if (message) {
+  // A Retry or Recreate came from a version, which still holds its request: nothing to give back.
+  if (cancelled) {
+    if (!spec.fromVersion) restoreDraft(chat, spec);
+  } else if (message) {
     recordFailure(chat, spec, message, Date.now());
     save();
     toast("error", "Prompt failed", chat.title, 6000);
@@ -1045,25 +1303,49 @@ async function launch(chat, spec) {
 }
 
 function finish(chat, spec, out) {
-  addVersion(chat, {
-    id: uid(),
-    now: Date.now(),
-    request: spec.request,
-    images: spec.images,
-    baseId: spec.baseId,
+  const now = Date.now();
+  const written = {
+    now,
     text: String(out.text),
     model: spec.model,
     systemPrompt: spec.systemPrompt,
+    // What it was written with, and the system prompt's text as the server read it.
+    temperature: spec.temperature,
+    thinkingLevel: spec.thinkingLevel,
+    loraScope: spec.loraScope,
+    server: spec.server,
+    systemPromptKey: keepSystemPrompt(chat, out.system_prompt_text),
     cost: out.cost,
     seconds: out.seconds,
     usage: out.usage,
     suggestions: resolveSuggestions(out.suggestions, spec.loraRefs),
     activeLoras: spec.activeLoras ?? [],
     questions: spec.turns ?? [],
-    basePrompt: spec.basePrompt ?? null,
     reasoning: String(out.reasoning ?? ""),
-  });
+  };
+  // A Retry writes over its version, unless something was made from it meanwhile
+  // or it is gone: then the answer is a new version, so nothing is lost.
+  const over =
+    spec.replaceId && !hasFollowUps(chat, spec.replaceId)
+      ? replaceVersion(chat, spec.replaceId, written)
+      : null;
+  if (over) comparisons.delete(over.id);
+  const version =
+    over ??
+    addVersion(chat, {
+      id: uid(),
+      request: spec.request,
+      // A Recreate keeps the title of the version it wrote again: same request.
+      title: spec.title ?? "",
+      images: spec.images,
+      baseId: spec.baseId,
+      ...written,
+    });
+  unfoldTo(chat, version.id);
   dropQuestion(chat);
+  nameVersion(chat, version, spec);
+  // The new answer is the one open card.
+  if (view?.chatId === chat.id) view.open = version.id;
   // The first version titles the chat with its first words; a generated title wins.
   if (spec.aiTitle) setAutoTitle(chat, spec.aiTitle);
   save();
@@ -1086,34 +1368,131 @@ function askQuestion(chat, spec, out) {
   toast("info", "The AI has a question", chat.title);
 }
 
+/** What the cheap model is asked to name, once per text: kind, model and text → its answer. */
+const titleAsks = new Map();
+
+/** How a step is named: a new prompt for what it shows, an edit for what it changes. */
+function titleKind(step) {
+  return step.baseId ? "edit" : "chat";
+}
+
+/**
+ * The cheap title model's answer, {title, kind}, or null. `kind` is what the
+ * server says it named, which a server from before edit titles leaves out.
+ * The same text is asked once, so a chat and its first version share one
+ * answer. A failure is asked again next time.
+ */
+function titleOf(source, kind = "chat") {
+  const text = String(source ?? "").trim();
+  const model = String(getSetting(SETTING_TITLE_MODEL, DEFAULT_TITLE_MODEL)).trim();
+  if (!text || !model) return Promise.resolve(null);
+  const key = `${kind}\n${model}\n${text}`;
+  let ask = titleAsks.get(key);
+  if (!ask) {
+    const failed = (why) => {
+      console.warn("[WarpPipe] title", why);
+      titleAsks.delete(key);
+      return null;
+    };
+    ask = getJson("/warppipe/llm/title", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: baseUrl(), model, source: text, kind }),
+    })
+      .then((out) => {
+        if (out?.error) return failed(out.error);
+        // A server from before edit titles is asked again after it restarts.
+        if (!out?.kind) titleAsks.delete(key);
+        const title = String(out?.title ?? "").trim();
+        return title ? { title, kind: out.kind ?? null } : null;
+      })
+      .catch(failed);
+    titleAsks.set(key, ask);
+  }
+  return ask;
+}
+
+/** A short title from the cheap title model, or null. */
+function askTitle(source, kind = "chat") {
+  return titleOf(source, kind).then((out) => out?.title ?? null);
+}
+
 /** Ask the cheap model for a title while the prompt is written. On failure the first words stay. */
 async function nameChat(chat, spec) {
   if (chat.titleEdited) return;
   const source = spec.request || spec.payload?.previous_result || "";
-  if (!source.trim()) return;
-  const model = String(getSetting(SETTING_TITLE_MODEL, DEFAULT_TITLE_MODEL)).trim();
-  if (!model) return;
-  let out;
-  try {
-    out = await getJson("/warppipe/llm/title", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ base_url: baseUrl(), model, source }),
-    });
-  } catch (error) {
-    console.warn("[WarpPipe] chat title", error);
-    return;
-  }
-  if (out?.error) {
-    console.warn("[WarpPipe] chat title", out.error);
-    return;
-  }
-  spec.aiTitle = out?.title;
-  if (!setAutoTitle(chat, out?.title)) return;
+  // Named for what its first prompt shows; a first version that is a new prompt shares this answer.
+  const named = await askTitle(source, "chat");
+  spec.aiTitle = named;
+  if (!setAutoTitle(chat, named)) return;
   save();
   if (!view) return;
   renderRail();
   if (view.chatId === chat.id) renderTitle();
+}
+
+/** A version gets its title when the cheap model answers; until then its request stands in. */
+function nameVersion(chat, version, spec) {
+  if (version.title || !version.request) return;
+  askTitle(version.request, titleKind(spec)).then((title) => giveTitle(chat, version, title));
+}
+
+/**
+ * A title for a version that still has none, saved and shown. In place: drawing
+ * the chat again would take the caret out of the box you type in.
+ */
+function giveTitle(chat, version, title) {
+  if (!title || version.title || !chat.versions.includes(version)) return;
+  setVersionTitle(version, title);
+  save();
+  if (view?.chatId !== chat.id) return;
+  const line = view.convo.querySelector(
+    `.wpw-card[data-id="${CSS.escape(version.id)}"] .wpw-head-text`
+  );
+  if (line) {
+    line.textContent = rowLine(chat, version);
+    line.classList.remove("is-empty");
+  }
+  renderStart(chat, draftOf(chat.id));
+}
+
+// Naming the versions from before titles: once per page, and again only if it could not finish.
+let titlesNamed = false;
+const NAMING_AT_ONCE = 3;
+
+/**
+ * Every version the AI wrote that has no title yet gets one, a few at a time,
+ * in the background: the versions from before titles were kept. Only with a
+ * server that names edits for what they change (it says which kind it named);
+ * with an older one nothing is named, and the next opening after a restart
+ * tries again.
+ */
+async function nameUntitled() {
+  if (titlesNamed || !store) return;
+  titlesNamed = true;
+  const todo = untitledVersions(store);
+  let named = 0;
+  const work = async () => {
+    while (todo.length && titlesNamed) {
+      const { chat, version } = todo.shift();
+      const kind = titleKind(version);
+      const out = await titleOf(version.request, kind);
+      if (!out) continue;
+      if (out.kind !== kind) {
+        if (titlesNamed) {
+          console.warn(
+            "[WarpPipe] Prompt Writer: restart ComfyUI to name the older versions; the server does not name edits yet."
+          );
+        }
+        titlesNamed = false;
+        return;
+      }
+      if (!version.title) named++;
+      giveTitle(chat, version, out.title);
+    }
+  };
+  await Promise.all(Array.from({ length: NAMING_AT_ONCE }, work));
+  if (named) console.info(`[WarpPipe] Prompt Writer: named ${named} older versions.`);
 }
 
 /** After Stop, the request goes back into the composer unless a new one is there. */
@@ -1137,9 +1516,7 @@ function fillDraft(chat, spec) {
   );
   draft.text = merged.text;
   draft.images = merged.images;
-  if (!answering) {
-    draft.base = spec.baseId === "seed" ? CURRENT_PROMPT : (spec.baseId ?? NEW_PROMPT);
-  }
+  if (!answering) draft.base = spec.baseId ?? NEW_PROMPT;
   if (merged.overflow) {
     draft.note = { text: `At most ${MAX_IMAGES} images per request.`, isError: true };
   }
@@ -1158,27 +1535,6 @@ function focusComposer() {
   renderNote();
   view.input.focus();
   view.input.setSelectionRange(view.input.value.length, view.input.value.length);
-}
-
-/**
- * A request written again: into the input with its images and what it edited.
- * Nothing leaves the chat; what is sent becomes the next version.
- */
-function writeAgain(chat, version) {
-  if (jobs.has(chat.id) || chat.pending) return;
-  flushEdits();
-  fillDraft(chat, version);
-  // Edit current prompt reads the node when it is sent, which may hold something else by now.
-  if (version.basePrompt != null) {
-    const now = targetNow()?.node?.widgets?.find((w) => w.name === TEXT_WIDGET)?.value;
-    if (String(now ?? "") !== version.basePrompt) {
-      draftOf(chat.id).note = {
-        text: "The prompt in the node has changed since: this edits it as it is now.",
-        isError: false,
-      };
-    }
-  }
-  focusComposer();
 }
 
 /** The request of a step that waits for an answer goes back into the input instead. */
@@ -1203,28 +1559,10 @@ function rewindFailure(chat) {
 
 /** A failed request built again from what the chat kept, so a Retry works after a reload too. */
 function retrySpec(chat, failure) {
-  const baseText =
-    failure.basePrompt ?? chat.versions.find((v) => v.id === failure.baseId)?.text ?? "";
-  return withCurrentSettings({
-    request: failure.request,
-    images: failure.images,
-    baseId: failure.baseId,
-    basePrompt: failure.basePrompt,
-    turns: failure.turns,
-    answer: failure.answer,
-    titleAsked: true,
-    originNode: view.promptNode,
-    loraScope: loraScope(),
-    loraNode: view.targetNode,
-    payload: {
-      idea: failure.request,
-      previous_result: baseText,
-      references: failure.images,
-      turns: failure.turns,
-      chat_id: chat.id,
-      lora_scope: loraScope(),
-    },
-  });
+  const baseText = chat.versions.find((v) => v.id === failure.baseId)?.text ?? "";
+  const spec = writeSpec(chat, { ...failure, baseText }, imagesFor(failure.images).images);
+  spec.titleAsked = true;
+  return spec;
 }
 
 // --- Images -------------------------------------------------------------------
@@ -1486,51 +1824,86 @@ function railRow(chat) {
   );
 }
 
+/** What a request says on its card's first line; an empty one asked to optimise. */
+function requestText(step) {
+  return step.request ? { text: step.request } : { text: "Optimise the prompt", empty: true };
+}
+
 /**
- * What a step asked for: where it started, the request and its images, and the
- * questions on the way. `question` is one still waiting for its answer.
+ * Under a card's first line: the images its request sent and the questions the
+ * AI asked on the way. `question` is one still waiting for its answer. Null
+ * when there is neither.
  */
-function stepAsk(chat, step, { onRewind = null, question = null, again = false } = {}) {
-  const said = (who, text, extra = "") =>
-    el(
-      "div",
-      { class: `wpw-said${extra}` },
-      el("span", { class: "wpw-who", text: who }),
-      el("span", { class: "wpw-said-text", text })
-    );
+function stepTurns(step, question = null) {
   const names = (step.images ?? []).filter((name) => typeof name === "string");
-  const quote = step.basePrompt ?? (step.baseId === "seed" ? chat.seedPrompt : null);
   const turns = step.turns ?? step.questions ?? [];
+  if (!names.length && !turns.length && !question) return null;
+  const said = (who, text, extra = "") => [
+    el("span", { class: `wpw-who${extra}`, text: who }),
+    el("span", { class: `wpw-said${extra}`, text }),
+  ];
+  const lines = [
+    ...turns.flatMap((turn) => [
+      ...said("AI", turn.question, " is-question"),
+      ...said("You", turn.answer),
+    ]),
+    ...(question ? said("AI", question, " is-question") : []),
+  ];
   return el(
     "div",
-    { class: "wpw-ask" },
-    quote &&
-      el(
-        "details",
-        { class: "wpw-quote" },
-        el("summary", { text: "The current prompt it edited" }),
-        el("div", { class: "wpw-quote-text", text: quote })
-      ),
-    said("You", step.request || "Optimise the prompt", step.request ? "" : " is-empty"),
-    names.length > 0 &&
-      el(
-        "div",
-        { class: "wpw-thumbs" },
-        ...names.map((name) => el("img", { src: thumbUrl(name), alt: "", loading: "lazy" }))
-      ),
-    ...turns.flatMap((turn) => [
-      said("AI", turn.question, " is-question"),
-      said("You", turn.answer),
-    ]),
-    question && said("AI", question, " is-question"),
-    onRewind &&
-      iconButton(
-        again ? "pi-replay" : "pi-undo",
-        onRewind,
-        "wpw-rewind",
-        again ? AGAIN_TITLE : REWIND_TITLE
-      )
+    { class: "wpw-turns" },
+    names.length
+      ? el(
+          "div",
+          { class: "wpw-thumbs" },
+          ...names.map((name) => el("img", { src: thumbUrl(name), alt: "", loading: "lazy" }))
+        )
+      : null,
+    lines.length ? el("div", { class: "wpw-said-grid" }, ...lines) : null
   );
+}
+
+/** The undo arrow on a card's first line: its request goes back into the input. */
+function rewindButton(onRewind, title, always = false) {
+  return iconButton(
+    "pi-undo",
+    (event) => {
+      event.stopPropagation();
+      onRewind();
+    },
+    `wpw-rewind${always ? " is-shown" : ""}`,
+    title
+  );
+}
+
+/**
+ * A switch in a card's row of extras, under the prompt: the changes, the
+ * thinking, the LoRAs, what it was written with. Open, it shows its part.
+ */
+function metaToggle(label, { open, onToggle, title }, ...extra) {
+  return el(
+    "button",
+    {
+      type: "button",
+      class: `wpw-toggle${open ? " is-open" : ""}`,
+      title,
+      "aria-expanded": String(open),
+      onClick: onToggle,
+    },
+    icon("pi-chevron-right"),
+    label,
+    ...extra
+  );
+}
+
+/** Opens or closes one of a card's parts, by its key in one of the view's sets; the card stays put. */
+function flip(set, key) {
+  return () =>
+    keepInPlace(key, () => {
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
+      renderConvo(false);
+    });
 }
 
 /** What the model is doing, from what has come so far. */
@@ -1544,19 +1917,10 @@ function tokensText(job) {
   return job.tokens ? `≈ ${Number(job.tokens).toLocaleString("en-US")} tokens` : "";
 }
 
-/** What the model thought: open while it thinks, closed under a finished version. */
-function thinkingBlock(text, open) {
-  const body = el("div", { class: "wpw-thinking-text", text });
-  const block = el(
-    "details",
-    { class: "wpw-thinking", open },
-    el("summary", { text: "Thinking" }),
-    body
-  );
-  return { block, body };
-}
-
-/** The card of a write in progress, with handles to fill as the pieces come. */
+/**
+ * The card of a write in progress, with handles to fill as the pieces come.
+ * Its thinking stays folded until you open it, and stays open once you did.
+ */
 function liveCard(chat, job, label) {
   const phase = el("span", { text: phaseOf(job) });
   const tokens = el("span", { text: tokensText(job) });
@@ -1568,17 +1932,33 @@ function liveCard(chat, job, label) {
     secondsEl(job.startedAt),
     tokens
   );
-  const thinking = thinkingBlock(job.thinking, !job.text);
-  thinking.block.hidden = !job.thinking;
+  const key = `live:${chat.id}`;
+  const open = view.thinking.has(key);
+  const body = el("div", { class: "wpw-thinking-text", text: job.thinking });
+  body.hidden = !open;
+  const block = el(
+    "div",
+    { class: "wpw-meta" },
+    metaToggle("Thinking", {
+      open,
+      onToggle: flip(view.thinking, key),
+      title: "What the model thinks before it writes",
+    })
+  );
+  block.hidden = !job.thinking;
   const text = el("div", { class: "wpw-text is-live", text: job.text });
   text.hidden = !job.text;
-  view.live = { chatId: chat.id, phase, tokens, thinking, text, closed: !!job.text };
+  view.live = { chatId: chat.id, phase, tokens, thinking: { block, body }, text };
+  // A Retry writes in its version's place, under its title.
+  const line = job.title ? { text: job.title } : requestText(job);
   return el(
     "div",
-    { class: "wpw-card is-writing" },
-    cardHead(chat, label, job.baseId, status),
-    stepAsk(chat, job),
-    thinking.block,
+    { class: "wpw-card is-open is-writing" },
+    cardHead({ label, ...line, status }),
+    stepTurns(job),
+    // Above the text, so opening it never moves the switch.
+    block,
+    body,
     text
   );
 }
@@ -1607,27 +1987,73 @@ function paintLive() {
     live.thinking.body.scrollTop = live.thinking.body.scrollHeight;
   }
   if (job.text) {
-    // Once the answer starts, the thinking steps aside; it can be opened again.
-    if (!live.closed) {
-      live.thinking.block.open = false;
-      live.closed = true;
-    }
     live.text.hidden = false;
     live.text.textContent = job.text;
   }
   if (following) convo.scrollTop = convo.scrollHeight;
 }
 
-/** A card's first line: its name, where it started, and how it stands. */
-function cardHead(chat, label, baseId, status) {
+/**
+ * A card's first line: its number, its title (or what was asked), what its
+ * fold hides, how it stands, and its menu. One line of the same height closed
+ * and open, so opening a card only adds what is under it. Where a version came
+ * from is in the graph, and in its generation info.
+ */
+function cardHead({
+  label,
+  text,
+  empty = false,
+  status = null,
+  folded = null,
+  rewind = null,
+  menu = null,
+}) {
   return el(
     "div",
     { class: "wpw-card-head" },
     el("span", { class: "wpw-ver", text: label }),
-    el("span", { class: "wpw-from", text: startLabel(chat, baseId) }),
-    el("span", { class: "wpw-spacer" }),
-    status
+    el("span", { class: `wpw-head-text${empty ? " is-empty" : ""}`, text, title: text }),
+    folded,
+    rewind,
+    status,
+    menu
   );
+}
+
+const versionsWord = (count) => `${count} ${count === 1 ? "version" : "versions"}`;
+
+/**
+ * The fold control in the graph's margin, beside a version's dot: − folds the
+ * versions made from it that lead away from the kept ones, + shows them again.
+ * Null when folding would hide nothing.
+ */
+function foldToggle(chat, version, keep) {
+  if (!canFold(chat, version.id, keep)) return null;
+  const folded = chat.folded.includes(version.id);
+  const count = foldedCount(chat, version.id, keep);
+  return iconButton(
+    folded ? "pi-plus" : "pi-minus",
+    () => {
+      toggleFold(chat, version.id);
+      save();
+      renderConvo(false);
+    },
+    "wpw-fold",
+    folded
+      ? `Show the ${versionsWord(count)} folded under v${version.n}`
+      : `Fold the other versions made from v${version.n}`
+  );
+}
+
+/** How many versions a fold hides now. */
+function foldedTag(chat, version, keep) {
+  const count = foldedCount(chat, version.id, keep);
+  if (!count) return null;
+  return el("span", {
+    class: "wpw-fold-count",
+    text: `+${count}`,
+    title: `${versionsWord(count)} folded`,
+  });
 }
 
 /** The chat's target, by its label: the graph may have changed since it was chosen. */
@@ -1671,12 +2097,24 @@ function labelOfNode(node) {
   return (listTargets(app.rootGraph) ?? []).find((target) => target.node === node)?.label ?? null;
 }
 
-function sendButton(version, primary) {
-  const use = button(
-    "Send to prompt",
-    () => useVersion(version),
-    primary ? "wpw-btn wpw-primary" : "wpw-btn",
-    "Write this version into the prompt of the For node"
+/** Send to ComfyUI, naming the group (or node) it writes into: the one chosen under For. */
+function sendButton(version) {
+  const where = targetNow()?.label;
+  const use = el(
+    "button",
+    {
+      type: "button",
+      class: "wpw-btn wpw-primary wpw-send-to",
+      title: where
+        ? `Write v${version.n} into the prompt box of “${where}” (chosen under For, at the top)`
+        : "There is no Prompt + LoRAs in this workflow to write into",
+      onClick: () => useVersion(version),
+    },
+    icon("pi-send"),
+    el("span", {
+      class: "wpw-send-label",
+      text: where ? `Send to ComfyUI (${where})` : "Send to ComfyUI",
+    })
   );
   use.disabled = !view.targets.length;
   return use;
@@ -1747,33 +2185,178 @@ function loraRow(label, chips) {
   );
 }
 
-/** What was on when this version was written, then what the LLM would add. */
-function loraRows(chat, version) {
-  const chips = (items, compact) =>
-    (items ?? []).map((item) => loraChip(chat, version, item, compact));
-  return [
-    loraRow("Active LoRAs", chips(version.activeLoras, true)),
-    loraRow("Suggested LoRAs", chips(version.suggestions, false)),
-  ];
-}
-
-/** A finished version's line: a dot, then what it cost, how long it took and its tokens. */
-function statusEl(version, model) {
-  const parts = statusParts({ cost: version.cost, seconds: version.seconds, usage: version.usage });
-  return el(
-    "span",
-    { class: "wpw-status", title: model ? `Finished with ${model}` : "Finished" },
-    el("span", { class: "wpw-dot" }),
-    ...parts.map((text) => el("span", { text }))
+/** The LoRAs switch: how many were on, and how many the AI suggests. Null when there are none. */
+function loraToggle(version) {
+  const active = version.activeLoras?.length ?? 0;
+  const suggested = version.suggestions?.length ?? 0;
+  if (!active && !suggested) return null;
+  const count = (text, extra = "") => el("span", { class: `wpw-toggle-count${extra}`, text });
+  return metaToggle(
+    "LoRAs",
+    {
+      open: view.loras.has(version.id),
+      onToggle: flip(view.loras, version.id),
+      title: "The LoRAs that were on when it was written, and the ones the AI suggests",
+    },
+    active ? count(`${active} on`) : null,
+    suggested ? count(`${suggested} suggested`, " is-new") : null
   );
 }
 
-/** The text a version was written from, when there is one to compare it with. */
-function versionBase(chat, version) {
-  if (version.basePrompt != null) return { text: version.basePrompt, name: "the current prompt" };
-  if (version.baseId === "seed" && chat.seedPrompt) {
-    return { text: chat.seedPrompt, name: "the current prompt" };
+/** What was on when this version was written, then what the LLM would add. */
+function loraPanel(chat, version) {
+  const chips = (items, compact) =>
+    (items ?? []).map((item) => loraChip(chat, version, item, compact));
+  return el(
+    "div",
+    { class: "wpw-panel" },
+    loraRow("On when it was written", chips(version.activeLoras, true)),
+    loraRow("Suggested", chips(version.suggestions, false))
+  );
+}
+
+const LORA_SCOPE_NAMES = { off: "Off", list: "List", all: "All" };
+
+function thinkingName(level) {
+  return REASONING_LEVELS.find(([value]) => value === level)?.[1] ?? level;
+}
+
+function writtenAt(when) {
+  const at = new Date(when);
+  return Number.isNaN(at.getTime())
+    ? ""
+    : at.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** One part of the generation info: its name, then what it holds. */
+function infoPart(name, ...body) {
+  return el(
+    "section",
+    { class: "wpw-info-part" },
+    el("h3", { class: "wpw-info-name", text: name }),
+    ...body
+  );
+}
+
+function infoText(text, note = false) {
+  return el("div", { class: `wpw-info-text${note ? " is-note" : ""}`, text });
+}
+
+function closeInfo() {
+  if (!view?.info) return;
+  view.info.remove();
+  view.info = null;
+}
+
+/**
+ * Everything about how a version came to be, in one place: where it came
+ * from, when, the model and settings, what it cost, your request and the
+ * questions on the way, the prompt it edited, the system prompt as it was
+ * read for that write, and the model's thinking.
+ */
+function openInfo(chat, version) {
+  closePopover();
+  closeInfo();
+  const written = version.kind === KIND_WRITTEN;
+  const base = chat.versions.find((v) => v.id === version.baseId);
+  const from = originLabel(chat, version);
+  const usage = version.usage ?? {};
+  const count = (n) => Number(n).toLocaleString("en-US");
+  const rows = [
+    ["Made from", from.charAt(0).toUpperCase() + from.slice(1)],
+    [written ? "Written" : "Made", writtenAt(version.created)],
+    written && ["Model", version.model],
+    written && version.temperature != null && ["Temperature", String(version.temperature)],
+    written &&
+      version.thinkingLevel != null && ["Thinking level", thinkingName(version.thinkingLevel)],
+    written && version.loraScope && ["LoRAs offered", LORA_SCOPE_NAMES[version.loraScope]],
+    written && version.server && ["Server", version.server],
+    version.cost != null && ["Cost", `${Number((version.cost * 100).toFixed(2))} ¢`],
+    version.seconds != null && ["Time", `${Math.round(version.seconds)} s`],
+    usage.prompt_tokens != null &&
+      usage.completion_tokens != null && [
+        "Tokens",
+        `${count(usage.prompt_tokens)} in → ${count(usage.completion_tokens)} out`,
+      ],
+    version.sentAt != null && ["Sent to ComfyUI", writtenAt(version.sentAt)],
+  ].filter((row) => row && row[1]);
+
+  const parts = [];
+  if (written) {
+    parts.push(
+      infoPart(
+        "Your request",
+        version.request ? infoText(version.request) : infoText("Optimise the prompt", true),
+        stepTurns({ images: version.images })
+      )
+    );
+    const turns = stepTurns({ questions: version.questions });
+    if (version.questions?.length) parts.push(infoPart("Questions on the way", turns));
   }
+  if (base) {
+    parts.push(
+      infoPart(
+        written ? `The prompt it edited · v${base.n}` : `Edited from · v${base.n}`,
+        infoText(base.text)
+      )
+    );
+  }
+  if (written) {
+    const text = systemPromptOf(chat, version);
+    parts.push(
+      infoPart(
+        version.systemPrompt ? `System prompt · ${version.systemPrompt}` : "System prompt",
+        text
+          ? infoText(text)
+          : infoText(
+              version.temperature == null
+                ? "Written before versions kept their settings: only the model and the system prompt's name are known."
+                : "The system prompt's text was not kept with this version.",
+              true
+            )
+      )
+    );
+    if (version.reasoning) parts.push(infoPart("Thinking", infoText(version.reasoning)));
+  }
+
+  const panel = el(
+    "div",
+    {
+      class: "wpw-info",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": `Generation info for v${version.n}`,
+      tabIndex: -1,
+    },
+    el(
+      "div",
+      { class: "wpw-info-head" },
+      el("span", { class: "wpw-ver", text: `v${version.n}` }),
+      el("span", { class: "wpw-info-title", text: rowLine(chat, version) }),
+      iconButton("pi-times", closeInfo, "wpw-icon", "Close (Esc)")
+    ),
+    el(
+      "div",
+      { class: "wpw-info-body" },
+      el(
+        "dl",
+        { class: "wpw-info-grid" },
+        ...rows.flatMap(([name, value]) => [el("dt", { text: name }), el("dd", { text: value })])
+      ),
+      ...parts
+    )
+  );
+  const shade = el("div", { class: "wpw-info-shade" }, panel);
+  shade.addEventListener("pointerdown", (event) => {
+    if (event.target === shade) closeInfo();
+  });
+  view.modal.append(shade);
+  view.info = shade;
+  panel.focus();
+}
+
+/** The version this one was made from, as a text to compare it with. */
+function versionBase(chat, version) {
   const base = chat.versions.find((v) => v.id === version.baseId);
   return base ? { text: base.text, name: `v${base.n}` } : null;
 }
@@ -1794,36 +2377,164 @@ function compare(version, before) {
   return fresh;
 }
 
-/** What changed, counted, with a switch between the prompt and its changes. */
-function changesLine(chat, version) {
+/**
+ * What changed from the version it was made from, in words added and removed.
+ * Open, the prompt above shows its changes instead of the plain text.
+ */
+function changesToggle(chat, version) {
   const base = versionBase(chat, version);
   if (!base) return null;
   const { stats } = compare(version, base.text);
   if (!stats.added && !stats.removed) {
-    return el("div", { class: "wpw-diff-line" }, el("span", { text: `Same as ${base.name}` }));
+    return el("span", { class: "wpw-meta-note", text: `Same as ${base.name}` });
   }
-  const showing = view.changes.has(version.id);
-  const toggle = button(
-    showing ? "Show prompt" : "Show changes",
-    () => {
-      if (showing) view.changes.delete(version.id);
-      else view.changes.add(version.id);
-      renderConvo(false);
+  const words = stats.added + stats.removed === 1 ? "word" : "words";
+  return metaToggle(
+    stats.rewrite ? "Rewritten" : "Changes",
+    {
+      open: view.changes.has(version.id),
+      onToggle: flip(view.changes, version.id),
+      title: stats.rewrite
+        ? `Mostly rewritten from ${base.name}: show the two side by side`
+        : `Show what changed from ${base.name}, in ${words}`,
     },
-    "wpw-diff-toggle"
+    el("span", { class: "wpw-diff-added", text: `+${stats.added}` }),
+    el("span", { class: "wpw-diff-removed", text: `−${stats.removed}` })
   );
+}
+
+/**
+ * The row above the prompt: the changes and the LoRAs, and the LoRAs under it
+ * when open. Above the prompt, so a switch never moves when the prompt below it
+ * turns into its changes. Everything else is in the generation info.
+ */
+function metaParts(chat, version) {
+  const request = requestToggle(version);
+  const row = [request, changesToggle(chat, version), loraToggle(version)].filter(Boolean);
+  if (!row.length) return [];
+  return [
+    el("div", { class: "wpw-meta" }, ...row),
+    request && !view.requestClosed.has(version.id)
+      ? view.recreating?.id === version.id
+        ? recreatePanel(chat, version)
+        : requestPanel(version)
+      : null,
+    view.loras.has(version.id) && loraToggle(version) ? loraPanel(chat, version) : null,
+  ];
+}
+
+/** The Request switch of a version the AI wrote: open until you close it. */
+function requestToggle(version) {
+  if (version.kind !== KIND_WRITTEN) return null;
+  return metaToggle("Request", {
+    open: !view.requestClosed.has(version.id),
+    onToggle: flip(view.requestClosed, version.id),
+    title: "What you asked for, its images, and the questions the AI asked on the way",
+  });
+}
+
+/** What you asked for, the questions and answers on the way, and the images it sent. */
+function requestPanel(version) {
+  const line = (who, text, extra = "") => [
+    el("span", { class: `wpw-who${extra}`, text: who }),
+    el("span", { class: `wpw-said${extra}`, text }),
+  ];
   return el(
     "div",
-    { class: "wpw-diff-line" },
-    el("span", {
-      text: stats.rewrite ? `Mostly rewritten from ${base.name}` : `Changes from ${base.name}`,
-    }),
-    el("span", { class: "wpw-diff-added", text: `+${stats.added}` }),
-    el("span", { class: "wpw-diff-removed", text: `−${stats.removed}` }),
-    el("span", { text: stats.added + stats.removed === 1 ? "word" : "words" }),
-    el("span", { class: "wpw-spacer" }),
-    toggle
+    { class: "wpw-panel wpw-request" },
+    el(
+      "div",
+      { class: "wpw-said-grid" },
+      ...(version.request
+        ? line("You", version.request)
+        : line("You", "Optimise the prompt", " is-empty")),
+      ...(version.questions ?? []).flatMap((turn) => [
+        ...line("AI", turn.question, " is-question"),
+        ...line("You", turn.answer),
+      ])
+    ),
+    stepTurns({ images: version.images })
   );
+}
+
+/**
+ * Recreate: the request in a field where it was shown, as it was, to change
+ * or not. Recreate sends it as a new version from the same version, with the
+ * same images and the settings chosen now.
+ */
+function recreatePanel(chat, version) {
+  const editing = view.recreating;
+  const waiting = jobs.has(chat.id)
+    ? "Wait for the write in progress to finish"
+    : chat.pending
+      ? "Answer the question below first"
+      : null;
+  const send = () => writeAgainNow(chat, version, { replace: false, request: editing.text });
+  const input = el("textarea", {
+    class: "wpw-recreate-input",
+    rows: 1,
+    value: editing.text,
+    placeholder: "Optimise the prompt",
+    "aria-label": `Request for a new version beside v${version.n}`,
+    onInput: () => {
+      editing.text = input.value;
+      fitRecreate(input);
+    },
+    onKeydown: (event) => {
+      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      if (!waiting) send();
+    },
+  });
+  const go = button(
+    "Recreate",
+    send,
+    "wpw-btn wpw-primary",
+    waiting ?? "Write a new version (Ctrl+Enter)"
+  );
+  go.disabled = !!waiting;
+  view.recreateInput = input;
+  return el(
+    "div",
+    { class: "wpw-panel wpw-request is-editing" },
+    input,
+    stepTurns({ images: version.images }),
+    el("div", { class: "wpw-recreate-row" }, button("Cancel", endRecreate), go)
+  );
+}
+
+// Ten lines; a longer request scrolls in its field.
+const RECREATE_MAX_HEIGHT = 10 * 19 + 14;
+
+function fitRecreate(input) {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight + 2, RECREATE_MAX_HEIGHT)}px`;
+}
+
+/** Recreate from the ⋮: the version opens with its request ready to change. */
+function beginRecreate(chat, version) {
+  if (jobs.has(chat.id) || chat.pending) return;
+  flushEdits();
+  view.requestClosed.delete(version.id);
+  keepInPlace(version.id, () => {
+    view.open = version.id;
+    view.recreating = { id: version.id, text: version.request ?? "" };
+    renderConvo(false);
+  });
+  const input = view.recreateInput;
+  if (!input?.isConnected) return;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+/** Cancel, Esc, or another version opened: the request is shown again as it was. */
+function endRecreate() {
+  const id = view.recreating?.id;
+  if (!id) return;
+  keepInPlace(id, () => {
+    view.recreating = null;
+    renderConvo(false);
+  });
 }
 
 /** The changes: marked in the text, or side by side when most of it is new. */
@@ -1914,90 +2625,267 @@ function keepLabelsInside(diff) {
   }
 }
 
-function versionCard(chat, version, index, busy) {
-  const label = `v${version.n}`;
-  const newest = index === chat.versions.length - 1;
-  const title = version.model ? `${version.model} · ${version.systemPrompt ?? ""}` : undefined;
-  // An answer to a question is typed in the same box, so a request cannot go there meanwhile.
-  const again = busy || chat.pending ? null : () => writeAgain(chat, version);
-  const showing = view.changes.has(version.id) && versionBase(chat, version);
-  if (newest) {
-    let body;
-    if (showing) {
-      body = changesView(chat, version);
-    } else {
-      body = el("textarea", {
-        class: "wpw-editor",
-        value: version.text,
-        spellcheck: false,
-        onInput: () => fitEditor(body),
-        onBlur: () => saveEdit(version, body),
-      });
-      view.editors.push({ version, editor: body });
-    }
-    return el(
-      "div",
-      { class: "wpw-card is-newest" },
-      cardHead(chat, label, version.baseId, statusEl(version, title)),
-      stepAsk(chat, version, { onRewind: again, again: true }),
-      version.reasoning && thinkingBlock(version.reasoning, false).block,
-      changesLine(chat, version),
-      body,
-      ...loraRows(chat, version),
-      el("div", { class: "wpw-actions is-block" }, sendButton(version, true))
-    );
-  }
+/** A closed row's line: what was asked, or for a hand edit how many words it changed. */
+function rowLine(chat, version) {
+  const text = rowText(version);
+  const base = version.kind === KIND_HAND ? versionBase(chat, version) : null;
+  if (!base) return text;
+  const { stats } = compare(version, base.text);
+  return `${text} · +${stats.added} −${stats.removed}`;
+}
 
-  const open = view.expanded.has(version.id);
-  const toggle = () => {
-    if (open) view.expanded.delete(version.id);
-    else view.expanded.add(version.id);
-    renderConvo(false);
-  };
-  const stop = (event) => event.stopPropagation();
-  const actions = el(
-    "div",
-    { class: `wpw-actions${open ? " is-block" : ""}`, onClick: stop },
-    !open && again && iconButton("pi-replay", again, "wpw-rewind is-inline", AGAIN_TITLE),
-    iconButton(
-      "pi-pencil",
-      () => continueFrom(chat, version),
-      "wpw-icon",
-      "Edit this version next"
-    ),
-    sendButton(version, false)
+/** Why this version cannot be deleted now: something under way starts from it or its follow-ups. */
+function deleteBlock(chat, version) {
+  const ids = new Set(branchOf(chat, version.id).map((v) => v.id));
+  const touches = (step) => !!step && (ids.has(step.baseId) || ids.has(step.replaceId));
+  if (touches(jobs.get(chat.id))) return "A write in progress starts from it. Stop it first.";
+  if (touches(chat.pending))
+    return "The question below starts from it. Answer it or take it back first.";
+  if (touches(chat.failure))
+    return "The failed request below starts from it. Retry it or take it back first.";
+  return null;
+}
+
+/** One line of a version's menu: an icon, what it does, and a quiet line saying more. */
+function menuItem(name, label, { sub = null, onClick, disabled = false, danger = false }) {
+  return el(
+    "button",
+    {
+      type: "button",
+      class: `wpw-vmenu-item${danger ? " is-danger" : ""}`,
+      role: "menuitem",
+      disabled,
+      onClick,
+    },
+    icon(name),
+    el(
+      "span",
+      { class: "wpw-vmenu-words" },
+      el("span", { class: "wpw-vmenu-label", text: label }),
+      sub && el("span", { class: "wpw-vmenu-sub", text: sub })
+    )
   );
-  const head = open
-    ? cardHead(chat, label, version.baseId, statusEl(version, title))
-    : el(
-        "div",
-        { class: "wpw-card-head" },
-        el("span", { class: "wpw-ver", text: label }),
-        el("span", { class: "wpw-preview", text: version.request || "Optimise the prompt" }),
-        actions
-      );
+}
+
+/**
+ * The ⋮ menu of a version: its generation info and using it as the input;
+ * Retry and Recreate side by side, each saying what it does; and deleting it,
+ * which asks first in the menu itself.
+ */
+function openVersionMenu(chat, version, anchor) {
+  if (view.popover?.versionId === version.id) {
+    closePopover();
+    return;
+  }
+  const n = version.n;
+  const written = version.kind === KIND_WRITTEN;
+  // An answer to a question is typed in the input, so a request cannot go out meanwhile.
+  const waiting = jobs.has(chat.id)
+    ? "Wait for the write in progress to finish"
+    : chat.pending
+      ? "Answer the question below first"
+      : null;
+  const chosen = startValue(chat, draftOf(chat.id).base) === version.id;
+  const followed = hasFollowUps(chat, version.id);
+  const more = branchOf(chat, version.id).length - 1;
+  const blocked = deleteBlock(chat, version);
+  const root = el("div", { class: "wpw-pop wpw-vmenu", role: "menu" });
+  const act = (work) => () => {
+    closePopover();
+    work();
+  };
+  const rule = () => el("div", { class: "wpw-vmenu-rule" });
+
+  const items = () => [
+    menuItem("pi-info-circle", "Generation info", {
+      sub: "Request, prompts, model, cost and thinking",
+      onClick: act(() => openInfo(chat, version)),
+    }),
+    menuItem(chosen ? "pi-check" : "pi-pencil", chosen ? "Used as input" : "Use as input", {
+      sub: chosen
+        ? `Your next request edits v${n}`
+        : `Your next request edits v${n}. Sends nothing`,
+      disabled: chosen,
+      onClick: act(() => continueFrom(chat, version)),
+    }),
+    written && rule(),
+    written &&
+      menuItem("pi-refresh", "Retry", {
+        sub:
+          waiting ??
+          (followed
+            ? `Versions were made from v${n}: use Recreate`
+            : `Write it again and replace v${n}`),
+        disabled: !!waiting || followed,
+        onClick: act(() => writeAgainNow(chat, version, { replace: true })),
+      }),
+    written &&
+      menuItem("pi-clone", "Recreate", {
+        sub: waiting ?? `Change the request if you like, then a new version. v${n} stays`,
+        disabled: !!waiting,
+        onClick: act(() => beginRecreate(chat, version)),
+      }),
+    rule(),
+    menuItem("pi-trash", `Delete v${n}`, {
+      sub: blocked ?? (more ? `With the ${versionsWord(more)} made from it` : "Asks first"),
+      disabled: !!blocked,
+      danger: true,
+      onClick: () => draw(confirm),
+    }),
+  ];
+  const confirm = () => [
+    el("div", {
+      class: "wpw-vmenu-confirm",
+      text: `${more ? `Delete v${n} and the ${versionsWord(more)} made from it?` : `Delete v${n}?`} This cannot be undone.`,
+    }),
+    el(
+      "div",
+      { class: "wpw-vmenu-buttons" },
+      button("Keep", () => draw(items)),
+      button(
+        "Delete",
+        act(() => removeVersion(chat, version)),
+        "wpw-btn wpw-danger"
+      )
+    ),
+  ];
+  // Under the ⋮, or above it when there is no room below.
+  const place = () => {
+    const at = anchor.getBoundingClientRect();
+    const box = root.getBoundingClientRect();
+    const below = at.bottom + 4 + box.height <= window.innerHeight - 8;
+    root.style.top = `${below ? at.bottom + 4 : Math.max(8, at.top - 4 - box.height)}px`;
+    root.style.left = `${Math.max(8, Math.min(at.right - box.width, window.innerWidth - box.width - 8))}px`;
+  };
+  const draw = (make) => {
+    root.replaceChildren(...make().filter(Boolean));
+    place();
+  };
+  openPopover(anchor, root);
+  view.popover.versionId = version.id;
+  anchor.classList.add("is-active");
+  draw(items);
+}
+
+/** The open version: the one you opened, else the newest; none once you closed it. */
+const NONE_OPEN = "none";
+
+function openVersionId(chat) {
+  if (view.open === NONE_OPEN) return null;
+  if (view.open && chat.versions.some((v) => v.id === view.open)) return view.open;
+  return chat.versions.at(-1)?.id ?? null;
+}
+
+/**
+ * Whatever opens or closes, the card you pressed stays where it is on the
+ * screen: the conversation scrolls by what moved above it.
+ */
+function keepInPlace(id, change) {
+  const top = () =>
+    view?.convo.querySelector(`.wpw-card[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect()
+      .top;
+  const before = top();
+  change();
+  const after = top();
+  if (before != null && after != null) view.convo.scrollTop += after - before;
+}
+
+/** One version open at a time: opening one closes the one that was open. */
+function toggleOpen(chat, version) {
+  const next = openVersionId(chat) === version.id ? NONE_OPEN : version.id;
+  keepInPlace(version.id, () => {
+    view.open = next;
+    // Closing the card you were recreating from lets the change go.
+    view.recreating = null;
+    renderConvo(false);
+  });
+}
+
+/**
+ * A version: closed, one line with its number and title; open, a card with
+ * the changes and LoRAs above the prompt, and Send to ComfyUI under it. Its ⋮
+ * holds everything else. Only one is open at a time; the newest open is
+ * editable.
+ */
+function versionCard(chat, version, newest, keep) {
+  const written = version.kind === KIND_WRITTEN;
+  const open = openVersionId(chat) === version.id;
+  const menu = iconButton(
+    "pi-ellipsis-v",
+    (event) => {
+      event.stopPropagation();
+      openVersionMenu(chat, version, menu);
+    },
+    "wpw-icon wpw-card-menu",
+    `More for v${version.n}: generation info, retry, recreate, delete`
+  );
+  const head = cardHead({
+    label: `v${version.n}`,
+    text: rowLine(chat, version),
+    empty: written && !version.title && !version.request,
+    folded: foldedTag(chat, version, keep),
+    menu,
+  });
   head.classList.add("is-toggle");
-  head.title = open ? "Collapse" : "Expand";
-  head.addEventListener("click", toggle);
+  head.addEventListener("click", () => toggleOpen(chat, version));
+  if (!open) return el("div", { class: "wpw-card", "data-id": version.id }, head);
+
+  let body;
+  if (view.changes.has(version.id) && versionBase(chat, version)) {
+    body = changesView(chat, version);
+  } else if (newest) {
+    const entry = { chat, version, editor: null };
+    body = el("textarea", {
+      class: "wpw-editor",
+      value: version.text,
+      spellcheck: false,
+      onInput: () => fitEditor(body),
+      onBlur: () => saveEdit(entry),
+    });
+    entry.editor = body;
+    view.editors.push(entry);
+  } else {
+    body = el("div", { class: "wpw-text", text: version.text });
+  }
   return el(
     "div",
-    { class: "wpw-card" },
+    { class: "wpw-card is-open", "data-id": version.id },
     head,
-    open && stepAsk(chat, version, { onRewind: again, again: true }),
-    open && version.reasoning && thinkingBlock(version.reasoning, false).block,
-    open && changesLine(chat, version),
-    open &&
-      (showing ? changesView(chat, version) : el("div", { class: "wpw-text", text: version.text })),
-    ...(open ? loraRows(chat, version) : []),
-    open && actions
+    ...metaParts(chat, version),
+    body,
+    el("div", { class: "wpw-actions is-block" }, sendButton(version))
   );
+}
+
+// The card of what is not a version yet: a write in progress, a question or a failure.
+const NEXT = "next";
+const LANE = 14;
+// The first lane's centre, from the left edge of the lanes.
+const GRAPH_EDGE = 8;
+// The column of fold controls, left of the lanes.
+const FOLD_COLUMN = 20;
+const CONVO_WIDTH = 780;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgEl(tag, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  return node;
 }
 
 function renderConvo(stick) {
   flushEdits();
   const chat = currentChat();
+  // Drawn again while you type in Recreate's field, the field keeps the caret.
+  const typing =
+    document.activeElement === view.recreateInput
+      ? [view.recreateInput.selectionStart, view.recreateInput.selectionEnd]
+      : null;
+  view.recreateInput = null;
   view.editors = [];
   view.live = null;
+  view.graph = null;
+  view.graphWatch.disconnect();
   if (!chat) {
     view.convo.replaceChildren();
     return;
@@ -2005,79 +2893,212 @@ function renderConvo(stick) {
   refreshTargets();
   const job = jobs.get(chat.id);
   const failure = chat.failure;
-  const items = chat.versions.map((version, index) => versionCard(chat, version, index, !!job));
-  const next = `v${chat.versions.length + 1}`;
+  const newest = chat.versions.at(-1);
+  // Folding never hides where you are working: the newest version, the one the next
+  // request edits, what a write, question or failure starts from, and their paths.
+  const keep = keptPaths(chat, [
+    newest?.id,
+    startValue(chat, draftOf(chat.id).base),
+    job?.baseId,
+    job?.replaceId,
+    chat.pending?.baseId,
+    chat.pending?.replaceId,
+    failure?.baseId,
+    failure?.replaceId,
+  ]);
+  // A Retry writes in the place of the version it writes over.
+  const inPlace = job?.replaceId ?? null;
+  const entries = visibleVersions(chat, keep).map((version) => ({
+    id: version.id,
+    baseId: version.baseId,
+    kind: version.id === inPlace ? NEXT : version.kind,
+    card:
+      version.id === inPlace
+        ? liveCard(chat, job, `v${version.n}`)
+        : versionCard(chat, version, version === newest, keep),
+    toggle: foldToggle(chat, version, keep),
+  }));
+  const coming = (baseId, card) => entries.push({ id: NEXT, baseId, kind: NEXT, card });
+  const next = `v${nextVersionNumber(chat)}`;
+  // What a failed Retry would have written over: its number, not a new one.
+  const failedOver = chat.versions.find((v) => v.id === failure?.replaceId);
   if (job) {
-    items.push(liveCard(chat, job, next));
+    if (!entries.some((entry) => entry.id === inPlace))
+      coming(job.baseId, liveCard(chat, job, next));
   } else if (failure) {
-    items.push(
+    coming(
+      failure.baseId,
       el(
         "div",
-        { class: "wpw-card is-error" },
-        cardHead(chat, next, failure.baseId, el("span", { class: "wpw-status", text: "Failed" })),
-        stepAsk(chat, failure, { onRewind: () => rewindFailure(chat) }),
+        { class: "wpw-card is-open is-error" },
+        cardHead({
+          label: failedOver ? `v${failedOver.n}` : next,
+          ...(failedOver?.title ? { text: failedOver.title } : requestText(failure)),
+          status: el("span", { class: "wpw-status", text: failedOver ? "Retry failed" : "Failed" }),
+          rewind: rewindButton(() => rewindFailure(chat), REWIND_TITLE, true),
+        }),
+        stepTurns(failure),
         el("div", { class: "wpw-error-text", text: failure.message }),
         el(
           "div",
           { class: "wpw-actions is-block" },
-          labelledButton("pi-refresh", "Retry", () => launch(chat, retrySpec(chat, failure)))
+          labelledButton(
+            "pi-refresh",
+            "Retry",
+            () => launch(chat, retrySpec(chat, failure)),
+            "wpw-btn wpw-primary"
+          )
         )
       )
     );
   } else if (chat.pending) {
-    items.push(
+    coming(
+      chat.pending.baseId,
       el(
         "div",
-        { class: "wpw-card is-question" },
-        cardHead(
-          chat,
-          "Question",
-          chat.pending.baseId,
-          el("span", { class: "wpw-status", text: "Waiting for your answer" })
-        ),
-        stepAsk(chat, chat.pending, {
-          onRewind: () => rewindQuestion(chat),
-          question: chat.pending.question,
+        { class: "wpw-card is-open is-question" },
+        cardHead({
+          label: next,
+          ...requestText(chat.pending),
+          status: el("span", { class: "wpw-status", text: "Waiting for your answer" }),
+          rewind: rewindButton(() => rewindQuestion(chat), REWIND_TITLE, true),
         }),
+        stepTurns(chat.pending, chat.pending.question),
         el("div", {
           class: "wpw-hint-line",
-          text: "Answer in the box below. To take your request back instead, use the undo arrow beside it.",
+          text: "Answer in the input below, or take your request back with the undo arrow.",
         })
       )
     );
   }
-  if (!items.length) {
-    items.push(
+
+  const top = view.convo.scrollTop;
+  if (entries.length) {
+    const svg = svgEl("svg", { class: "wpw-graph", "aria-hidden": "true" });
+    const history = el(
+      "div",
+      { class: "wpw-history" },
+      svg,
+      ...entries.map((e) => e.toggle),
+      ...entries.map((e) => e.card)
+    );
+    view.graph = { chat, entries, history, svg };
+    view.convo.replaceChildren(history);
+    view.graphWatch.observe(history);
+  } else {
+    view.convo.replaceChildren(
       el("div", {
         class: "wpw-hint",
         text: "Describe the prompt you want. To change the prompt that is in the node, choose Edit current prompt below.",
       })
     );
+    alignComposer();
   }
-
-  const top = view.convo.scrollTop;
-  view.convo.replaceChildren(...items);
   for (const { editor } of view.editors) fitEditor(editor);
+  const field = view.recreateInput;
+  if (field?.isConnected) {
+    fitRecreate(field);
+    if (typing) {
+      field.focus({ preventScroll: true });
+      field.setSelectionRange(...typing);
+    }
+  }
+  drawGraph();
   view.convo.scrollTop = stick ? view.convo.scrollHeight : top;
 }
 
-/** A Retry takes what the settings say now: the model may be why it failed. */
-function withCurrentSettings(spec) {
-  const model = String(getSetting(SETTING_MODEL, ""));
-  const systemPrompt = String(getSetting(SETTING_SYSTEM_PROMPT, ""));
-  return {
-    ...spec,
-    model,
-    systemPrompt,
-    payload: {
-      ...spec.payload,
-      base_url: baseUrl(),
-      model,
-      system_prompt: systemPrompt,
-      temperature: clampTemperature(getSetting(SETTING_TEMPERATURE, DEFAULT_TEMPERATURE)),
-      reasoning_effort: reasoningLevel(getSetting(SETTING_REASONING, "")),
-    },
-  };
+let graphFrame = null;
+
+/** Cards change height as they open, stream and are typed in; the graph follows once a frame. */
+function scheduleGraph() {
+  graphFrame ??= requestAnimationFrame(() => {
+    graphFrame = null;
+    drawGraph();
+  });
+}
+
+/**
+ * The graph beside the cards, measured from where their first lines are now:
+ * a dot per version (filled: written, hollow: by hand, square: from the node),
+ * a line to each version made from it, and the next request's version and its
+ * path back to the start in the accent colour.
+ */
+function drawGraph() {
+  const graph = view?.graph;
+  if (!graph?.history.isConnected) return;
+  const { chat, entries, history, svg } = graph;
+  const layout = historyLayout(entries);
+  // The fold controls get a column of their own, left of the lanes.
+  const folds = entries.some((e) => e.toggle) ? FOLD_COLUMN : 0;
+  const width = folds + GRAPH_EDGE * 2 + Math.max(0, layout.lanes - 1) * LANE;
+  history.style.paddingLeft = `${width + 6}px`;
+  history.style.maxWidth = `${CONVO_WIDTH + width + 6}px`;
+  const box = history.getBoundingClientRect();
+  // At the middle of a card's first line, which an open card's request may run past.
+  const ys = entries.map(({ card }) => {
+    const rect = (card.querySelector(".wpw-card-head") ?? card).getBoundingClientRect();
+    return rect.top - box.top + Math.min(rect.height / 2, HEAD_LINE / 2);
+  });
+  entries.forEach(({ toggle }, i) => {
+    if (toggle) toggle.style.top = `${ys[i] - 8}px`;
+  });
+  const x = (lane) => folds + GRAPH_EDGE + lane * LANE;
+  const chosen = startValue(chat, draftOf(chat.id).base);
+  const path = pathTo(chat, chosen);
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(box.height));
+  const edges = [];
+  const dots = [];
+  layout.rows.forEach((row, i) => {
+    const kind = entries[i].kind;
+    const mark = kind === NEXT ? " is-next" : path.has(row.id) ? " is-path" : "";
+    const cx = x(row.lane);
+    const cy = ys[i];
+    if (row.parentRow != null) {
+      const x1 = x(layout.rows[row.parentRow].lane);
+      const y1 = ys[row.parentRow];
+      const d =
+        x1 === cx ? `M${x1} ${y1}V${cy}` : `M${x1} ${y1}Q${cx} ${y1} ${cx} ${y1 + LANE}V${cy}`;
+      edges.push(svgEl("path", { class: `wpw-edge${mark}`, d }));
+    }
+    const cls = `wpw-node${mark}${kind === KIND_HAND ? " is-hand" : ""}`;
+    const dot =
+      kind === KIND_NODE
+        ? svgEl("rect", { class: cls, x: cx - 4, y: cy - 4, width: 8, height: 8, rx: 1.5 })
+        : svgEl("circle", { class: cls, cx, cy, r: 4.5 });
+    const version = kind === NEXT ? null : chat.versions.find((v) => v.id === row.id);
+    if (!version) {
+      dots.push(dot);
+      return;
+    }
+    // A version's dot chooses it as the input of the next request; the chosen one has a ring.
+    const pick = svgEl("g", { class: `wpw-pick${row.id === chosen ? " is-chosen" : ""}` });
+    const tip = svgEl("title");
+    tip.textContent =
+      row.id === chosen
+        ? `v${version.n} is the input: your next request edits it`
+        : `Use v${version.n} as the input of your next request`;
+    pick.append(
+      tip,
+      svgEl("circle", { class: "wpw-ring", cx, cy, r: 8 }),
+      dot,
+      svgEl("circle", { class: "wpw-hit", cx, cy, r: 10 })
+    );
+    pick.addEventListener("click", () => continueFrom(chat, version));
+    dots.push(pick);
+  });
+  svg.replaceChildren(...edges, ...dots);
+  alignComposer(width + 6);
+}
+
+/**
+ * The input lines up with the cards above it: the same left edge past the
+ * graph, and the same right edge however wide the scroll bar is.
+ */
+function alignComposer(gutter = 0) {
+  const scrollbar = view.convo.offsetWidth - view.convo.clientWidth;
+  view.composer.style.paddingLeft = `${COMPOSER_PAD + gutter}px`;
+  view.composer.style.paddingRight = `${COMPOSER_PAD + scrollbar}px`;
 }
 
 function chip(className, children, onClear, clearTitle) {
@@ -2099,7 +3120,8 @@ function chip(className, children, onClear, clearTitle) {
 
 /** The options are rebuilt only when they change, so a re-render cannot close an open list. */
 function renderStart(chat, draft) {
-  const options = startOptions(chat, targetNow()?.label);
+  // One version on offer: the chosen one. Another is chosen by its dot in the graph.
+  const options = startOptions(chat, targetNow()?.label, draft.base);
   const key = options.map((option) => `${option.value}\t${option.label}`).join("\n");
   if (view.start.dataset.options !== key) {
     view.start.dataset.options = key;
@@ -2109,12 +3131,24 @@ function renderStart(chat, draft) {
   }
   view.start.value = startValue(chat, draft.base);
   view.startIcon.className = `pi ${view.start.value === NEW_PROMPT ? "pi-sparkles" : "pi-pencil"}`;
+  // The graph lights up the chosen version and its path.
+  scheduleGraph();
 }
 
 function chooseStart() {
   const chat = currentChat();
   if (!chat) return;
-  draftOf(chat.id).base = view.start.value;
+  const value = view.start.value;
+  draftOf(chat.id).base = value;
+  // A version picked from under a fold stays shown after the next pick too.
+  const folded =
+    chat.versions.some((v) => v.id === value) && !visibleVersions(chat).some((v) => v.id === value);
+  if (folded) {
+    unfoldTo(chat, value);
+    save();
+  }
+  // What folding keeps shown follows the choice.
+  renderConvo(false);
   renderStart(chat, draftOf(chat.id));
 }
 
@@ -2237,23 +3271,96 @@ function fitEditor(editor) {
   editor.style.height = `${Math.min(editor.scrollHeight + 2, window.innerHeight * 0.45)}px`;
 }
 
-function saveEdit(version, editor) {
-  if (version.text === editor.value) return;
-  version.text = editor.value;
+/**
+ * Typed text goes to its version, or into a hand edit under it (editVersion
+ * decides). A new hand edit takes the composer's choice with it, and the
+ * conversation is drawn again only once the press that ended the typing is
+ * over, so the button it pressed still gets its click.
+ */
+function saveEdit(entry) {
+  const { chat, version, editor } = entry;
+  if (editor.value === version.text) return;
+  const out = editVersion(chat, version, editor.value, {
+    id: uid(),
+    now: Date.now(),
+    writingBaseId: jobs.get(chat.id)?.baseId ?? null,
+  });
+  if (!out) {
+    editor.value = version.text;
+    fitEditor(editor);
+    return;
+  }
+  if (out.made) {
+    const draft = draftOf(chat.id);
+    if (draft.base === version.id) draft.base = out.version.id;
+    view.successor.set(version.id, out.version.id);
+    entry.version = out.version;
+    renderAfterPress();
+  }
   save();
 }
 
 function flushEdits() {
-  for (const { version, editor } of view?.editors ?? []) saveEdit(version, editor);
+  for (const entry of view?.editors ?? []) saveEdit(entry);
+}
+
+/** The version that holds a version's text now: the hand edit typing made of it, if any. */
+function current(chat, version) {
+  let id = version.id;
+  while (view?.successor.has(id)) id = view.successor.get(id);
+  return chat.versions.find((v) => v.id === id) ?? version;
+}
+
+// Whether a mouse button or a finger is down, anywhere.
+let pressing = false;
+window.addEventListener("pointerdown", () => (pressing = true), true);
+window.addEventListener("pointerup", () => (pressing = false), true);
+window.addEventListener("pointercancel", () => (pressing = false), true);
+
+function renderAfterPress() {
+  const later = () =>
+    setTimeout(() => {
+      if (!view) return;
+      renderConvo(false);
+      renderChips();
+    }, 0);
+  if (pressing) window.addEventListener("pointerup", later, { once: true, capture: true });
+  else later();
 }
 
 // --- What the controls do ------------------------------------------------------
+
+/**
+ * A chat that has written nothing and holds nothing typed is for the node the
+ * Prompt Writer was opened from, as New chat would make it. One that has a
+ * version, or a draft, keeps the node it was for.
+ */
+function followOpenedNode(chat) {
+  const draft = drafts.get(chat.id);
+  const untouched =
+    !chat.versions.length &&
+    !chat.pending &&
+    !chat.failure &&
+    !jobs.has(chat.id) &&
+    !chat.seedPrompt &&
+    !draft?.text?.trim() &&
+    !draft?.images?.length;
+  const label = labelOfNode(view.promptNode);
+  if (!untouched || !label || chat.targetLabel === label) return;
+  chat.targetLabel = label;
+  save();
+}
 
 function selectChat(id) {
   flushEdits();
   view.chatId = id;
   view.confirmDelete = null;
-  view.expanded.clear();
+  // A chat opens on its newest version.
+  view.open = null;
+  view.recreating = null;
+  closeInfo();
+  const chosen = store.chats.find((chat) => chat.id === id);
+  if (chosen) followOpenedNode(chosen);
   if (unseen.has(id)) {
     const node = unseen.get(id);
     unseen.delete(id);
@@ -2319,18 +3426,55 @@ function removeChat(chat) {
   else newChat();
 }
 
+/**
+ * Use as input: the version is chosen under "Edit …" in the input, and that
+ * choice lights up. Nothing is sent.
+ */
 function continueFrom(chat, version) {
-  draftOf(chat.id).base = version.id;
+  flushEdits();
+  // The hand edit typing just made, if it made one.
+  draftOf(chat.id).base = current(chat, version).id;
+  renderConvo(false);
   renderChips();
+  const chip = view.startChip;
+  chip.classList.remove("is-flash");
+  // Read once, so the animation starts again on a second press.
+  void chip.offsetWidth;
+  chip.classList.add("is-flash");
   view.input.focus();
+}
+
+/** A version goes, with every version made from it; deleteBlock said nothing depends on them. */
+function removeVersion(chat, version) {
+  flushEdits();
+  if (deleteBlock(chat, version)) {
+    renderConvo(false);
+    return;
+  }
+  const gone = deleteVersion(chat, version.id, Date.now());
+  const draft = draftOf(chat.id);
+  if (gone.includes(draft.base)) draft.base = null;
+  if (gone.includes(view.open)) view.open = null;
+  if (gone.includes(view.recreating?.id)) view.recreating = null;
+  for (const id of gone) {
+    for (const set of [view.changes, view.thinking, view.loras, view.requestClosed]) set.delete(id);
+    view.successor.delete(id);
+    comparisons.delete(id);
+  }
+  save();
+  renderRail();
+  renderConvo(false);
+  renderChips();
 }
 
 function targetNow() {
   return view.targets[targetIndex()] ?? null;
 }
 
-function useVersion(version) {
+function useVersion(pressed) {
   flushEdits();
+  const chat = currentChat();
+  const version = chat ? current(chat, pressed) : pressed;
   const target = targetNow();
   const widget = target?.node?.widgets?.find((w) => w.name === TEXT_WIDGET);
   if (!widget) {
@@ -2343,10 +3487,12 @@ function useVersion(version) {
   }
   widget.value = version.text;
   widget.callback?.(version.text);
+  markSent(version, Date.now());
+  save();
   flash(target.node);
   redraw();
   checkpoint();
-  toast("success", "Prompt used", target.label);
+  toast("success", `v${version.n} sent to ComfyUI`, target.label);
   closeView();
 }
 
@@ -2413,8 +3559,10 @@ function toggleSuggestion(chat, version, suggestion, { keepText = false } = {}) 
     }
   }
   if (!keepText) {
-    const text = (holder ? removeTriggerLine : addTriggerLine)(version.text, triggers);
-    if (text !== version.text) setVersionText(version, text);
+    // Into the hand edit typing made of this version, if it made one.
+    const into = current(chat, version);
+    const text = (holder ? removeTriggerLine : addTriggerLine)(into.text, triggers);
+    if (text !== into.text) setVersionText(into, text);
   }
   save();
   redraw();
@@ -2457,6 +3605,7 @@ function beginRename() {
 
 function closePopover() {
   if (!view?.popover) return;
+  view.popover.anchor?.classList.remove("is-active");
   view.popover.root.remove();
   view.popover = null;
   view.model = view.prompts = null;
@@ -2756,6 +3905,7 @@ function closeView() {
   window.removeEventListener("keydown", view.onWindowKey, true);
   window.removeEventListener("keyup", view.onWindowKey, true);
   window.removeEventListener("paste", view.onWindowPaste, true);
+  view.graphWatch.disconnect();
   view.backdrop.remove();
   view = null;
   comparisons.clear();
@@ -2763,7 +3913,9 @@ function closeView() {
 
 function dismiss() {
   if (view.popover) closePopover();
+  else if (view.info) closeInfo();
   else if (view.renaming) view.renaming.cancel();
+  else if (view.recreating) endRecreate();
   else closeView();
 }
 
@@ -2858,15 +4010,17 @@ function buildView(promptNode) {
     },
     sendIcon
   );
+  // The settings of the next request on top, then its images and text, and send in the corner.
   const composer = el(
     "div",
     { class: "wpw-composer" },
     el(
       "div",
       { class: "wpw-box" },
+      el("div", { class: "wpw-tools" }, toolsLeft),
       attached,
       input,
-      el("div", { class: "wpw-tools" }, toolsLeft, send)
+      send
     ),
     note
   );
@@ -2895,6 +4049,18 @@ function buildView(promptNode) {
     if (pop && !pop.root.contains(event.target) && !pop.anchor.contains(event.target)) {
       closePopover();
     }
+  });
+  // A click on the shade closes the pop-up. Only a press that starts and ends
+  // there counts: one that starts inside, selecting text say, may end out here.
+  let pressedShade = false;
+  backdrop.addEventListener("pointerdown", (event) => {
+    pressedShade = event.target === backdrop;
+  });
+  backdrop.addEventListener("pointerup", (event) => {
+    pressedShade &&= event.target === backdrop;
+  });
+  backdrop.addEventListener("click", (event) => {
+    if (pressedShade && event.target === backdrop) closeView();
   });
 
   // ComfyUI loads a dropped file as a workflow. Text dragged between fields is left alone.
@@ -2953,6 +4119,7 @@ function buildView(promptNode) {
     gear,
     chats,
     convo,
+    composer,
     attached,
     toolsLeft,
     attach,
@@ -2972,8 +4139,24 @@ function buildView(promptNode) {
     targets: [],
     chatId: null,
     editors: [],
-    expanded: new Set(),
+    // The one open version: its id, null for the newest, NONE_OPEN once you closed it.
+    open: null,
     changes: new Set(),
+    // The thinking of a write in progress, "live:<chat id>", once you opened it.
+    thinking: new Set(),
+    // Versions whose LoRAs you opened.
+    loras: new Set(),
+    // Versions whose request you closed: it is open on every version until then.
+    requestClosed: new Set(),
+    // Recreate's field while it is open: { id of the version, the request as typed }.
+    recreating: null,
+    recreateInput: null,
+    // The generation info, while it is open.
+    info: null,
+    // version id → the hand edit typing made of it, so a press on its card acts on that.
+    successor: new Map(),
+    graph: null,
+    graphWatch: new ResizeObserver(scheduleGraph),
     popover: null,
     renaming: null,
     confirmDelete: null,
@@ -3035,6 +4218,8 @@ export async function openPromptWriter(promptNode) {
   showChatOf(view.promptNode);
   growInput();
   loadLists(false);
+  // The versions from before titles get theirs, once.
+  nameUntitled();
 }
 
 app.registerExtension({

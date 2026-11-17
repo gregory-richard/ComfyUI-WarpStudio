@@ -1,7 +1,16 @@
 // The Prompt Writer's chat history: a store of chats, each a list of prompt
 // versions. Pure data handling, so it can be tested under node.
 
+import { diffStats, diffWords } from "./prompt_writer_core.js";
+
 export const CHATS_FILE = "warppipe_prompt_chats.json";
+/** Written by the LLM. */
+export const KIND_WRITTEN = "written";
+/** Edited by hand, in the Prompt Writer or in the node's prompt box. */
+export const KIND_HAND = "hand";
+/** Taken from a Prompt + LoRAs, and not close to any version. */
+export const KIND_NODE = "node";
+const KINDS = [KIND_WRITTEN, KIND_HAND, KIND_NODE];
 /** Start from the text in the prompt box of the For node, read when Write is pressed. */
 export const CURRENT_PROMPT = "prompt";
 /** Start from nothing: a new prompt from the request alone. */
@@ -21,6 +30,8 @@ const isId = (v) => typeof v === "string" && v !== "";
 const stringOr = (v, fallback) => (typeof v === "string" ? v : fallback);
 const numberOrNull = (v) => (Number.isFinite(v) ? v : null);
 const stampOf = (v) => (Number.isFinite(v) || isId(v) ? v : 0);
+const idOrNull = (v) => (isId(v) ? v : null);
+const LORA_SCOPES = ["off", "list", "all"];
 
 function normalizeImages(raw) {
   if (!Array.isArray(raw)) return [];
@@ -59,30 +70,50 @@ function normalizeTurns(raw) {
   return raw.filter(isTurn).map(({ question, answer }) => ({ question, answer }));
 }
 
-/** A step that waits for the answer to a question, or null. */
-function normalizePending(raw) {
-  if (!isObject(raw) || !isId(raw.question) || typeof raw.request !== "string") return null;
+const isPending = (raw) => isObject(raw) && isId(raw.question) && typeof raw.request === "string";
+const isFailure = (raw) => isObject(raw) && isId(raw.message) && typeof raw.request === "string";
+
+/**
+ * A step that waits for the answer to a question, or null. `replaceId` is the
+ * version a Retry writes over once it is answered.
+ */
+function normalizePending(raw, baseId = raw?.baseId) {
+  if (!isPending(raw)) return null;
   return {
     request: raw.request,
     images: normalizeImages(raw.images),
-    baseId: isId(raw.baseId) ? raw.baseId : null,
-    basePrompt: stringOr(raw.basePrompt, null),
+    baseId: idOrNull(baseId),
     turns: normalizeTurns(raw.turns),
     question: raw.question,
+    replaceId: idOrNull(raw.replaceId),
   };
 }
 
 /** A request that failed: what a Retry needs, and why it failed. Nothing that lives only in the page. */
-function normalizeFailure(raw) {
-  if (!isObject(raw) || !isId(raw.message) || typeof raw.request !== "string") return null;
+function normalizeFailure(raw, baseId = raw?.baseId) {
+  if (!isFailure(raw)) return null;
   return {
     request: raw.request,
     images: normalizeImages(raw.images),
-    baseId: isId(raw.baseId) ? raw.baseId : null,
-    basePrompt: stringOr(raw.basePrompt, null),
+    baseId: idOrNull(baseId),
     turns: normalizeTurns(raw.turns),
     answer: stringOr(raw.answer, null),
     message: raw.message,
+    replaceId: idOrNull(raw.replaceId),
+  };
+}
+
+/**
+ * The settings a version was written with, beside its model and system prompt.
+ * Null where it is not known: versions written before they were kept.
+ */
+function normalizeSettings(raw) {
+  return {
+    temperature: numberOrNull(raw.temperature),
+    thinkingLevel: stringOr(raw.thinkingLevel, null),
+    loraScope: LORA_SCOPES.includes(raw.loraScope) ? raw.loraScope : null,
+    server: stringOr(raw.server, null),
+    systemPromptKey: idOrNull(raw.systemPromptKey),
   };
 }
 
@@ -91,21 +122,47 @@ function normalizeVersion(raw, n) {
     id: raw.id,
     n,
     created: stampOf(raw.created),
+    kind: KINDS.includes(raw.kind) ? raw.kind : KIND_WRITTEN,
     request: stringOr(raw.request, ""),
+    title: stringOr(raw.title, ""),
     images: normalizeImages(raw.images),
     baseId: isId(raw.baseId) ? raw.baseId : null,
     text: raw.text,
     model: stringOr(raw.model, ""),
     systemPrompt: stringOr(raw.systemPrompt, ""),
+    ...normalizeSettings(raw),
     cost: numberOrNull(raw.cost),
     seconds: numberOrNull(raw.seconds),
     usage: isObject(raw.usage) ? { ...raw.usage } : {},
     suggestions: normalizeSuggestions(raw.suggestions),
     activeLoras: normalizeSuggestions(raw.activeLoras),
     questions: normalizeTurns(raw.questions),
-    basePrompt: stringOr(raw.basePrompt, null),
     reasoning: stringOr(raw.reasoning, ""),
+    editedIn: raw.editedIn === "node" ? "node" : null,
+    source: stringOr(raw.source, null),
+    sentAt: numberOrNull(raw.sentAt),
   };
+}
+
+/** The number after the newest version's. Numbers are kept, so a deleted version leaves a gap. */
+function nextNumber(versions) {
+  return (versions.at(-1)?.n ?? 0) + 1;
+}
+
+/** The number the next version of this chat gets. */
+export function nextVersionNumber(chat) {
+  return nextNumber(chat.versions);
+}
+
+/** The system prompts a chat's versions were written with, by key: only those still used. */
+function usedSystemPrompts(raw, versions) {
+  const kept = {};
+  if (!isObject(raw)) return kept;
+  for (const v of versions) {
+    const key = v.systemPromptKey;
+    if (key && typeof raw[key] === "string") kept[key] = raw[key];
+  }
+  return kept;
 }
 
 // The first entry of each id, among those `valid` accepts.
@@ -118,19 +175,59 @@ function validUnique(items, valid) {
   });
 }
 
+/**
+ * Chats before 5.1 kept the node prompt an edit started from only as a quote
+ * (`basePrompt`, or `baseId: "seed"` with the seed prompt). The quote becomes
+ * the version it is (or is close to) or a new one, inserted before the step.
+ * Any other base that names no earlier version becomes a root.
+ */
 function normalizeChat(raw) {
-  const versions = validUnique(raw.versions, (v) => typeof v.text === "string");
+  const seedPrompt = stringOr(raw.seedPrompt, null);
+  const targetLabel = stringOr(raw.targetLabel, null);
+  const versions = [];
+  const baseOf = (step, id, created) => {
+    const quoted =
+      typeof step.basePrompt === "string"
+        ? step.basePrompt
+        : step.baseId === "seed"
+          ? seedPrompt
+          : null;
+    if (quoted?.trim())
+      return adoptInto(versions, quoted, { id, now: created, source: targetLabel }).id;
+    return versions.some((v) => v.id === step.baseId) ? step.baseId : null;
+  };
+  for (const v of validUnique(raw.versions, (v) => typeof v.text === "string")) {
+    const baseId = baseOf(v, `${v.id}~node`, stampOf(v.created));
+    // A saved number stays (a deleted version leaves a gap) while numbers still rise;
+    // a version inserted above renumbers the ones after it.
+    const next = nextNumber(versions);
+    const n = Number.isInteger(v.n) && v.n >= next ? v.n : next;
+    versions.push(normalizeVersion({ ...v, baseId }, n));
+  }
+  const updated = stampOf(raw.updated);
+  const pending = isPending(raw.pending)
+    ? normalizePending(raw.pending, baseOf(raw.pending, `${raw.id}~pending`, updated))
+    : null;
+  const failure = isFailure(raw.failure)
+    ? normalizeFailure(raw.failure, baseOf(raw.failure, `${raw.id}~failure`, updated))
+    : null;
+  const known = new Set(versions.map((v) => v.id));
+  for (const step of [pending, failure]) {
+    if (step && !known.has(step.replaceId)) step.replaceId = null;
+  }
   return {
     id: raw.id,
     title: stringOr(raw.title, DEFAULT_TITLE),
     titleEdited: raw.titleEdited === true,
     created: stampOf(raw.created),
-    updated: stampOf(raw.updated),
-    seedPrompt: stringOr(raw.seedPrompt, null),
-    targetLabel: stringOr(raw.targetLabel, null),
-    versions: versions.map((v, i) => normalizeVersion(v, i + 1)),
-    pending: normalizePending(raw.pending),
-    failure: normalizeFailure(raw.failure),
+    updated,
+    seedPrompt,
+    targetLabel,
+    versions,
+    pending,
+    failure,
+    folded: Array.isArray(raw.folded) ? [...new Set(raw.folded.filter((id) => known.has(id)))] : [],
+    systemPrompts: usedSystemPrompts(raw.systemPrompts, versions),
   };
 }
 
@@ -158,6 +255,8 @@ export function createChat(store, { id, now, seedPrompt = null, targetLabel = nu
     versions: [],
     pending: null,
     failure: null,
+    folded: [],
+    systemPrompts: {},
   };
   store.chats.push(chat);
   return chat;
@@ -182,50 +281,282 @@ export function titleFrom(request) {
   return firstWords(request) || DEFAULT_TITLE;
 }
 
-export function addVersion(
-  chat,
+function makeVersion(
+  n,
   {
     id,
     now,
-    request,
+    kind = KIND_WRITTEN,
+    request = "",
+    title = "",
     images = [],
     baseId = null,
     text,
-    model,
-    systemPrompt,
-    cost = null,
-    seconds = null,
-    usage = {},
-    suggestions = [],
-    activeLoras = [],
-    questions = [],
-    basePrompt = null,
-    reasoning = "",
+    editedIn = null,
+    source = null,
+    ...written
   }
 ) {
-  const version = {
+  return {
     id,
-    n: chat.versions.length + 1,
+    n,
     created: now,
+    kind,
     request,
+    title: stringOr(title, ""),
     images: [...images],
     baseId,
     text,
+    ...writtenFields(written),
+    editedIn,
+    source,
+    sentAt: null,
+  };
+}
+
+/** What the LLM's answer sets on a version: the text aside, all a Retry writes over. */
+function writtenFields({
+  model = "",
+  systemPrompt = "",
+  cost = null,
+  seconds = null,
+  usage = {},
+  suggestions = [],
+  activeLoras = [],
+  questions = [],
+  reasoning = "",
+  ...settings
+}) {
+  return {
     model,
     systemPrompt,
+    ...normalizeSettings(settings),
     cost,
     seconds,
     usage: { ...usage },
     suggestions: normalizeSuggestions(suggestions),
     activeLoras: normalizeSuggestions(activeLoras),
     questions: normalizeTurns(questions),
-    basePrompt,
     reasoning: stringOr(reasoning, ""),
   };
+}
+
+/** A new version at the end. The first one the LLM writes names the chat. */
+export function addVersion(chat, fields) {
+  const version = makeVersion(nextNumber(chat.versions), fields);
+  const named = chat.versions.some((v) => v.kind === KIND_WRITTEN);
   chat.versions.push(version);
-  chat.updated = now;
-  if (!chat.titleEdited && version.n === 1) chat.title = titleFrom(request);
+  chat.updated = fields.now;
+  if (!chat.titleEdited && !named && version.kind === KIND_WRITTEN) {
+    chat.title = titleFrom(version.request);
+  }
   return version;
+}
+
+/** A hand edit of a version; `editedIn: "node"` when it was made in the node's prompt box. */
+export function addHandVersion(chat, { id, now, baseId, text, editedIn = null }) {
+  return addVersion(chat, { id, now, kind: KIND_HAND, baseId, text, editedIn });
+}
+
+/** A prompt taken from a node that is not close to any version: a start of its own. */
+export function addNodeVersion(chat, { id, now, text, source = null }) {
+  return addVersion(chat, { id, now, kind: KIND_NODE, text, source });
+}
+
+/** Send to ComfyUI wrote this version into a node. */
+export function markSent(version, now) {
+  version.sentAt = now;
+}
+
+/**
+ * The versions the AI wrote that have no title yet and a request to name them
+ * from, in every chat: what naming them all once has to do. Newest chat first.
+ */
+export function untitledVersions(store) {
+  return sortedChats(store).flatMap((chat) =>
+    chat.versions
+      .filter((v) => v.kind === KIND_WRITTEN && !v.title && v.request.trim())
+      .map((version) => ({ chat, version }))
+  );
+}
+
+/** A short title for a version, like a chat's; says whether it was set. */
+export function setVersionTitle(version, title) {
+  const trimmed = String(title ?? "").trim();
+  if (!version || !trimmed) return false;
+  version.title = trimmed;
+  return true;
+}
+
+/** A short, stable key for a text (FNV-1a, 32 bits): the same text, the same key. */
+function keyOf(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * Keep the text of a system prompt a version was written with, once per chat
+ * however many versions share it. Returns its key, or null for no text.
+ */
+export function keepSystemPrompt(chat, text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  chat.systemPrompts ??= {};
+  let key = keyOf(text);
+  // Two texts with one key: the second gets a key of its own.
+  while (chat.systemPrompts[key] != null && chat.systemPrompts[key] !== text) key += "~";
+  chat.systemPrompts[key] = text;
+  return key;
+}
+
+/** The system prompt text a version was written with, or null when it was not kept. */
+export function systemPromptOf(chat, version) {
+  const key = version.systemPromptKey;
+  return key ? (chat.systemPrompts?.[key] ?? null) : null;
+}
+
+/** Has anything been made from this version? */
+export function hasFollowUps(chat, id) {
+  return chat.versions.some((v) => v.baseId === id);
+}
+
+/**
+ * A Retry's answer written over the version it retried: the same number, place,
+ * request and base, with the new text and everything the write says about
+ * itself. It has not been sent anywhere yet. Null when that version is gone.
+ */
+export function replaceVersion(chat, id, { now, text, ...fields }) {
+  const version = chat.versions.find((v) => v.id === id);
+  if (!version) return null;
+  Object.assign(version, { text, ...writtenFields(fields), sentAt: null });
+  chat.systemPrompts = usedSystemPrompts(chat.systemPrompts, chat.versions);
+  chat.updated = now;
+  return version;
+}
+
+/** The version and every version made from it, directly or further down, in order. */
+export function branchOf(chat, id) {
+  const ids = new Set([id]);
+  for (const v of chat.versions) if (ids.has(v.baseId)) ids.add(v.id);
+  return chat.versions.filter((v) => ids.has(v.id));
+}
+
+/**
+ * Delete a version and every version made from it. The numbers of the others
+ * stay as they are. Returns the ids that went.
+ */
+export function deleteVersion(chat, id, now) {
+  const gone = new Set(branchOf(chat, id).map((v) => v.id));
+  if (!gone.size) return [];
+  chat.versions = chat.versions.filter((v) => !gone.has(v.id));
+  chat.folded = chat.folded.filter((f) => !gone.has(f));
+  chat.systemPrompts = usedSystemPrompts(chat.systemPrompts, chat.versions);
+  chat.updated = now;
+  return [...gone];
+}
+
+const WORDS = /[\p{L}\p{N}]+/gu;
+
+function wordCounts(text) {
+  const counts = new Map();
+  for (const word of String(text).toLowerCase().match(WORDS) ?? []) {
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** The share of two texts' words they have in common, 0 to 1. */
+function sharedWords(a, b) {
+  let shared = 0;
+  let total = 0;
+  for (const [word, count] of a) {
+    shared += Math.min(count, b.get(word) ?? 0);
+    total += count;
+  }
+  for (const count of b.values()) total += count;
+  return total ? (2 * shared) / total : 0;
+}
+
+/**
+ * What a prompt text is to these versions: the newest one that holds exactly
+ * it ("same"), the one it is a tweak of ("close": not a rewrite, the test that
+ * shows "Mostly rewritten"), or null. Only the best candidate by shared words
+ * is diffed.
+ */
+export function matchText(versions, text) {
+  for (let i = versions.length - 1; i >= 0; i--) {
+    if (versions[i].text === text) return { how: "same", version: versions[i] };
+  }
+  const words = wordCounts(text);
+  let best = null;
+  let bestScore = 0;
+  for (const version of versions) {
+    const score = sharedWords(wordCounts(version.text), words);
+    if (score > 0 && score >= bestScore) {
+      best = version;
+      bestScore = score;
+    }
+  }
+  if (!best || diffStats(diffWords(best.text, text)).rewrite) return null;
+  return { how: "close", version: best };
+}
+
+function adoptInto(versions, text, { id, now, source = null }) {
+  const match = matchText(versions, text);
+  if (match?.how === "same") return match.version;
+  const fields = match
+    ? { id, now, kind: KIND_HAND, baseId: match.version.id, text, editedIn: "node" }
+    : { id, now, kind: KIND_NODE, text, source };
+  const version = makeVersion(nextNumber(versions), fields);
+  versions.push(version);
+  return version;
+}
+
+/**
+ * The version a node's prompt text is in this chat: the one that holds it, a
+ * new hand edit (in the node) of the one it is close to, or a new node version.
+ */
+export function adoptText(chat, text, { id, now, source = null }) {
+  const count = chat.versions.length;
+  const version = adoptInto(chat.versions, text, { id, now, source });
+  if (chat.versions.length > count) chat.updated = now;
+  return version;
+}
+
+const sameWords = (a, b) => a.replace(/\s+/g, " ").trim() === b.replace(/\s+/g, " ").trim();
+
+/**
+ * Has something started from this version, or gone out of the Prompt Writer
+ * with it? `writingBaseId` is the base of a write in progress.
+ */
+export function isUsed(chat, version, writingBaseId = null) {
+  const id = version.id;
+  return (
+    version.sentAt != null ||
+    writingBaseId === id ||
+    chat.pending?.baseId === id ||
+    chat.failure?.baseId === id ||
+    chat.versions.some((v) => v.baseId === id)
+  );
+}
+
+/**
+ * Typed text saved to a version: a hand edit nothing has used yet takes it in
+ * place; anything else stays as it was and gets a hand edit under it. Null
+ * when the text is empty or only its spacing changed: nothing is saved.
+ */
+export function editVersion(chat, version, text, { id, now, writingBaseId = null }) {
+  if (!text.trim()) return null;
+  if (version.kind === KIND_HAND && !isUsed(chat, version, writingBaseId)) {
+    version.text = text;
+    chat.updated = now;
+    return { version, made: false };
+  }
+  if (sameWords(text, version.text)) return null;
+  return { version: addHandVersion(chat, { id, now, baseId: version.id, text }), made: true };
 }
 
 /**
@@ -240,17 +571,17 @@ export function baseText(chat, baseId) {
 
 /**
  * The AI asked instead of writing: the step waits in the chat for an answer.
- * `step` is {request, images, baseId, basePrompt, turns}, the turns being the
- * questions already answered on the way.
+ * `step` is {request, images, baseId, turns}, the turns being the questions
+ * already answered on the way.
  */
 export function openQuestion(chat, step, question, now) {
   chat.pending = {
     request: step.request ?? "",
     images: [...(step.images ?? [])],
     baseId: step.baseId ?? null,
-    basePrompt: step.basePrompt ?? null,
     turns: normalizeTurns(step.turns),
     question,
+    replaceId: idOrNull(step.replaceId),
   };
   chat.updated = now;
   return chat.pending;
@@ -262,10 +593,10 @@ export function recordFailure(chat, spec, message, now) {
     request: spec.request ?? "",
     images: spec.images,
     baseId: spec.baseId,
-    basePrompt: spec.basePrompt,
     turns: spec.turns,
     answer: spec.answer,
     message,
+    replaceId: spec.replaceId,
   });
   chat.updated = now;
   return chat.failure;
@@ -285,14 +616,33 @@ export function dropQuestion(chat) {
   return pending;
 }
 
-/** What the next Write does: edit a version, newest first, or the current prompt, or write anew. */
-export function startOptions(chat, targetLabel) {
-  const versions = [...chat.versions].reverse().map((v, i) => ({
-    value: v.id,
-    label: `Edit v${v.n} (${i === 0 ? "newest" : firstWords(v.request) || "optimised"})`,
-  }));
+/** A version in a word or a few: what was asked for, or how it came to be. */
+function gist(version) {
+  if (version.kind === KIND_HAND) {
+    return version.editedIn === "node" ? "edited in the node" : "edited by hand";
+  }
+  if (version.kind === KIND_NODE) return "taken from the node";
+  return version.title || firstWords(version.request) || "optimised";
+}
+
+/**
+ * What the next Write does: edit the chosen version (the newest until one is
+ * chosen, by its dot in the graph), or the current prompt, or write anew. The
+ * list holds one version, not all of them.
+ */
+export function startOptions(chat, targetLabel, base = null) {
+  const value = startValue(chat, base);
+  const newest = chat.versions.at(-1);
+  const version = chat.versions.find((v) => v.id === value) ?? newest;
   return [
-    ...versions,
+    ...(version
+      ? [
+          {
+            value: version.id,
+            label: `Edit v${version.n} (${version === newest ? "newest" : gist(version)})`,
+          },
+        ]
+      : []),
     { value: CURRENT_PROMPT, label: `Edit current prompt (${targetLabel || "the For node"})` },
     { value: NEW_PROMPT, label: "New prompt" },
   ];
@@ -305,11 +655,148 @@ export function startValue(chat, base) {
   return chat.versions.at(-1)?.id ?? NEW_PROMPT;
 }
 
-/** How a step says where it started. "seed" is how older chats said current prompt. */
-export function startLabel(chat, baseId) {
-  if (baseId === CURRENT_PROMPT || baseId === "seed") return "edit of the current prompt";
+/**
+ * How a step that is not a version yet says where it started; a Retry also
+ * says which version it writes over.
+ */
+export function startLabel(chat, baseId, replaceId = null) {
   const version = chat.versions.find((v) => v.id === baseId);
-  return version ? `edit of v${version.n}` : "new prompt";
+  const from = version ? `edit of v${version.n}` : "new prompt";
+  const over = replaceId ? chat.versions.find((v) => v.id === replaceId) : null;
+  return over ? `${from} · retry of v${over.n}` : from;
+}
+
+/** How a version says where it came from. */
+export function originLabel(chat, version) {
+  if (version.kind === KIND_NODE) return `from ${version.source || "the node"}`;
+  const base = chat.versions.find((v) => v.id === version.baseId);
+  if (version.kind === KIND_HAND) {
+    if (!base) return "edited by hand";
+    return `hand edit of v${base.n}${version.editedIn === "node" ? ", in the node" : ""}`;
+  }
+  return base ? `edit of v${base.n}` : "new prompt";
+}
+
+/** A version's line: its title, else its request, else how it came to be. */
+export function rowText(version) {
+  if (version.kind === KIND_WRITTEN) {
+    return version.title || version.request || "Optimise the prompt";
+  }
+  const said = gist(version);
+  return said[0].toUpperCase() + said.slice(1);
+}
+
+// --- The history as a graph, and folding -----------------------------------------
+
+function childrenMap(chat) {
+  const kids = new Map(chat.versions.map((v) => [v.id, []]));
+  for (const v of chat.versions) kids.get(v.baseId)?.push(v);
+  return kids;
+}
+
+/**
+ * Would folding this version hide anything? Versions in `keep` never fold away,
+ * so a fold hides only the follow-ups that lead elsewhere.
+ */
+export function canFold(chat, id, keep = new Set()) {
+  return chat.versions.some((v) => v.baseId === id && !keep.has(v.id));
+}
+
+/** How many versions the fold of this one hides now. */
+export function foldedCount(chat, id, keep = new Set()) {
+  if (!chat.folded.includes(id)) return 0;
+  const shown = new Set(visibleVersions(chat, keep).map((v) => v.id));
+  const kids = childrenMap(chat);
+  const count = (key) =>
+    (kids.get(key) ?? []).reduce((sum, v) => sum + (shown.has(v.id) ? 0 : 1) + count(v.id), 0);
+  return count(id);
+}
+
+export function toggleFold(chat, id) {
+  chat.folded = chat.folded.includes(id)
+    ? chat.folded.filter((f) => f !== id)
+    : [...chat.folded, id];
+}
+
+/** The version and those it came from, back to its start. */
+export function pathTo(chat, id) {
+  const byId = new Map(chat.versions.map((v) => [v.id, v]));
+  const path = new Set();
+  for (let v = byId.get(id); v && !path.has(v.id); v = byId.get(v.baseId)) path.add(v.id);
+  return path;
+}
+
+/** Show the version: nothing it came from stays folded. */
+export function unfoldTo(chat, id) {
+  const path = pathTo(chat, id);
+  path.delete(id);
+  chat.folded = chat.folded.filter((f) => !path.has(f));
+}
+
+/** These versions and everything they came from: what folding never hides. */
+export function keptPaths(chat, ids) {
+  const keep = new Set();
+  for (const id of ids) for (const kept of pathTo(chat, id)) keep.add(kept);
+  return keep;
+}
+
+/**
+ * The versions in order, without those under a folded one. `keep` (closed
+ * under what each came from, see keptPaths) always shows.
+ */
+export function visibleVersions(chat, keep = new Set()) {
+  const folded = new Set(chat.folded);
+  const hidden = new Set();
+  for (const v of chat.versions) {
+    if (keep.has(v.id)) continue;
+    if (folded.has(v.baseId) || hidden.has(v.baseId)) hidden.add(v.id);
+  }
+  return chat.versions.filter((v) => !hidden.has(v.id));
+}
+
+/**
+ * Lanes for a git-like graph of `items` ({id, baseId}, in order, a base before
+ * what was made from it). A first follow-up continues its base's lane; any
+ * other starts a chain of its own, from its base's row. Chains take the lowest
+ * lane free over their rows, so as few lanes as possible are used.
+ */
+export function historyLayout(items) {
+  const rowOf = new Map(items.map((item, i) => [item.id, i]));
+  const firstFollowUp = new Map();
+  for (const item of items) {
+    if (rowOf.has(item.baseId) && !firstFollowUp.has(item.baseId)) {
+      firstFollowUp.set(item.baseId, item.id);
+    }
+  }
+  const chains = [];
+  const chainOf = new Map();
+  items.forEach((item, row) => {
+    const based = rowOf.has(item.baseId);
+    if (based && firstFollowUp.get(item.baseId) === item.id) {
+      const chain = chainOf.get(item.baseId);
+      chain.end = row;
+      chainOf.set(item.id, chain);
+      return;
+    }
+    const chain = { start: based ? rowOf.get(item.baseId) : row, end: row, lane: 0 };
+    chains.push(chain);
+    chainOf.set(item.id, chain);
+  });
+  const laneEnds = [];
+  for (const chain of [...chains].sort((a, b) => a.start - b.start)) {
+    let lane = laneEnds.findIndex((end) => end < chain.start);
+    if (lane < 0) lane = laneEnds.length;
+    chain.lane = lane;
+    laneEnds[lane] = chain.end;
+  }
+  return {
+    lanes: laneEnds.length,
+    rows: items.map((item) => ({
+      id: item.id,
+      lane: chainOf.get(item.id).lane,
+      parentRow: rowOf.has(item.baseId) ? rowOf.get(item.baseId) : null,
+    })),
+  };
 }
 
 /**
