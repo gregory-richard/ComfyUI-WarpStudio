@@ -12,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from comfy_updater import preview_fallback, renamer
+from comfy_updater.fallback_hf import HuggingFaceIndex
 from comfy_updater.fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
 from comfy_updater.preview_fallback import (
     FallbackOutcome,
@@ -270,6 +271,40 @@ class PreviewFallbackTests(unittest.TestCase):
                 self.assertEqual((outcome.preview_written, outcome.info_written), (False, True))
                 self.assertFalse(preview_sidecar_path(model).exists())
                 self.assertEqual(self.misses()[sha_for(n)]["sources"], "civarchive|someone")
+
+    def test_failed_picture_lookup_is_not_remembered(self):
+        self.sources.queue("huggingface", hf_result(image_url="", image_lookup_failed=True), hf_result())
+
+        outcome = self.run_on(self.fallback())
+        self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=False, info_written=True))
+        self.assertEqual(self.misses(), {})
+
+        self.sources.log.clear()
+        outcome = self.run_on(self.fallback())  # the next scan asks again and gets the picture
+        self.assertEqual(self.sources.log, ["huggingface"])
+        self.assertTrue(outcome.preview_written)
+
+    def test_no_picture_after_an_unanswered_source_is_not_remembered(self):
+        down = SourceUnavailable("timeout")
+        for n, failure in enumerate((IndexIncomplete("request limit"), down), start=1):
+            with self.subTest(failure=type(failure).__name__):
+                self.sources.queue("huggingface", failure)
+                self.sources.queue("civarchive", civ_result(image_url=""))
+                outcome = self.run_on(self.fallback(), model=self.model_file(f"f{n}"), sha=sha_for(n))
+                self.assertEqual((outcome.source, outcome.preview_written), ("civarchive", False))
+                self.assertEqual(self.misses(), {})
+
+        # Hugging Face dropped after 3 failures in a row: civarchive's answer alone is not enough either.
+        self.sources.queue("huggingface", down, down, down)
+        self.sources.queue("civarchive", None, None, None, civ_result(image_url=""))
+        fb = self.fallback()
+        for n in range(3, 6):
+            self.run_on(fb, model=self.model_file(f"f{n}"), sha=sha_for(n))
+        self.sources.log.clear()
+        outcome = self.run_on(fb, model=self.model_file("f6"), sha=sha_for(6))
+        self.assertEqual(self.sources.log, ["civarchive"])
+        self.assertEqual(outcome.source, "civarchive")
+        self.assertEqual(self.misses(), {})
 
     def test_changed_sources_ask_again_after_a_hit_without_picture(self):
         self.sources.queue("huggingface", hf_result(image_url=""))
@@ -619,6 +654,92 @@ class PreviewFallbackTests(unittest.TestCase):
             fb = PreviewFallback(config, self.data, self.http, {}, now=lambda: NOW)
             self.assertTrue(fb.enabled, key)
         self.assertFalse(PreviewFallback(off, self.data, self.http, {}, now=lambda: NOW).enabled)
+
+
+HF_API = "https://huggingface.co/api/models"
+HF_LISTING = HF_API + "?author=malcolmrey&expand[]=sha&limit=100"
+HF_TREE = HF_API + "/malcolmrey/krea2/tree/main?recursive=true"
+HF_SAMPLES = "https://huggingface.co/spaces/malcolmrey/browser/resolve/main/data-hf-images.json"
+HF_SAMPLE = "https://huggingface.co/datasets/malcolmrey/samples/resolve/main/krea2/krea2_someone_00001_.png"
+
+
+class FakeHfHttp(FakeHttp):
+    """Answers the Hugging Face listing requests by URL; an unknown URL answers 404."""
+
+    def __init__(self, errors: dict | None = None) -> None:
+        super().__init__()
+        self.bodies = {
+            HF_LISTING: [{"id": "malcolmrey/krea2", "sha": "s1"}],
+            HF_TREE: [{"type": "file", "path": "krea2/krea2_someone_v1_onetrainer.safetensors", "lfs": {"oid": SHA}}],
+            HF_SAMPLES: {"someone": {"Krea2": [{"url": HF_SAMPLE}]}},
+        }
+        self.errors = errors or {}
+        self.request_count = 0
+
+    def get_json(self, url):
+        self.request_count += 1
+        if url in self.errors:
+            raise self.errors[url]
+        if url not in self.bodies:
+            raise SourceUnavailable("HTTP 404", status=404)
+        return copy.deepcopy(self.bodies[url])
+
+    def get_json_pages(self, url, max_pages=100):
+        return self.get_json(url)
+
+
+class RealHuggingFaceIndexTests(unittest.TestCase):
+    """The real Hugging Face index behind the orchestrator, on a fake client."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.data = root / "data"
+        lib = root / "lib"
+        lib.mkdir()
+        self.model = lib / "x.safetensors"
+        self.model.write_bytes(b"weights")
+        self.config = {"fallbackCivarchive": False, "fallbackHuggingFace": ["malcolmrey"]}
+
+    def run_scan(self, http):
+        fb = PreviewFallback(self.config, self.data, http, {}, now=lambda: NOW)
+        return fb.run(
+            model_path=self.model, info_path=info_sidecar_path(self.model),
+            preview_path=preview_sidecar_path(self.model), sha256=SHA, refetch=False,
+        )
+
+    def misses(self) -> dict:
+        return (read_json(self.data / "preview_fallback.json") or {}).get("misses", {})
+
+    def test_samples_index_failure_is_asked_again_next_scan(self):
+        down = SourceUnavailable("HTTP 500", status=500)
+        outcome = self.run_scan(FakeHfHttp(errors={HF_SAMPLES: down}))
+        self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=False, info_written=True))
+        self.assertEqual(self.misses(), {})
+
+        http = FakeHfHttp()
+        outcome = self.run_scan(http)
+        self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=True, info_written=True))
+        self.assertEqual([url for url, _cap in http.calls], [HF_SAMPLE])
+        self.assertEqual(read_json(info_sidecar_path(self.model))["images"][0]["url"], HF_SAMPLE)
+
+    def test_listing_failure_with_a_cache_is_asked_again_next_scan(self):
+        HuggingFaceIndex(["malcolmrey"], FakeHfHttp(), self.data / "hf_index.json").find(SHA)  # an earlier scan's cache
+
+        down = SourceUnavailable("HTTP 503", status=503)
+        outcome = self.run_scan(FakeHfHttp(errors={HF_LISTING: down}))
+        self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=False, info_written=True))
+        self.assertEqual(self.misses(), {})
+
+        self.assertTrue(self.run_scan(FakeHfHttp()).preview_written)
+
+    def test_slug_without_a_sample_is_remembered(self):
+        http = FakeHfHttp()
+        http.bodies[HF_SAMPLES] = {}
+        outcome = self.run_scan(http)
+        self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=False, info_written=True))
+        self.assertEqual(self.misses(), {SHA: {"checkedAt": NOW.isoformat(), "sources": "malcolmrey"}})
 
 
 class MissStoreTests(unittest.TestCase):

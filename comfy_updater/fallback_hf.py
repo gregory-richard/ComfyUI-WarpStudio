@@ -177,6 +177,7 @@ class HuggingFaceIndex:
         self._repos: dict[str, dict] = {}
         self._error: str | None = None
         self._samples: dict | None = None
+        self._samples_read = False  # the samples index was fetched and readable
         self._used = 0  # requests this index sent; the client may be shared with other sources
         # Build state, reset by each _build.
         self._cached: dict[str, tuple[str, dict]] = {}  # lowercase repo id -> (repo id, cached entry)
@@ -356,20 +357,26 @@ class HuggingFaceIndex:
         parsed = parse_malcolmrey_name(path) if mapped else None
         if parsed:
             slug, version = parsed
+            image_url, lookup_failed = self._sample_url(slug, mapped[0])
             return FallbackResult(
                 source="huggingface", url=url, title=" ".join(slug.replace("_", " ").split()), creator=owner,
-                version_name=version, base_model=mapped[1], image_url=self._sample_url(slug, mapped[0]),
+                version_name=version, base_model=mapped[1], image_url=image_url, image_lookup_failed=lookup_failed,
             )
         image = pick_repo_image(path, data["images"])
         return FallbackResult(
             source="huggingface", url=url, title=_spaced(name), creator=owner,
             version_name=PurePosixPath(path).stem, base_model=data["baseModel"],
             image_url=f"{_SITE}/{repo_id}/resolve/main/{quote(image)}" if image else "",
+            # A partial run may have listed only part of a tree: its picture may be on a page never read.
+            image_lookup_failed=not image and self._error is not None,
         )
 
-    def _sample_url(self, slug: str, framework: str) -> str:
-        """The first listed sample for this slug; fetched at most once per run, only for a hit,
-        and never after a partial build (that run sends nothing more)."""
+    def _sample_url(self, slug: str, framework: str) -> tuple[str, bool]:
+        """The first listed sample for this slug, and whether the samples index couldn't be read.
+
+        The index is fetched at most once per run, only for a hit, and never after a partial
+        build (that run sends nothing more).
+        """
         if self._samples is None:
             body = None
             if self._error is None:
@@ -377,11 +384,12 @@ class HuggingFaceIndex:
                     body = self._get_json(_SAMPLES_URL)
                 except SourceUnavailable:
                     pass
-            self._samples = body if isinstance(body, dict) else {}
+            self._samples_read = isinstance(body, dict)
+            self._samples = body if self._samples_read else {}
         by_framework = self._samples.get(slug)
         samples = by_framework.get(framework) if isinstance(by_framework, dict) else None
         for sample in samples if isinstance(samples, list) else []:
             url = sample.get("url") if isinstance(sample, dict) else None
             if isinstance(url, str) and is_allowed_url(url):
-                return url
-        return ""
+                return url, False
+        return "", not self._samples_read

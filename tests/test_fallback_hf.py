@@ -133,6 +133,7 @@ class BriefTests(IndexTestCase):
         self.assertEqual((r.source, r.creator, r.title, r.version_name, r.base_model),
                          ("huggingface", "malcolmrey", "someone", "v1", "Krea 2"))
         self.assertTrue(r.image_url.endswith("krea2_someone_00001_.png"))
+        self.assertFalse(r.image_lookup_failed)
         self.assertEqual(r.url, "https://huggingface.co/malcolmrey/krea2")
         # A mapped malcolmrey repo takes its base from the map: no repo-info request.
         self.assertEqual(http.count("expand[]=cardData"), 0)
@@ -218,6 +219,7 @@ class BriefTests(IndexTestCase):
         http = FakeHttp(malcolmrey_bodies(samples={"other": {"Krea2": [{"url": SAMPLE_URL}]}}))
         r = self.index(["malcolmrey"], http).find(SHA)
         self.assertEqual(r.image_url, "")
+        self.assertFalse(r.image_lookup_failed)  # the samples index was read: there is no sample
         self.assertEqual((r.creator, r.title, r.version_name, r.base_model), ("malcolmrey", "someone", "v1", "Krea 2"))
 
     def test_author_repo_cap(self):
@@ -385,6 +387,7 @@ class MissingAndPartialTests(IndexTestCase):
         self.assertEqual(http.request_count, 1)
         r = index.find(SHA)
         self.assertEqual((r.title, r.image_url), ("someone", ""))  # a partial run sends nothing more
+        self.assertTrue(r.image_lookup_failed)
         with self.assertRaises(IndexIncomplete):
             index.find(SHA3)
         self.assertEqual(http.urls, [listing_url("malcolmrey")])
@@ -531,12 +534,41 @@ class MalcolmreyRuleTests(IndexTestCase):
         index = self.index(["malcolmrey"], http)
         r = index.find(SHA)
         self.assertEqual((r.title, r.image_url), ("someone", ""))
-        index.find(SHA)
+        self.assertTrue(r.image_lookup_failed)
+        self.assertTrue(index.find(SHA).image_lookup_failed)
         self.assertEqual(http.count(SAMPLES), 1)
 
     def test_sample_url_off_the_allow_list_is_ignored(self):
         http = FakeHttp(malcolmrey_bodies(samples={"someone": {"Krea2": [{"url": "https://example.com/a.png"}]}}))
-        self.assertEqual(self.index(["malcolmrey"], http).find(SHA).image_url, "")
+        r = self.index(["malcolmrey"], http).find(SHA)
+        self.assertEqual(r.image_url, "")
+        self.assertFalse(r.image_lookup_failed)
+
+    def test_unreadable_samples_index_is_a_failed_lookup(self):
+        for body in ([], "junk"):
+            with self.subTest(body=body):
+                r = self.index(["malcolmrey"], FakeHttp(malcolmrey_bodies(samples=body))).find(SHA)
+                self.assertEqual(r.image_url, "")
+                self.assertTrue(r.image_lookup_failed)
+
+    def test_other_repo_without_image_fails_its_lookup_only_in_a_partial_build(self):
+        bodies = other_bodies()
+        bodies[tree_url(REPO)] = [lfs("w/cool_v3.safetensors", SHA)]
+        r = self.index([REPO], FakeHttp(bodies)).find(SHA)
+        self.assertEqual(r.image_url, "")
+        self.assertFalse(r.image_lookup_failed)
+
+        # A partial run may have listed only part of a tree, so the picture may be on a page it never read.
+        index = self.index([REPO, "example/second"], FakeHttp(bodies, errors={info_url("example/second"): error(500)}))
+        r = index.find(SHA)
+        self.assertEqual(r.image_url, "")
+        self.assertTrue(r.image_lookup_failed)
+        bodies[tree_url(REPO)].append(plain("w/cool_v3.png"))
+        self.cache.unlink()
+        index = self.index([REPO, "example/second"], FakeHttp(bodies, errors={info_url("example/second"): error(500)}))
+        r = index.find(SHA)
+        self.assertTrue(r.image_url)
+        self.assertFalse(r.image_lookup_failed)  # a picture found is no failed lookup
 
     def test_maps_hold_the_built_in_values(self):
         self.assertEqual(MALCOLMREY_REPOS["krea2"], ("Krea2", "Krea 2"))

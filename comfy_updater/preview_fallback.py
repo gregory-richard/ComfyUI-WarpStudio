@@ -203,12 +203,18 @@ class PreviewFallback:
         if not _SHA256.fullmatch(sha):
             sha = ""  # only a real SHA256 ever leaves the machine; without one, online sources are skipped
         own = self._ask_own(model_path, on_source)
-        result = own if own is not None else self._ask_online(sha, refetch, on_source)
+        if own is not None:
+            result, all_answered = own, False  # own trainings are local: never remembered
+        else:
+            result, all_answered = self._ask_online(sha, refetch, on_source)
+        # Remembering needs every online source asked to have answered: a failure is no miss.
         if result is None:
+            if all_answered:
+                self._misses.record(sha, self._fingerprint, self._now())
             return None
         picture = self._write_preview(result, preview_path)
         info_written = self._write_info(result, info_path, sha, model_path.name)
-        if own is None and picture == _UNUSABLE:
+        if all_answered and picture == _UNUSABLE:
             # This answer can give no picture: skip the online sources like a miss.
             self._misses.record(sha, self._fingerprint, self._now())
         elif sha:
@@ -222,12 +228,13 @@ class PreviewFallback:
         _announce(on_source, "ai-toolkit")
         return lookup_own_training(model_path, self._folders, self._creator, self._base_names)
 
-    def _ask_online(self, sha: str, refetch: bool, on_source) -> FallbackResult | None:
+    def _ask_online(self, sha: str, refetch: bool, on_source) -> tuple[FallbackResult | None, bool]:
+        """The first online answer, and whether every source asked up to it answered."""
         online = self._online_sources()
         if not sha or not online:
-            return None
+            return None, False
         if not refetch and self._misses.is_fresh(sha, self._fingerprint, self._now()):
-            return None
+            return None, False
         all_answered = True
         for key, ask in online:
             if self._failures[key] >= MAX_FAILURES:
@@ -246,11 +253,8 @@ class PreviewFallback:
                 continue
             self._failures[key] = 0
             if result is not None:
-                return result
-        # "Doesn't know" only counts when every source answered; a failure is no miss.
-        if all_answered:
-            self._misses.record(sha, self._fingerprint, self._now())
-        return None
+                return result, all_answered
+        return None, all_answered
 
     def _online_sources(self) -> list[tuple[str, Callable[[str], FallbackResult | None]]]:
         sources = []
@@ -272,7 +276,8 @@ class PreviewFallback:
             except SourceUnavailable:
                 return _NOT_WRITTEN  # may work next scan
         else:
-            return _UNUSABLE
+            # A source that couldn't look a picture up may find one next scan.
+            return _NOT_WRITTEN if result.image_lookup_failed else _UNUSABLE
         if save_preview_png(data, preview_path):
             return _WRITTEN
         # save_preview_png never replaces a preview; one written since the check in run is no fault of the data.

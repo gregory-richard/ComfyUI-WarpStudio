@@ -37,6 +37,8 @@ class FallbackResult:
     image_url: str = ""
     image_path: Path | None = None
     image_nsfw_level: int = 0
+    # No picture because the source couldn't look one up this time (not because it has none).
+    image_lookup_failed: bool = False
     civitai_model_id: str = ""
     civitai_version_id: str = ""
     final: bool = False
