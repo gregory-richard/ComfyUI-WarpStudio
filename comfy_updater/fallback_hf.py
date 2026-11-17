@@ -38,6 +38,8 @@ _SAMPLES_URL = _SITE + "/spaces/malcolmrey/browser/resolve/main/data-hf-images.j
 _MALCOLMREY = "malcolmrey"
 _LISTING_LIMIT = 100
 _LIMIT_REACHED = "Hugging Face request limit reached"
+# Answers that mean the repo or author is not there: Hugging Face gives 401 for a missing or private repo.
+_GONE = frozenset({401, 404})
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 _IMAGE_FOLDERS = frozenset({"assets", "images", "samples", "examples"})
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
@@ -156,7 +158,7 @@ def _tree_entry(sha: str, base: str, items: list) -> dict:
 class HuggingFaceIndex:
     """Hash index over the configured authors and repos, built on the first ``find`` of a run.
 
-    A 404 entry contributes nothing. Any other failure, a stop, or the request
+    A 404 or 401 entry contributes nothing. Any other failure, a stop, or the request
     budget makes the index partial: hits still come from what was refreshed
     plus the cache, but a miss raises ``SourceUnavailable``.
     """
@@ -254,7 +256,7 @@ class HuggingFaceIndex:
         try:
             items, cut = self._get_pages(url, -(-MAX_REPOS_PER_AUTHOR // _LISTING_LIMIT))
         except SourceUnavailable as exc:
-            if exc.status != 404:
+            if exc.status not in _GONE:
                 raise
             items, cut = [], False
         if cut:
@@ -303,7 +305,7 @@ class HuggingFaceIndex:
         try:
             info = self._get_json(f"{_API}/{repo_id}?expand[]=sha&expand[]=cardData")
         except SourceUnavailable as exc:
-            if exc.status != 404:
+            if exc.status not in _GONE:
                 raise
             self._settled.add(repo_id.lower())
             return None
@@ -321,7 +323,7 @@ class HuggingFaceIndex:
         try:
             items, cut = self._get_pages(f"{_API}/{repo_id}/tree/main?recursive=true", MAX_TREE_PAGES)
         except SourceUnavailable as exc:
-            if exc.status != 404:
+            if exc.status not in _GONE:
                 raise
             items, cut = [], False
         # A tree the budget cut short keeps what it listed, with no sha so the next run lists it again.

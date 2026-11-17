@@ -335,6 +335,27 @@ class MissingAndPartialTests(IndexTestCase):
         self.assertIn(listing_url("nobody"), http.urls)
         self.assertIn(info_url("example/missing"), http.urls)
 
+    def test_unauthorized_repo_entry_counts_as_missing(self):
+        # Hugging Face answers 401 for a repo that doesn't exist or is private.
+        http = FakeHttp(errors={info_url("example/typo"): error(401)})
+        self.assertIsNone(self.index(["example/typo"], http).find(SHA3))
+
+        self.index([REPO], FakeHttp(other_bodies())).find(SHA)
+        index = self.index([REPO], FakeHttp(other_bodies(), errors={info_url(REPO): error(401)}))
+        self.assertIsNone(index.find(SHA))
+        self.assertIsNone(index.find(SHA3))
+        self.assertEqual(self.cached_repos(), {})
+
+    def test_unauthorized_listing_or_tree_counts_as_missing(self):
+        self.index(["malcolmrey"], FakeHttp(malcolmrey_bodies())).find(SHA)
+        index = self.index(["malcolmrey"], FakeHttp(malcolmrey_bodies(), errors={listing_url("malcolmrey"): error(401)}))
+        self.assertIsNone(index.find(SHA))
+        self.assertEqual(self.cached_repos(), {})
+
+        http = FakeHttp(other_bodies(), errors={tree_url(REPO): error(401)})
+        self.assertIsNone(self.index([REPO], http).find(SHA3))
+        self.assertEqual(self.cached_repos()[REPO]["files"], {})
+
     def test_missing_tree_contributes_nothing_and_is_not_asked_again(self):
         bodies = other_bodies()
         del bodies[tree_url(REPO)]
