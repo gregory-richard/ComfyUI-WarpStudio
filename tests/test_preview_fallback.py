@@ -13,7 +13,7 @@ from PIL import Image
 
 from comfy_updater import preview_fallback, renamer
 from comfy_updater.fallback_hf import HuggingFaceIndex
-from comfy_updater.fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
+from comfy_updater.fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable, TooLarge
 from comfy_updater.preview_fallback import (
     FallbackOutcome,
     MissStore,
@@ -355,7 +355,7 @@ class PreviewFallbackTests(unittest.TestCase):
 
         outcome = self.run_on(self.fallback())
         self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=True, info_written=True))
-        self.assertEqual(self.http.calls, [(HF_IMAGE, 20_000_000)])
+        self.assertEqual(self.http.calls, [(HF_IMAGE, 50_000_000)])
         self.assertTrue(self.preview_path.read_bytes().startswith(PNG_SIGNATURE))
         info = read_json(self.info_path)
         self.assertEqual(info["model"], {"name": "Cool", "nsfw": False})
@@ -459,6 +459,21 @@ class PreviewFallbackTests(unittest.TestCase):
         self.sources.log.clear()
         self.run_on(self.fallback())
         self.assertEqual(self.sources.log, ["huggingface"])
+
+    def test_image_download_allows_50_mb(self):
+        self.sources.queue("huggingface", hf_result())
+        self.run_on(self.fallback())
+        self.assertEqual([m for _, m in self.http.calls], [50_000_000])
+
+    def test_too_large_image_is_remembered_as_no_picture(self):
+        self.http.error = TooLarge("response too large")
+        self.sources.queue("huggingface", hf_result())
+
+        outcome = self.run_on(self.fallback())
+        self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=False, info_written=True))
+        self.assertFalse(self.preview_path.exists())
+        self.assertEqual(read_json(self.info_path)["model"]["name"], "Cool")
+        self.assertIn(SHA, self.misses())
 
     def test_image_url_off_the_allow_list_is_not_stored(self):
         self.sources.queue("huggingface", hf_result(image_url="https://example.com/a.png"))

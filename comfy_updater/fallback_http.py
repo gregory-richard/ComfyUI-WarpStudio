@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
     Image = None
 
 from .constants import USER_AGENT
-from .fallback_types import SourceUnavailable
+from .fallback_types import SourceUnavailable, TooLarge
 
 _ALLOWED_HOSTS = ("huggingface.co", "civarchive.com", "c.genur.art")
 _ALLOWED_SUFFIXES = (".hf.co",)
@@ -153,7 +153,7 @@ class FallbackHttp:
                 for chunk in response.iter_content(chunk_size=65536):
                     data.extend(chunk)
                     if len(data) > max_bytes:
-                        raise SourceUnavailable("response too large")
+                        raise TooLarge("response too large")
             except requests.RequestException as exc:
                 raise SourceUnavailable(str(exc)) from exc
             return bytes(data), response.links or {}

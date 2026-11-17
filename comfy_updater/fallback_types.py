@@ -15,6 +15,10 @@ class SourceUnavailable(Exception):
         self.status = status
 
 
+class TooLarge(SourceUnavailable):
+    """A response body went past the size cap asked for; asking again would fail the same way."""
+
+
 class IndexIncomplete(SourceUnavailable):
     """A hash index built only in part (request limit, a failed listing, a stop) lacks this hash.
 

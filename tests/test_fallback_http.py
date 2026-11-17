@@ -17,7 +17,7 @@ from comfy_updater.fallback_http import (
     is_allowed_url,
     save_preview_png,
 )
-from comfy_updater.fallback_types import SourceUnavailable
+from comfy_updater.fallback_types import SourceUnavailable, TooLarge
 
 
 def _jpeg_bytes(color: str = "blue") -> bytes:
@@ -198,6 +198,18 @@ class HttpTests(unittest.TestCase):
         self.session.get.return_value = _resp(chunks=[b"a" * 6, b"b" * 6])
         with self.assertRaises(SourceUnavailable):
             FallbackHttp(session=self.session).download("https://huggingface.co/a", max_bytes=8)
+
+    def test_oversized_bodies_raise_too_large(self):
+        self.assertTrue(issubclass(TooLarge, SourceUnavailable))
+        self.session.get.return_value = _resp(chunks=[b"a" * 6, b"b" * 6])
+        with self.assertRaises(TooLarge):
+            FallbackHttp(session=self.session).download("https://huggingface.co/a", max_bytes=8)
+        self.session.get.return_value = _resp(chunks=[b"a" * 6, b"b" * 6])
+        with self.assertRaises(TooLarge):
+            FallbackHttp(session=self.session).get_text("https://huggingface.co/a", max_bytes=8)
+        self.session.get.return_value = _resp(chunks=[b"[" + b"1," * 6_000_000, b"1]"])
+        with self.assertRaises(TooLarge):
+            FallbackHttp(session=self.session).get_json("https://huggingface.co/api/x")
 
     def test_oversized_text_raises(self):
         self.session.get.return_value = _resp(chunks=[b"a" * 6, b"b" * 6])

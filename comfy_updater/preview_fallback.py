@@ -20,12 +20,14 @@ from .fallback_aitoolkit import base_names_from_codes, lookup_own_training
 from .fallback_civarchive import lookup_civarchive
 from .fallback_hf import HuggingFaceIndex
 from .fallback_http import is_allowed_url, save_preview_png
-from .fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
+from .fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable, TooLarge
 from .sidecar import read_data_file, read_json, sidecar_identifies_model, stored_sha256, write_json
 
 MISS_DAYS = 30
 MAX_FAILURES = 3  # in a row; then the source is skipped for the rest of the scan
 MAX_IMAGE_BYTES = 20_000_000
+# Downloaded images are downscaled before saving, so the cap can be higher than for local files.
+MAX_DOWNLOAD_IMAGE_BYTES = 50_000_000
 MAX_TEXT = 200  # title, creator, version, base
 MAX_DESCRIPTION = 5_000
 MAX_WORDS = 20
@@ -272,7 +274,9 @@ class PreviewFallback:
                 return _NOT_WRITTEN
         elif result.image_url and is_allowed_url(result.image_url):
             try:
-                data = self.http.download(result.image_url, max_bytes=MAX_IMAGE_BYTES)
+                data = self.http.download(result.image_url, max_bytes=MAX_DOWNLOAD_IMAGE_BYTES)
+            except TooLarge:
+                return _UNUSABLE  # would be too large every scan
             except SourceUnavailable:
                 return _NOT_WRITTEN  # may work next scan
         else:
