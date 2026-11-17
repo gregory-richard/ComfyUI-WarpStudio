@@ -140,8 +140,33 @@ def _copy_one(source: Path, target: Path, report: MigrationReport) -> None:
 
 
 def _copy_updater_data(source: Path, target: Path, report: MigrationReport) -> None:
+    pending = target.with_name(target.name + ".pending")
     if target.exists() and _has_files(target):
-        report.skipped.append(str(target))
+        if not pending.exists():
+            report.skipped.append(str(target))
+            return
+        # An earlier copy failed and Warp Studio then wrote fresh defaults here.
+        # Keep them aside (never delete) and carry the old data over.
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        aside = target.with_name(f"{target.name}.before-migration-{stamp}")
+        counter = 1
+        while aside.exists():
+            counter += 1
+            aside = target.with_name(f"{target.name}.before-migration-{stamp}-{counter}")
+        try:
+            os.replace(target, aside)
+        except Exception as exc:
+            report.errors.append(f"{target}: {exc}")
+            logger.warning("Could not move %s aside: %s", target, exc)
+            return
+        logger.info("Moved %s aside to %s", target, aside)
+    try:
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        pending.write_text(stamp + chr(10) + str(source) + chr(10), encoding="utf-8")
+    except Exception as exc:
+        report.errors.append(f"{pending}: {exc}")
+        logger.warning("Could not write %s: %s", pending, exc)
         return
     # Copy into a staging folder first: a failure part-way leaves no half-filled
     # target behind, so the next start can try again from scratch.
@@ -160,6 +185,7 @@ def _copy_updater_data(source: Path, target: Path, report: MigrationReport) -> N
         if target.exists():
             shutil.rmtree(target)  # only ever an existing folder without files
         os.replace(staging, target)
+        pending.unlink()
     except Exception as exc:
         report.errors.append(f"{source}: {exc}")
         logger.warning("Could not copy %s: %s", source, exc)
@@ -195,7 +221,7 @@ def _migrate_settings(settings_file: Path, report: MigrationReport) -> None:
     temp = settings_file.with_name(settings_file.name + ".migrating")
     try:
         merged = {**settings, **additions}
-        temp.write_text(json.dumps(merged, indent=4, ensure_ascii=False), encoding="utf-8")
+        temp.write_text(json.dumps(merged, indent=4), encoding="utf-8")
         os.replace(temp, settings_file)
     except Exception as exc:
         report.errors.append(f"{settings_file}: {exc}")

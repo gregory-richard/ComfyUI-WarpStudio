@@ -189,3 +189,48 @@ def test_fresh_install_copies_nothing(env):
     assert report.copied == [] and report.skipped == [] and report.errors == []
     assert (user / MARKER).exists()
     assert migration.MARKER == MARKER
+
+
+def test_failed_updater_copy_is_retried_after_defaults_were_written(env, monkeypatch):
+    user, nodes, own = env
+    make_updater(nodes)
+    real = shutil.copy2
+    state = {"fail": True}
+
+    def flaky(src, dst, *a, **k):
+        if state["fail"] and str(src).endswith("config.json"):
+            raise OSError("disk hiccup")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(shutil, "copy2", flaky)
+    report = migrate(user, [nodes], own)
+    studio = user / "warp-studio"
+    assert report.errors
+    assert (studio / "updater.pending").exists()
+    assert not (user / MARKER).exists()
+
+    state["fail"] = False
+    (studio / "updater").mkdir(exist_ok=True)
+    (studio / "updater" / "config.json").write_text('{"default": true}')
+
+    report = migrate(user, [nodes], own)
+    assert report.errors == []
+    assert (studio / "updater" / "config.json").read_bytes() == b'{"a": 1}'
+    asides = list(studio.glob("updater.before-migration-*"))
+    assert len(asides) == 1
+    assert (asides[0] / "config.json").read_text() == '{"default": true}'
+    assert not (studio / "updater.pending").exists()
+    assert (user / MARKER).exists()
+
+
+def test_settings_are_written_as_ascii(env):
+    user, nodes, own = env
+    (user / "default").mkdir()
+    values = {"WarpPipe.Name": "Łukasz", "WarpPipe.Glyph": ""}
+    (user / "default" / "comfy.settings.json").write_text(json.dumps(values, indent=4))
+    migrate(user, [nodes], own)
+    raw = (user / "default" / "comfy.settings.json").read_bytes()
+    raw.decode("ascii")
+    data = json.loads(raw)
+    assert data["WarpStudio.Name"] == values["WarpPipe.Name"]
+    assert data["WarpStudio.Glyph"] == values["WarpPipe.Glyph"]
