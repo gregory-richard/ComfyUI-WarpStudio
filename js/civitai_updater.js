@@ -158,9 +158,11 @@ const state = {
   // True only after the user picks a naming model in the settings: until then
   // the panel never posts one, so it cannot overwrite the backend's choice.
   namingModelDirty: false,
-  // Object URLs of previews read from local files; revoked when the list re-renders.
+  // Object URLs of previews read from local files, and path -> request. Kept
+  // across re-renders of the list; revoked when the results' job changes.
   localPreviewUrls: new Set(),
   localPreviewCache: new Map(),
+  localPreviewJobId: null,
   lightboxLocalUrls: null,
 };
 
@@ -803,6 +805,8 @@ function pollJob(jobId) {
         }
         if (state.currentJobType === "scan") {
           if (job.summary && Object.keys(job.summary).length > 0) state.scanSummary = job.summary;
+          // Cached check results predate the pictures this scan found: the next click runs a check.
+          if (job.summary?.previewsFound > 0) state.forceNextRecheck = true;
           state.scanHint = "Run Check for Updates to see available updates.";
           renderScanReport();
           renderResults();
@@ -1135,26 +1139,40 @@ function buildResultCard(item, cardIndex) {
   // A removed model's preview URL is dead too; show the empty tile instead of
   // the browser's broken-image icon.
   const thumbImg = card.querySelector(".cu-thumb img");
-  if (thumbImg) {
-    const showNoPreview = () => thumbImg.replaceWith(Object.assign(document.createElement("div"), {
-      className: "cu-thumb-empty",
-      textContent: "No preview",
-    }));
-    // The local copy is the last resort: try it once, then give up.
-    let triedLocal = false;
-    const loadLocal = async () => {
-      triedLocal = true;
-      const url = await fetchLocalPreview(localPath);
-      if (url) thumbImg.src = url;
-      else showNoPreview();
-    };
-    thumbImg.addEventListener("error", () => {
-      if (localPath && !triedLocal) loadLocal();
-      else showNoPreview();
-    });
-    if (!thumbImg.getAttribute("src")) loadLocal();
+  if (thumbImg) wireThumbImage(thumbImg, localPath, !thumbImg.getAttribute("src"));
+  // A dead online video falls back the same way, to a picture.
+  const thumbVideo = card.querySelector(".cu-thumb video");
+  if (thumbVideo) {
+    thumbVideo.addEventListener("error", () => {
+      const img = Object.assign(document.createElement("img"), { alt: "" });
+      thumbVideo.replaceWith(img);
+      wireThumbImage(img, localPath, true);
+    }, { once: true });
   }
   return card;
+}
+
+// The local copy is the last resort: try it once, then show "No preview".
+// `loadNow` skips the online picture (there is none, or it already failed).
+function wireThumbImage(img, localPath, loadNow) {
+  const showNoPreview = () => img.replaceWith(Object.assign(document.createElement("div"), {
+    className: "cu-thumb-empty",
+    textContent: "No preview",
+  }));
+  let triedLocal = false;
+  const loadLocal = async () => {
+    triedLocal = true;
+    const url = await fetchLocalPreview(localPath);
+    if (url) img.src = url;
+    else showNoPreview();
+  };
+  img.addEventListener("error", () => {
+    if (localPath && !triedLocal) loadLocal();
+    else showNoPreview();
+  });
+  if (!loadNow) return;
+  if (localPath) loadLocal();
+  else showNoPreview();
 }
 
 const ISSUE_LABELS = {
@@ -1251,8 +1269,7 @@ function renderResults() {
   state.lastPageKey = pageKey;
   state.resultsEl.classList.toggle("cu-quiet", samePage);
 
-  revokeLocalPreviews(state.localPreviewUrls);
-  state.localPreviewCache.clear();
+  syncLocalPreviewCache();
   state.resultsEl.innerHTML = "";
   if (!state.checkJobId) {
     appendEmpty("Run Check for Updates to see results.");
@@ -2118,19 +2135,18 @@ function openLightbox(item) {
   const hasComparison = localVersions.some((v) => v.previewUrl) && primaryNewVersion?.previewUrl;
 
   let sections = "";
+  // Same order as the card: the online preview, then the local one, then "No preview".
+  // `localFills[i]` is the file whose local preview the element marked `i` falls back to.
   const localFills = [];
   for (const v of localVersions) {
-    if (!v.previewUrl && v.hasLocalPreview) {
-      const base = v.baseModel ? ` <span class="cu-lb-base">${escapeHtml(v.baseModel)}</span>` : "";
-      sections += `<div class="cu-lb-card"><div class="cu-lb-label">Local</div><div class="cu-lb-vname">${escapeHtml(v.versionName || "?")}${base}</div><img data-local-index="${localFills.length}" alt=""></div>`;
-      localFills.push(v.modelPath);
-      continue;
-    }
-    if (!v.previewUrl) continue;
+    if (!v.previewUrl && !v.hasLocalPreview) continue;
     const base = v.baseModel ? ` <span class="cu-lb-base">${escapeHtml(v.baseModel)}</span>` : "";
-    const media = v.previewType === "video"
-      ? `<video src="${escapeHtml(v.previewUrl)}" preload="auto" muted playsinline controls></video>`
-      : `<img src="${escapeHtml(v.previewUrl)}" alt="">`;
+    const local = v.hasLocalPreview ? ` data-local-index="${localFills.length}"` : "";
+    if (v.hasLocalPreview) localFills.push(v.modelPath);
+    let media;
+    if (!v.previewUrl) media = `<img${local} alt="">`;
+    else if (v.previewType === "video") media = `<video src="${escapeHtml(v.previewUrl)}"${local} preload="auto" muted playsinline controls></video>`;
+    else media = `<img src="${escapeHtml(v.previewUrl)}"${local} alt="">`;
     sections += `<div class="cu-lb-card"><div class="cu-lb-label">Local</div><div class="cu-lb-vname">${escapeHtml(v.versionName || "?")}${base}</div>${media}</div>`;
   }
   if (primaryNewVersion?.previewUrl) {
@@ -2159,20 +2175,31 @@ function openLightbox(item) {
   document.body.appendChild(overlay);
   const ownUrls = new Set();
   state.lightboxLocalUrls = ownUrls;
-  localFills.forEach((modelPath, index) => {
-    const img = overlay.querySelector(`img[data-local-index="${index}"]`);
+  const showNoPreview = (el) => el.replaceWith(Object.assign(document.createElement("div"), {
+    className: "cu-lb-empty",
+    textContent: "No preview",
+  }));
+  const loadLocal = (el, modelPath) => {
     fetchLocalPreview(modelPath, ownUrls).then((url) => {
       if (state.lightboxLocalUrls !== ownUrls) {
         // Closed while the request was in flight.
         if (url) URL.revokeObjectURL(url);
         return;
       }
-      if (url) img.src = url;
-      else img.replaceWith(Object.assign(document.createElement("div"), {
-        className: "cu-thumb-empty",
-        textContent: "No preview",
-      }));
+      if (!url) {
+        showNoPreview(el);
+        return;
+      }
+      const img = Object.assign(document.createElement("img"), { alt: "" });
+      img.addEventListener("error", () => showNoPreview(img), { once: true });
+      img.src = url;
+      el.replaceWith(img);
     });
+  };
+  localFills.forEach((modelPath, index) => {
+    const el = overlay.querySelector(`[data-local-index="${index}"]`);
+    if (!el.getAttribute("src")) loadLocal(el, modelPath);
+    else el.addEventListener("error", () => loadLocal(el, modelPath), { once: true });
   });
   requestAnimationFrame(() => overlay.classList.add("cu-lb-open"));
 
@@ -2224,21 +2251,37 @@ function revokeLocalPreviews(urls) {
   urls.clear();
 }
 
+// The shared previews belong to one job's results: drop them when it changes
+// (or the results are cleared), so a poll's re-render reuses them instead.
+function syncLocalPreviewCache() {
+  if (state.localPreviewJobId === state.checkJobId) return;
+  revokeLocalPreviews(state.localPreviewUrls);
+  state.localPreviewCache.clear();
+  state.localPreviewJobId = state.checkJobId;
+}
+
 // A listed file's preview that lives next to it on disk. Resolves to an object
 // URL, or null when the server has none. Pass a set to own the URL yourself.
 function fetchLocalPreview(path, urls = state.localPreviewUrls) {
   if (!state.checkJobId || !path) return Promise.resolve(null);
   const shared = urls === state.localPreviewUrls;
+  if (shared) syncLocalPreviewCache();
   if (shared && state.localPreviewCache.has(path)) return state.localPreviewCache.get(path);
+  const jobId = state.checkJobId;
   const request = (async () => {
     try {
       const response = await api.fetchApi("/civitai-updater/local-preview", {
         method: "POST",
         headers: { ...GUARD_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: state.checkJobId, path }),
+        body: JSON.stringify({ jobId, path }),
       });
       if (!response.ok) return null;
       const url = URL.createObjectURL(await response.blob());
+      // Its job's previews were dropped while this was in flight.
+      if (shared && state.localPreviewJobId !== jobId) {
+        URL.revokeObjectURL(url);
+        return null;
+      }
       urls.add(url);
       return url;
     } catch (error) {
@@ -4046,6 +4089,20 @@ function injectStyles() {
     .cu-lb-body:not(.cu-lb-compare) .cu-lb-card video {
       max-width: min(600px, 80vw);
       max-height: 75vh;
+    }
+
+    .cu-lb-empty {
+      width: min(240px, 42vw);
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 5px;
+      border: 1px solid #2e2e36;
+      background: rgba(0, 0, 0, 0.3);
+      color: #6a6772;
+      font-family: "IBM Plex Mono", Consolas, ui-monospace, monospace;
+      font-size: 9.5px;
     }
   `;
   document.head.appendChild(style);
