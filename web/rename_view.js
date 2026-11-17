@@ -1736,9 +1736,9 @@ function cssEscape(text) {
 /* ---------------------------------------------------------------- styles */
 
 function injectRenameStyles() {
-  if (typeof document === "undefined" || document.getElementById("cu-rn-styles")) return;
+  if (typeof document === "undefined" || document.getElementById("ws-rename-styles")) return;
   const style = document.createElement("style");
-  style.id = "cu-rn-styles";
+  style.id = "ws-rename-styles";
   style.textContent = RENAME_CSS;
   document.head.appendChild(style);
 }

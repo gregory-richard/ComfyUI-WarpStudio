@@ -49,6 +49,7 @@ OLD_NAMES = [
     'category: ["Civitai Updater"',
     'TAB_ID = "civitai-updater"',
     '"civitai-updater.ui"',
+    "cu-rn-styles",
 ]
 
 
