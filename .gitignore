@@ -1,8 +1,0 @@
-**/__pycache__/
-**/*.kate-swp
-.civitai_updater/
-.cursor/
-.codex
-.agent
-.agents
-assets/source/

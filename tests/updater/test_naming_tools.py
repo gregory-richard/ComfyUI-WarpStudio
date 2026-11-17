@@ -12,7 +12,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-TOOLS = Path(__file__).resolve().parent.parent / "tools"
+TOOLS = Path(__file__).resolve().parent.parent.parent / "tools"
 
 
 def _load(name: str):
