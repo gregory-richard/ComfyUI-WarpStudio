@@ -205,6 +205,38 @@ class FallbackServiceTests(unittest.TestCase):
         self.assertEqual({"Krea 2": "krea2"}, base_codes)
         self.http.assert_called_once()
 
+    def test_scan_reads_base_codes_without_rewriting_them(self) -> None:
+        codes_path = self.store.data_dir / "base_codes.json"
+        # Compact, unsorted and with entries the renamer's store would drop: any rewrite shows.
+        original = b'{"codes":{"Zeta":"z","Krea 2":"krea2","Empty":"","Number":7},"seeded":true}'
+        codes_path.write_bytes(original)
+        self.model("a.safetensors")
+        fallbacks = FakeFallbacks()
+
+        self.run_job(fallbacks=fallbacks)
+
+        self.assertEqual(original, codes_path.read_bytes())
+        self.assertEqual({"Zeta": "z", "Krea 2": "krea2"}, fallbacks.built[0][3])
+
+    def test_scan_passes_no_base_codes_for_a_missing_or_corrupt_file(self) -> None:
+        codes_path = self.store.data_dir / "base_codes.json"
+        self.model("a.safetensors")
+        for content in (None, b"{not json", b'["krea2"]', b'{"codes": ["krea2"]}'):
+            with self.subTest(content=content):
+                if content is None:
+                    codes_path.unlink(missing_ok=True)
+                else:
+                    codes_path.write_bytes(content)
+                fallbacks = FakeFallbacks()
+
+                self.run_job(fallbacks=fallbacks)
+
+                self.assertEqual({}, fallbacks.built[0][3])
+                if content is None:
+                    self.assertFalse(codes_path.exists())
+                else:
+                    self.assertEqual(content, codes_path.read_bytes())  # never moved aside or replaced
+
     def test_scan_summary_counts_previews_found(self) -> None:
         self.model("a.safetensors")
         self.model("b.safetensors")

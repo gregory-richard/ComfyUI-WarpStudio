@@ -9,7 +9,7 @@ from .civitai_client import CivitaiClient, CivitaiRequestError
 from .fallback_http import FallbackHttp
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
 from .preview_fallback import FallbackOutcome, PreviewFallback
-from .rename_store import BaseCodeStore
+from .rename_store import BASE_CODES_FILENAME
 from .sidecar import (
     info_sidecar_path,
     preview_sidecar_path,
@@ -791,6 +791,18 @@ def _announce_source(progress: ProgressCallback, current: int, total: int, file_
     return announce
 
 
+def _read_base_codes(data_dir: Path) -> dict[str, str]:
+    """The renamer's base-model codes (name -> code), read only: its store rewrites the file when built.
+
+    A missing or unreadable file gives {}.
+    """
+    payload = read_json(Path(data_dir) / BASE_CODES_FILENAME)
+    codes = payload.get("codes") if isinstance(payload, dict) else None
+    if not isinstance(codes, dict):
+        return {}
+    return {name: code for name, code in codes.items() if isinstance(name, str) and isinstance(code, str) and code}
+
+
 class _ScanFallback:
     """One scan's preview fallback, built when the first file needs it.
 
@@ -819,7 +831,7 @@ class _ScanFallback:
                     timeout_seconds=int(self._config.get("requestTimeoutSeconds", 30)),
                     should_stop=self._should_stop,
                 )
-                base_codes = BaseCodeStore(self._data_dir).all()
+                base_codes = _read_base_codes(self._data_dir)
                 self._fallback = PreviewFallback(self._config, self._data_dir, http, base_codes)
             return self._fallback.run(
                 model_path=model_path,
