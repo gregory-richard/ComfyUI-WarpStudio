@@ -106,7 +106,7 @@ class FallbackHttp:
         if response.status_code != 200:
             status = response.status_code
             response.close()
-            raise SourceUnavailable(f"HTTP {status} from {host}")
+            raise SourceUnavailable(f"HTTP {status} from {host}", status=status)
         return response
 
     def _json_page(self, url: str):

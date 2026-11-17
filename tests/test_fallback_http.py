@@ -139,6 +139,16 @@ class HttpTests(unittest.TestCase):
             with self.assertRaises(SourceUnavailable):
                 FallbackHttp(session=self.session).get_json("https://huggingface.co/api/x")
 
+    def test_non_200_sets_status(self):
+        self.session.get.return_value = _resp(status=404)
+        with self.assertRaises(SourceUnavailable) as ctx:
+            FallbackHttp(session=self.session).get_json("https://huggingface.co/api/x")
+        self.assertEqual(ctx.exception.status, 404)
+        self.session.get.side_effect = requests.ConnectionError("down")
+        with self.assertRaises(SourceUnavailable) as ctx:
+            FallbackHttp(session=self.session).get_json("https://huggingface.co/api/x")
+        self.assertIsNone(ctx.exception.status)
+
     def test_civarchive_requests_are_paced(self):
         self.session.get.side_effect = lambda *a, **k: _resp(chunks=[b"ok"])
         times = iter([100.0, 100.2])

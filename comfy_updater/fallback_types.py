@@ -5,7 +5,14 @@ from pathlib import Path
 
 
 class SourceUnavailable(Exception):
-    """A fallback source could not answer (network error, non-200, refused redirect, oversized body)."""
+    """A fallback source could not answer (network error, non-200, refused redirect, oversized body).
+
+    ``status`` is the HTTP status of a non-200 answer, else None.
+    """
+
+    def __init__(self, message: str = "", status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass
