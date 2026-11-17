@@ -7,7 +7,14 @@ from typing import Callable
 
 from .civitai_client import CivitaiClient, CivitaiRequestError
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
-from .sidecar import info_sidecar_path, preview_sidecar_path, read_json, write_json
+from .sidecar import (
+    info_sidecar_path,
+    preview_sidecar_path,
+    read_json,
+    sidecar_identifies_model,
+    stored_sha256,
+    write_json,
+)
 from .hashing import HashingCancelled, sha256_file
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -677,24 +684,9 @@ def _version_availability(version_data: dict) -> str:
     return availability if isinstance(availability, str) else ""
 
 
-def _sidecar_identifies_model(info: dict | None) -> bool:
-    if not isinstance(info, dict):
-        return False
-    return bool(info.get("modelId")) and bool(info.get("id"))
-
-
-def _stored_sha256(info: dict | None) -> str:
-    """Return the SHA256 recorded in a sidecar's first file entry, if any."""
-    if not isinstance(info, dict):
-        return ""
-    files = info.get("files")
-    if not isinstance(files, list) or not files or not isinstance(files[0], dict):
-        return ""
-    hashes = files[0].get("hashes")
-    if not isinstance(hashes, dict):
-        return ""
-    value = hashes.get("SHA256") or hashes.get("sha256") or ""
-    return value.strip().lower() if isinstance(value, str) else ""
+# Moved to sidecar.py; the old names stay importable from here.
+_sidecar_identifies_model = sidecar_identifies_model
+_stored_sha256 = stored_sha256
 
 
 def _set_sha256_hash(version_data: dict, sha256_hash: str) -> None:

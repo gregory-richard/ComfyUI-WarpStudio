@@ -44,6 +44,26 @@ def _primary_file_extension(info: dict | None) -> str:
     return suffix if suffix in SUPPORTED_MODEL_EXTENSIONS else ".safetensors"
 
 
+def sidecar_identifies_model(info: dict | None) -> bool:
+    if not isinstance(info, dict):
+        return False
+    return bool(info.get("modelId")) and bool(info.get("id"))
+
+
+def stored_sha256(info: dict | None) -> str:
+    """Return the SHA256 recorded in a sidecar's first file entry, if any."""
+    if not isinstance(info, dict):
+        return ""
+    files = info.get("files")
+    if not isinstance(files, list) or not files or not isinstance(files[0], dict):
+        return ""
+    hashes = files[0].get("hashes")
+    if not isinstance(hashes, dict):
+        return ""
+    value = hashes.get("SHA256") or hashes.get("sha256") or ""
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
 def read_json(path: Path) -> dict | None:
     payload, _error = read_json_diagnostic(path)
     return payload
