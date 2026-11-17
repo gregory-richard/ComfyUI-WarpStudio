@@ -449,6 +449,16 @@ def _normalize_config_payload(payload: dict) -> dict:
         naming_model = payload.get("namingModel")
         incoming["namingModel"] = naming_model.strip() if isinstance(naming_model, str) else ""
 
+    # Preview fallback settings; ConfigStore validates and trims them.
+    if "fallbackCivarchive" in payload:
+        incoming["fallbackCivarchive"] = bool(payload.get("fallbackCivarchive"))
+    for key in ("fallbackHuggingFace", "fallbackAiToolkitFolders"):
+        if key in payload:
+            incoming[key] = _normalize_paths_value(payload.get(key))
+    if "fallbackOwnCreator" in payload:
+        creator = payload.get("fallbackOwnCreator")
+        incoming["fallbackOwnCreator"] = creator if isinstance(creator, str) else ""
+
     if "customPaths" in payload:
         custom = payload.get("customPaths")
         if isinstance(custom, dict):
