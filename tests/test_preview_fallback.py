@@ -12,7 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from comfy_updater import preview_fallback, renamer
-from comfy_updater.fallback_types import FallbackResult, SourceUnavailable
+from comfy_updater.fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
 from comfy_updater.preview_fallback import (
     FallbackOutcome,
     MissStore,
@@ -222,6 +222,7 @@ class PreviewFallbackTests(unittest.TestCase):
         self.assertEqual(info["model"]["name"], "my concept")
         self.assertEqual(info["extensions"]["fallback"]["source"], "ai-toolkit")
         self.assertNotIn("images", info)
+        self.assertEqual(self.misses(), {})  # own trainings are local and never remembered
 
     def test_own_training_gets_folders_creator_and_base_names(self):
         self.run_on(self.fallback(fallbackAiToolkitFolders=[str(self.out)], fallbackOwnCreator="someone"))
@@ -238,12 +239,45 @@ class PreviewFallbackTests(unittest.TestCase):
         self.assertEqual(read_json(self.info_path)["model"]["name"], "Cool")
         self.assertEqual(self.http.calls, [])
 
-        # The next scan still has no preview, so it asks again; the info is already filled.
+        # No picture can come from this answer: it is remembered like a miss, so the next scan asks nobody.
+        self.assertEqual(self.misses(), {SHA: {"checkedAt": NOW.isoformat(), "sources": "civarchive|someone"}})
         self.sources.log.clear()
-        outcome = self.run_on(self.fallback())
+        self.assertIsNone(self.run_on(self.fallback()))
+        self.assertEqual(self.sources.log, [])
+
+        # Re-fetch asks again; the info is already filled.
+        outcome = self.run_on(self.fallback(), refetch=True)
         self.assertEqual(self.sources.log, ["huggingface"])
         self.assertFalse(outcome.info_written)
-        self.assertEqual(self.misses(), {})
+
+    def test_hit_without_a_usable_picture_is_remembered(self):
+        cases = (
+            ("empty", hf_result(image_url=""), None),
+            ("off-list", hf_result(image_url="https://example.com/a.png"), None),
+            ("undecodable", civ_result(), b"not an image"),
+        )
+        for n, (stem, result, data) in enumerate(cases, start=1):
+            with self.subTest(stem):
+                if data is not None:
+                    self.http.data = data
+                if result.source == "huggingface":
+                    self.sources.queue("huggingface", result)
+                else:
+                    self.sources.queue("civarchive", result)
+                model = self.model_file(stem)
+
+                outcome = self.run_on(self.fallback(), model=model, sha=sha_for(n))
+                self.assertEqual((outcome.preview_written, outcome.info_written), (False, True))
+                self.assertFalse(preview_sidecar_path(model).exists())
+                self.assertEqual(self.misses()[sha_for(n)]["sources"], "civarchive|someone")
+
+    def test_changed_sources_ask_again_after_a_hit_without_picture(self):
+        self.sources.queue("huggingface", hf_result(image_url=""))
+        self.run_on(self.fallback())
+
+        self.sources.log.clear()
+        self.run_on(self.fallback(fallbackHuggingFace=["someone", "x/y"]))
+        self.assertEqual(self.sources.log, ["huggingface", "civarchive"])
 
     def test_progress_names_each_source_before_it_is_asked(self):
         self.sources.queue("civarchive", civ_result())
@@ -365,15 +399,21 @@ class PreviewFallbackTests(unittest.TestCase):
         self.assertFalse(outcome.preview_written)
         self.assertTrue(outcome.info_written)
         self.assertEqual(self.preview_path.read_bytes(), b"their picture")
+        self.assertEqual(self.misses(), {})
 
     def test_download_failure_still_writes_info(self):
         self.http.error = SourceUnavailable("HTTP 500", status=500)
-        self.sources.queue("huggingface", hf_result())
+        self.sources.queue("huggingface", hf_result(), hf_result())
 
         outcome = self.run_on(self.fallback())
         self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=False, info_written=True))
         self.assertFalse(self.preview_path.exists())
         self.assertEqual(read_json(self.info_path)["model"]["name"], "Cool")
+        # A failed download may work next scan: nothing is remembered.
+        self.assertEqual(self.misses(), {})
+        self.sources.log.clear()
+        self.run_on(self.fallback())
+        self.assertEqual(self.sources.log, ["huggingface"])
 
     def test_image_url_off_the_allow_list_is_not_stored(self):
         self.sources.queue("huggingface", hf_result(image_url="https://example.com/a.png"))
@@ -394,18 +434,25 @@ class PreviewFallbackTests(unittest.TestCase):
         self.assertEqual(self.http.calls, [])
         self.assertNotIn("images", read_json(self.info_path))
 
-    def test_oversized_or_unreadable_sample_writes_info_only(self):
+    def test_oversized_unreadable_or_undecodable_sample_writes_info_only(self):
         big = self.out / "big.png"
         big.write_bytes(image_bytes("PNG"))
         with open(big, "r+b") as handle:
             handle.truncate(20_000_001)  # a real PNG, padded past the cap
-        for stem, sample in (("big", big), ("gone", self.out / "missing.png")):
+        junk = self.out / "junk.png"
+        junk.write_bytes(b"not an image")
+        for n, (stem, sample) in enumerate(
+            (("big", big), ("gone", self.out / "missing.png"), ("junk", junk)), start=1
+        ):
             model = self.model_file(stem)
             self.sources.queue("ai-toolkit", own_result(image_path=sample))
 
-            outcome = self.run_on(self.fallback(fallbackAiToolkitFolders=[str(self.out)]), model=model)
+            outcome = self.run_on(
+                self.fallback(fallbackAiToolkitFolders=[str(self.out)]), model=model, sha=sha_for(n)
+            )
             self.assertEqual(outcome, FallbackOutcome(source="ai-toolkit", preview_written=False, info_written=True))
             self.assertFalse(preview_sidecar_path(model).exists())
+        self.assertEqual(self.misses(), {})  # own trainings are local and never remembered
 
     def test_fallback_stub_is_not_a_renamer_entry(self):
         write_json(self.info_path, stub())
@@ -516,6 +563,36 @@ class PreviewFallbackTests(unittest.TestCase):
         self.sources.log.clear()
         self.run_on(fb, model=self.model_file("f6"), sha=sha_for(6))
         self.assertEqual(self.sources.log, ["huggingface", "civarchive"])
+
+    def test_partial_hf_index_stays_in_use(self):
+        self.sources.queue("huggingface", *[IndexIncomplete("request limit")] * 4, hf_result())
+        fb = self.fallback()
+        for n in range(1, 5):
+            self.assertIsNone(self.run_on(fb, model=self.model_file(f"f{n}"), sha=sha_for(n)))
+        self.assertEqual(self.sources.log, ["huggingface", "civarchive"] * 4)  # later sources still asked
+
+        self.sources.log.clear()
+        model = self.model_file("f5")
+        outcome = self.run_on(fb, model=model, sha=sha_for(5))
+        self.assertEqual(self.sources.log, ["huggingface"])
+        self.assertEqual(outcome, FallbackOutcome(source="huggingface", preview_written=True, info_written=True))
+        self.assertEqual(read_json(info_sidecar_path(model))["model"]["name"], "Cool")
+        self.assertEqual(self.misses(), {})  # the earlier files had no complete answer
+
+    def test_incomplete_index_neither_counts_nor_resets_the_breaker(self):
+        down = SourceUnavailable("timeout")
+        self.sources.queue("huggingface", down, down, IndexIncomplete("request limit"), down)
+        fb = self.fallback()
+        for n in range(1, 4):
+            self.run_on(fb, model=self.model_file(f"f{n}"), sha=sha_for(n))
+
+        self.sources.log.clear()
+        self.run_on(fb, model=self.model_file("f4"), sha=sha_for(4))
+        self.assertEqual(self.sources.log, ["huggingface", "civarchive"])  # 2 failures so far
+
+        self.sources.log.clear()
+        self.run_on(fb, model=self.model_file("f5"), sha=sha_for(5))
+        self.assertEqual(self.sources.log, ["civarchive"])  # 3 in a row: dropped
 
     def test_corrupt_miss_file_is_ignored(self):
         self.data.mkdir()

@@ -15,7 +15,7 @@ from comfy_updater.fallback_hf import (
     parse_malcolmrey_name,
     pick_repo_image,
 )
-from comfy_updater.fallback_types import SourceUnavailable
+from comfy_updater.fallback_types import IndexIncomplete, SourceUnavailable
 
 API = "https://huggingface.co/api/models"
 SAMPLES = "https://huggingface.co/spaces/malcolmrey/browser/resolve/main/data-hf-images.json"
@@ -175,10 +175,10 @@ class BriefTests(IndexTestCase):
     def test_listing_failure_raises_unavailable_once(self):
         http = FakeHttp(malcolmrey_bodies(), errors={listing_url("malcolmrey"): error(500)})
         index = self.index(["malcolmrey"], http)
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA)
         self.assertEqual(http.request_count, 1)
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA)
         self.assertEqual(http.request_count, 1)
 
@@ -261,7 +261,7 @@ class BriefTests(IndexTestCase):
         http = FakeHttp(bodies)
         with patch.object(fallback_hf, "MAX_REQUESTS_PER_RUN", 5):
             index = self.index(["someone"], http)
-            with self.assertRaises(SourceUnavailable) as ctx:
+            with self.assertRaises(IndexIncomplete) as ctx:
                 index.find(h(3))
             self.assertIn("request limit", str(ctx.exception))
             self.assertEqual(http.request_count, 5)
@@ -272,7 +272,7 @@ class BriefTests(IndexTestCase):
             later = self.index(["someone"], failing)
             self.assertIsNotNone(later.find(h(0)))
             self.assertIsNotNone(later.find(h(1)))
-            with self.assertRaises(SourceUnavailable):
+            with self.assertRaises(IndexIncomplete):
                 later.find(h(3))
 
     def test_corrupt_cache_is_rebuilt(self):
@@ -300,7 +300,7 @@ class BudgetTests(IndexTestCase):
             index = self.index([REPO], http)
             self.assertEqual(index.find(h(1)).version_name, "m1")
             self.assertEqual(http.request_count, 3)
-            with self.assertRaises(SourceUnavailable):
+            with self.assertRaises(IndexIncomplete):
                 index.find(h(4))
 
         http = FakeHttp(bodies, links)
@@ -331,7 +331,7 @@ class BudgetTests(IndexTestCase):
         with patch.object(fallback_hf, "MAX_REQUESTS_PER_RUN", 1):
             index = self.index([REPO, second], http)
             self.assertEqual(index.find(SHA2).version_name, "m")  # kept from the cache
-            with self.assertRaises(SourceUnavailable):
+            with self.assertRaises(IndexIncomplete):
                 index.find(SHA3)
         self.assertEqual(http.urls, [info_url(REPO)])
 
@@ -380,12 +380,12 @@ class MissingAndPartialTests(IndexTestCase):
         self.index(["malcolmrey"], FakeHttp(malcolmrey_bodies())).find(SHA)
         http = FakeHttp(malcolmrey_bodies(), errors={listing_url("malcolmrey"): error(503)})
         index = self.index(["malcolmrey"], http)
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA3)
         self.assertEqual(http.request_count, 1)
         r = index.find(SHA)
         self.assertEqual((r.title, r.image_url), ("someone", ""))  # a partial run sends nothing more
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA3)
         self.assertEqual(http.urls, [listing_url("malcolmrey")])
 
@@ -394,7 +394,7 @@ class MissingAndPartialTests(IndexTestCase):
         page2 = tree_url(REPO) + "&cursor=p2"
         links = {tree_url(REPO): page2}
         index = self.index([REPO], FakeHttp(bodies, links))  # page 2 answers 404
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA3)
 
         bodies[page2] = [lfs("w/second.safetensors", SHA)]
@@ -408,7 +408,7 @@ class MissingAndPartialTests(IndexTestCase):
         http = FakeHttp(malcolmrey_bodies(), links={listing_url("malcolmrey"): page2}, errors={page2: error(401)})
         index = self.index(["malcolmrey"], http)
         self.assertEqual(index.find(SHA).title, "someone")
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA3)
         self.assertEqual(set(self.cached_repos()), {"malcolmrey/krea2"})
 
@@ -418,13 +418,13 @@ class MissingAndPartialTests(IndexTestCase):
         http = FakeHttp(bodies, errors={tree_url("malcolmrey/zimage"): error(500)})
         index = self.index(["malcolmrey"], http)
         self.assertEqual(index.find(SHA).title, "someone")
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA3)
         self.assertEqual(set(self.cached_repos()), {"malcolmrey/krea2"})
 
     def test_stop_makes_the_index_partial(self):
         http = FakeHttp(malcolmrey_bodies(), errors={tree_url("malcolmrey/krea2"): SourceUnavailable("stopped")})
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             self.index(["malcolmrey"], http).find(SHA3)
 
     def test_partial_build_keeps_cached_repos_not_yet_refreshed(self):
@@ -442,7 +442,7 @@ class MissingAndPartialTests(IndexTestCase):
         index = self.index(["malcolmrey"], http)
         self.assertEqual(index.find(SHA).base_model, "Krea 2")
         self.assertEqual(index.find(SHA2).base_model, "ZImageTurbo")
-        with self.assertRaises(SourceUnavailable):
+        with self.assertRaises(IndexIncomplete):
             index.find(SHA3)  # flux left the completed listing: dropped
         repos = self.cached_repos()
         self.assertEqual(set(repos), {"malcolmrey/krea2", "malcolmrey/zimage"})

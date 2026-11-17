@@ -4,7 +4,8 @@ For a file still without a ``.preview.png`` the configured sources are asked in
 order (own ai-toolkit trainings, Hugging Face, civarchive); the first answer wins.
 A hit writes the preview, never over an existing one, and fills only the empty
 fields of the info file. An info file that identifies a Civitai model keeps every
-field. Hashes no online source knew are remembered for 30 days.
+field. Hashes no online source knew, or whose online answer gave no usable picture,
+are remembered for 30 days.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from .fallback_aitoolkit import base_names_from_codes, lookup_own_training
 from .fallback_civarchive import lookup_civarchive
 from .fallback_hf import HuggingFaceIndex
 from .fallback_http import is_allowed_url, save_preview_png
-from .fallback_types import FallbackResult, SourceUnavailable
+from .fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
 from .sidecar import read_json, sidecar_identifies_model, stored_sha256, write_json
 
 MISS_DAYS = 30
@@ -35,6 +36,8 @@ HF_INDEX_FILENAME = "hf_index.json"
 SOURCE_TAG = "comfy-civitai-updater"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _CIVITAI_ID = re.compile(r"[1-9][0-9]*")
+# What became of a hit's picture.
+_WRITTEN, _UNUSABLE, _NOT_WRITTEN = "written", "unusable", "not written"
 
 
 @dataclass
@@ -45,7 +48,7 @@ class FallbackOutcome:
 
 
 class MissStore:
-    """Hashes no online source knew, with when and under which sources they were asked.
+    """Hashes the online sources have nothing more for, with when and under which sources they were asked.
 
     Saved after each change as ``{"misses": {sha: {"checkedAt": iso, "sources": fingerprint}}}``.
     A corrupt or wrong-shaped file reads as empty and is replaced on the next change.
@@ -189,7 +192,7 @@ class PreviewFallback:
         refetch: bool,
         on_source: Callable[[str], None] | None = None,
     ) -> FallbackOutcome | None:
-        """Ask the sources about one file. None when it has a preview or no source knew it.
+        """Ask the sources about one file. None when it has a preview, or no source asked had an answer.
 
         ``on_source`` gets each source's key just before that source is asked.
         """
@@ -199,22 +202,27 @@ class PreviewFallback:
         sha = _normal_sha(sha256)
         if not _SHA256.fullmatch(sha):
             sha = ""  # only a real SHA256 ever leaves the machine; without one, online sources are skipped
-        result = self._ask(model_path, sha, refetch, on_source)
+        own = self._ask_own(model_path, on_source)
+        result = own if own is not None else self._ask_online(sha, refetch, on_source)
         if result is None:
             return None
-        if sha:
-            self._misses.forget(sha)
-        preview_written = self._write_preview(result, preview_path)
+        picture = self._write_preview(result, preview_path)
         info_written = self._write_info(result, info_path, sha, model_path.name)
-        return FallbackOutcome(source=result.source, preview_written=preview_written, info_written=info_written)
+        if own is None and picture == _UNUSABLE:
+            # This answer can give no picture: skip the online sources like a miss.
+            self._misses.record(sha, self._fingerprint, self._now())
+        elif sha:
+            self._misses.forget(sha)
+        return FallbackOutcome(source=result.source, preview_written=picture == _WRITTEN, info_written=info_written)
 
-    def _ask(self, model_path: Path, sha: str, refetch: bool, on_source) -> FallbackResult | None:
-        """The first source's answer. Own trainings need no hash, and nobody else has them."""
-        if self._folders:
-            _announce(on_source, "ai-toolkit")
-            result = lookup_own_training(model_path, self._folders, self._creator, self._base_names)
-            if result is not None:
-                return result
+    def _ask_own(self, model_path: Path, on_source) -> FallbackResult | None:
+        """Own trainings need no hash, and nobody else has them."""
+        if not self._folders:
+            return None
+        _announce(on_source, "ai-toolkit")
+        return lookup_own_training(model_path, self._folders, self._creator, self._base_names)
+
+    def _ask_online(self, sha: str, refetch: bool, on_source) -> FallbackResult | None:
         online = self._online_sources()
         if not sha or not online:
             return None
@@ -228,6 +236,10 @@ class PreviewFallback:
             _announce(on_source, key)
             try:
                 result = ask(sha)
+            except IndexIncomplete:
+                # Costs no requests and its hits still count: neither a failure nor an answer.
+                all_answered = False
+                continue
             except SourceUnavailable:
                 self._failures[key] += 1
                 all_answered = False
@@ -248,17 +260,23 @@ class PreviewFallback:
             sources.append(("civarchive", lambda sha: lookup_civarchive(sha, self.http)))
         return sources
 
-    def _write_preview(self, result: FallbackResult, preview_path: Path) -> bool:
-        data = None
+    def _write_preview(self, result: FallbackResult, preview_path: Path) -> str:
+        """``_WRITTEN``, ``_UNUSABLE`` (no picture can come from this answer) or ``_NOT_WRITTEN``."""
         if result.image_path is not None:
             data = _read_capped(Path(result.image_path))
+            if data is None:
+                return _NOT_WRITTEN
         elif result.image_url and is_allowed_url(result.image_url):
             try:
                 data = self.http.download(result.image_url, max_bytes=MAX_IMAGE_BYTES)
             except SourceUnavailable:
-                data = None
-        # save_preview_png never replaces a preview, even one written since the check in run.
-        return data is not None and save_preview_png(data, preview_path)
+                return _NOT_WRITTEN  # may work next scan
+        else:
+            return _UNUSABLE
+        if save_preview_png(data, preview_path):
+            return _WRITTEN
+        # save_preview_png never replaces a preview; one written since the check in run is no fault of the data.
+        return _NOT_WRITTEN if preview_path.exists() else _UNUSABLE
 
     def _write_info(self, result: FallbackResult, info_path: Path, sha: str, file_name: str) -> bool:
         info = read_json(info_path)

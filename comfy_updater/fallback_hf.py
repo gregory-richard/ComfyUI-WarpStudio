@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from .fallback_http import is_allowed_url
-from .fallback_types import FallbackResult, SourceUnavailable
+from .fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
 from .sidecar import read_json, write_json
 
 MAX_REPOS_PER_AUTHOR = 200
@@ -160,7 +160,7 @@ class HuggingFaceIndex:
 
     A 404 or 401 entry contributes nothing. Any other failure, a stop, or the request
     budget makes the index partial: hits still come from what was refreshed
-    plus the cache, but a miss raises ``SourceUnavailable``.
+    plus the cache, but a miss raises ``IndexIncomplete``.
     """
 
     def __init__(self, entries: list[str], http, cache_path: Path) -> None:
@@ -190,7 +190,7 @@ class HuggingFaceIndex:
         hit = self._hashes.get(str(sha256 or "").strip().lower())
         if hit is None:
             if self._error is not None:
-                raise SourceUnavailable(self._error)
+                raise IndexIncomplete(self._error)
             return None
         return self._result(*hit)
 

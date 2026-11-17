@@ -15,6 +15,14 @@ class SourceUnavailable(Exception):
         self.status = status
 
 
+class IndexIncomplete(SourceUnavailable):
+    """A hash index built only in part (request limit, a failed listing, a stop) lacks this hash.
+
+    It sends no requests after its build, so asking again costs nothing: unlike other
+    failures it never counts toward dropping the source. It is still no "doesn't know".
+    """
+
+
 @dataclass
 class FallbackResult:
     source: str
