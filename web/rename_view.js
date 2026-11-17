@@ -1,8 +1,18 @@
 /* The Rename view of the Civitai Updater panel.
 
    ComfyUI loads every .js file in this folder as an extension module, so this
-   one must do nothing on import: it only exports functions. civitai_updater.js
+   one does nothing on import except carry the old browser-storage keys over;
+   otherwise it only exports functions. civitai_updater.js
    imports it, passes its request helpers in and calls renderRenameView. */
+
+import { carryOverStorage } from "./storage_migration.js";
+
+/* Before any key below is read: keep the choices made under Civitai Updater. */
+try {
+  carryOverStorage(window.localStorage);
+} catch {
+  /* reading window.localStorage throws when storage is blocked */
+}
 
 const ROUTE = "/warp-studio/updater";
 const DRY_RUN_JOB = "rename-dry-run";
