@@ -184,7 +184,14 @@ class UpdaterService:
             item["filePath"] = str(model_entry.get("filePath") or model_path)
 
             preview = preview_path or preview_sidecar_path(model_path)
-            if fallback is not None and not metadata_only and not preview.exists():
+            # Not for a file that errored: Civitai may serve it next time, and a
+            # preview from elsewhere would then keep out Civitai's own.
+            if (
+                fallback is not None
+                and not metadata_only
+                and item.get("status") != "error"
+                and not preview.exists()
+            ):
                 # Pause and Stop hold here as they do before the Civitai step.
                 if control:
                     control.wait_if_paused()
@@ -382,13 +389,16 @@ class UpdaterService:
                 "nsfw": False,
             }
             # What another source found still describes this file unless it was replaced since.
-            found_elsewhere = bool(_fallback_record(existing_info)) and not _replaced(stored_hash, local_hash)
-            if found_elsewhere:
+            filled_elsewhere = bool(_fallback_record(existing_info))
+            replaced = _replaced(stored_hash, local_hash)
+            if filled_elsewhere and not replaced:
                 payload.update(_fallback_fields(existing_info, model_path.name))
             # A failed lookup cannot tell "removed" from "Civitai is down", so
-            # it never replaces a sidecar that already identifies the model,
-            # nor wipes what another source found for this file.
-            if mode == "scan" and not metadata_only and not has_identity and not found_elsewhere:
+            # it never replaces a sidecar that already identifies the model.
+            # What another source found is kept until the file is replaced,
+            # ids or not: it described the old file.
+            rewrite = replaced if filled_elsewhere else not has_identity
+            if mode == "scan" and not metadata_only and rewrite:
                 write_json(
                     info_path,
                     {

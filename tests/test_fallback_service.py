@@ -45,6 +45,13 @@ class NoHashClient:
         return f"https://civitai.red/models/{model_id}?modelVersionId={version_id}"
 
 
+class ErroringHashClient(NoHashClient):
+    """Civitai failing every hash lookup."""
+
+    def get_version_by_hash(self, sha256):  # noqa: ARG002
+        raise CivitaiRequestError("https://civitai.red/api/v1/model-versions/by-hash :: 500 Internal Server Error")
+
+
 class FakeFallbacks:
     """Stands in for the PreviewFallback class: building it returns this object, which logs each run.
 
@@ -130,6 +137,7 @@ class FallbackServiceTests(unittest.TestCase):
         })
         self.hashes: dict[str, str] = {}
         self.http = MagicMock(name="FallbackHttp")
+        self.client = NoHashClient
         self.progress: list[tuple[int, int, str]] = []
 
     def model(self, name: str, info: dict | None = None, preview: bytes | None = None) -> Path:
@@ -148,7 +156,7 @@ class FallbackServiceTests(unittest.TestCase):
         service = UpdaterService(self.store)
         method = service.run_scan if mode == "scan" else service.run_check_updates
         with contextlib.ExitStack() as stack:
-            stack.enter_context(patch("comfy_updater.updater_service.CivitaiClient", NoHashClient))
+            stack.enter_context(patch("comfy_updater.updater_service.CivitaiClient", self.client))
             stack.enter_context(patch("comfy_updater.updater_service.FallbackHttp", self.http))
             stack.enter_context(patch("comfy_updater.updater_service.sha256_file", side_effect=self._hash))
             if fallbacks is not None:
@@ -290,10 +298,27 @@ class FallbackServiceTests(unittest.TestCase):
             raise OSError("locked")
 
         self._hash = broken_hash
-        _summary, items = self.run_job(fallbacks=FakeFallbacks())
+        fallbacks = FakeFallbacks()
+        _summary, items = self.run_job(fallbacks=fallbacks)
 
         item = items["a.safetensors"]
         self.assertEqual(("error", False, ""), (item["status"], item["hasLocalPreview"], item["fallbackSource"]))
+        self.assertEqual([], fallbacks.calls)
+
+    def test_scan_skips_the_fallback_when_civitai_errored(self) -> None:
+        # Civitai may serve the file next time; a fallback preview now would block its own picture.
+        self.model("a.safetensors")
+        self.model("b.safetensors")
+        fallbacks = FakeFallbacks()
+        self.client = ErroringHashClient
+
+        _summary, items = self.run_job(fallbacks=fallbacks)
+
+        self.assertEqual({"error"}, {item["status"] for item in items.values()})
+        self.assertEqual({""}, {item["fallbackSource"] for item in items.values()})
+        self.assertEqual([], fallbacks.calls)
+        self.assertEqual([], fallbacks.built)
+        self.http.assert_not_called()
 
     def test_progress_names_each_source_asked(self) -> None:
         self.model("a.safetensors", preview=PNG)
@@ -408,6 +433,43 @@ class FallbackServiceTests(unittest.TestCase):
         self.assertEqual([], fallbacks.calls)  # the preview is still there
         item = items["a.safetensors"]
         self.assertEqual(("", "", ""), (item["modelName"], item.get("creatorName", ""), item["fallbackSource"]))
+
+    def test_rescan_with_new_hash_resets_a_fallback_file_with_civitai_ids(self) -> None:
+        # A civarchive hit on a Civitai-platform model wrote ids; the file was replaced since.
+        info = fallback_stub("v2", "ab" * 32, id=88, modelId=77)
+        info["extensions"]["fallback"]["source"] = "civarchive"
+        a = self.model("a.safetensors", info=info, preview=PNG)
+        self.hashes["a.safetensors"] = "cd" * 32
+
+        _summary, items = self.run_job(fallbacks=FakeFallbacks(), refetchMetadata=True, forceRehash=True)
+
+        info = read_json(info_sidecar_path(a))
+        self.assertNotIn("fallback", info["extensions"])
+        self.assertEqual(("", ""), (info["id"], info["modelId"]))
+        self.assertEqual("cd" * 32, info["files"][0]["hashes"]["SHA256"])
+        self.assertEqual(PNG, preview_sidecar_path(a).read_bytes())
+        item = items["a.safetensors"]
+        self.assertEqual(("not_found", ""), (item["status"], item["fallbackSource"]))
+
+        _summary, items = self.run_job("check")
+
+        item = items["a.safetensors"]
+        self.assertEqual(("not_found", "", ""), (item["status"], item.get("creatorName", ""), item["fallbackSource"]))
+
+    def test_rescan_with_new_hash_keeps_a_civitai_info_file(self) -> None:
+        # Without a fallback record a failed lookup never replaces an info file that identifies the model.
+        a = self.model(
+            "a.safetensors",
+            info={"id": 88, "modelId": 77, "name": "v2", "files": [{"hashes": {"SHA256": "ab" * 32}}]},
+            preview=PNG,
+        )
+        before = info_sidecar_path(a).read_bytes()
+        self.hashes["a.safetensors"] = "cd" * 32
+
+        _summary, items = self.run_job(fallbacks=FakeFallbacks(), refetchMetadata=True, forceRehash=True)
+
+        self.assertEqual(before, info_sidecar_path(a).read_bytes())
+        self.assertEqual("not_found", items["a.safetensors"]["status"])
 
     # Check mode and Issues
 
