@@ -1,3 +1,31 @@
+# --- First-start data migration (WarpPipe / Civitai Updater -> Warp Studio) ---
+# Copies old data to the new names once. Must run before warp_pipe is imported
+# and before initialize_plugin(). It must never stop ComfyUI from starting.
+def _run_data_migration() -> None:
+    import logging
+    from pathlib import Path
+
+    try:
+        import folder_paths
+    except ImportError:
+        return  # not running inside ComfyUI (test runtime)
+    try:
+        if __package__:
+            from .studio import migration
+        else:
+            from studio import migration
+        migration.migrate(
+            Path(folder_paths.get_user_directory()),
+            [Path(p) for p in folder_paths.get_folder_paths("custom_nodes")],
+            Path(__file__).resolve().parent,
+        )
+    except Exception as exc:
+        logging.getLogger("WarpStudio").warning("Data migration failed: %s", exc)
+
+
+_run_data_migration()
+# --- end data migration ---
+
 if __package__:
     from . import warp_pipe as _warp_pipe
     from .comfy_updater.node_info import NODE_CLASS_MAPPINGS as _UPDATER_NODES
