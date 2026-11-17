@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from comfy_updater.archived_updates import ArchivedUpdateStore
-from comfy_updater.jobs import JobManager, JobRecord
+from comfy_updater.jobs import JobManager, JobRecord, card_version_order
 from comfy_updater.updater_service import _normalize_remote_versions
 
 
@@ -741,6 +741,67 @@ class JobManagerTests(unittest.TestCase):
         result = self.manager.get_items("job-1")
         self.assertEqual(1, result["total"])
         self.assertTrue(result["items"][0]["nsfw"])
+
+
+    def test_card_lists_its_versions_newest_first_in_one_order(self) -> None:
+        remote_versions = [
+            {"versionId": "v-new-2", "versionName": "Newest", "versionDate": "2026-03-07T00:00:00Z", "baseModel": "SDXL 1.0"},
+            {"versionId": "v-new-1", "versionName": "Newer", "versionDate": "2026-03-06T00:00:00Z", "baseModel": "SDXL 1.0"},
+            {"versionId": "v-old", "versionName": "Older", "versionDate": "2026-03-04T00:00:00Z", "baseModel": "SDXL 1.0"},
+        ]
+        common = dict(model_id="m1", model_name="Model One", model_type="checkpoint",
+                      base_model="SDXL 1.0", remote_versions=remote_versions)
+        self.job.items = [
+            make_item(local_version_id="v-local-a", local_version_name="Photo 1",
+                      local_version_date="2026-03-01T00:00:00Z", model_path="C:\\models\\a.safetensors", **common),
+            make_item(local_version_id="v-local-b", local_version_name="Photo 2",
+                      local_version_date="2026-03-05T00:00:00Z", model_path="C:\\models\\b.safetensors", **common),
+        ]
+        self.archive_store.archive("m1", ["v-new-1"])
+
+        card = self.manager.get_items("job-1", mode="updates", show_hidden=True)["items"][0]
+
+        # The newest release sits on top, the oldest saved file at the bottom.
+        self.assertEqual([["new", 0], ["hidden", 0], ["saved", 0], ["saved", 1]], card["versionOrder"])
+        lists = {"new": card["newVersions"], "hidden": card["hiddenNewVersions"], "saved": card["localVersions"]}
+        self.assertEqual(
+            ["Newest", "Newer", "Photo 2", "Photo 1"],
+            [lists[kind][index]["versionName"] for kind, index in card["versionOrder"]],
+        )
+
+    def test_a_file_civitai_never_identified_has_its_one_row(self) -> None:
+        self.job.items = [{"modelPath": "C:\\models\\mystery.safetensors", "modelType": "lora", "status": "not_found"}]
+
+        card = self.manager.get_items("job-1", mode="issues")["items"][0]
+
+        self.assertEqual([["saved", 0]], card["versionOrder"])
+
+
+class CardVersionOrderTests(unittest.TestCase):
+    def test_saved_and_new_releases_interleave_by_date(self) -> None:
+        saved = [{"publishedAt": "2024-08-01T00:00:00Z"}, {"publishedAt": "2024-01-01T00:00:00Z"}]
+        new = [{"versionDate": "2025-02-01T00:00:00Z"}, {"versionDate": "2024-06-01T00:00:00Z"}]
+        hidden = [{"versionDate": "2025-01-01T00:00:00Z"}]
+
+        self.assertEqual(
+            [["new", 0], ["hidden", 0], ["saved", 0], ["new", 1], ["saved", 1]],
+            card_version_order(saved, new, hidden),
+        )
+
+    def test_undated_files_go_last_and_keep_their_order(self) -> None:
+        saved = [{"publishedAt": "2024-01-01T00:00:00Z"}, {"publishedAt": ""}, {}]
+        new = [{"versionDate": "2025-01-01T00:00:00Z"}]
+
+        self.assertEqual(
+            [["new", 0], ["saved", 0], ["saved", 1], ["saved", 2]],
+            card_version_order(saved, new, []),
+        )
+
+    def test_a_release_on_the_same_day_as_a_saved_file_goes_above_it(self) -> None:
+        saved = [{"publishedAt": "2024-05-01T00:00:00Z"}]
+        new = [{"versionDate": "2024-05-01T00:00:00Z"}]
+
+        self.assertEqual([["new", 0], ["saved", 0]], card_version_order(saved, new, []))
 
 
 if __name__ == "__main__":

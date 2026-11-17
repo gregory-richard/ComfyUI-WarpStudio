@@ -44,6 +44,11 @@
 - Flagged rows show the model's Civitai title and uploader, and a clash names
   the other file or model. **Keep this name** is now **Keep current name**.
 
+### Changed
+- A card in **Updates** lists its versions as one list, newest on top. Saved
+  files, new releases and hidden releases are in release-date order, so the
+  newest release no longer sits under the oldest saved file.
+
 ## [1.9.2] - 2026-11-04
 
 ### Security

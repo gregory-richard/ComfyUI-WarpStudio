@@ -798,6 +798,7 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
         "localVersions": local_versions,
         "newVersions": new_versions,
         "hiddenNewVersions": hidden_versions,
+        "versionOrder": card_version_order(local_versions, new_versions, hidden_versions),
         "latestVersionId": primary_visible.get("versionId", ""),
         "latestVersionName": primary_visible.get("versionName", ""),
         "latestBaseModel": primary_visible.get("baseModel", ""),
@@ -813,6 +814,18 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
         "downloadUrl": primary_any.get("downloadUrl", ""),
         "nsfw": nsfw,
     }
+
+
+def card_version_order(local_versions: list[dict], new_versions: list[dict], hidden_versions: list[dict]) -> list[list]:
+    """The card's rows as one list, newest release on top: ``[kind, index]``
+    pairs into the saved, new and hidden lists. Files without a date go last.
+    On the same date a release goes above a saved file."""
+    rows = [("new", index, v.get("versionDate") or "") for index, v in enumerate(new_versions)]
+    rows += [("hidden", index, v.get("versionDate") or "") for index, v in enumerate(hidden_versions)]
+    rows += [("saved", index, v.get("publishedAt") or "") for index, v in enumerate(local_versions)]
+    # A stable sort keeps each list's own order among equal dates.
+    rows.sort(key=lambda row: (bool(row[2]), row[2]), reverse=True)
+    return [[kind, index] for kind, index, _ in rows]
 
 
 def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
@@ -848,6 +861,7 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
         "localVersions": local_versions,
         "newVersions": [],
         "hiddenNewVersions": [],
+        "versionOrder": [["saved", 0]],
         "latestVersionId": "",
         "latestVersionName": "",
         "latestBaseModel": "",

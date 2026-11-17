@@ -1113,16 +1113,24 @@ function buildResultCard(item, cardIndex) {
   const creatorHtml = item.creatorName ? `<span class="cu-creator">by ${escapeHtml(item.creatorName)}</span>` : "";
   const provisionalHtml = item.isProvisional ? `<span class="cu-provisional">Provisional</span>` : "";
 
-  // Files of one model usually fail for one reason; print it once, under the
-  // last row of each run that shares it.
-  const localRows = localVersions.map((v, index) => {
-    const next = localVersions[index + 1];
+  // One list, newest on top, in the order the server sends. A server not yet
+  // restarted sends none; its releases are all newer than its saved files.
+  const lists = { saved: localVersions, new: newVersions, hidden: hiddenVersions };
+  const order = (item.versionOrder || [
+    ...newVersions.map((_, i) => ["new", i]),
+    ...hiddenVersions.map((_, i) => ["hidden", i]),
+    ...localVersions.map((_, i) => ["saved", i]),
+  ]).filter(([kind, index]) => lists[kind]?.[index]);
+  const versionRows = order.map(([kind, index], position) => {
+    const v = lists[kind][index];
+    if (kind !== "saved") return renderRemoteVersionRow(item.modelId, v, kind === "hidden");
+    // Files of one model usually fail for one reason; print it once, under the
+    // last row of each run that shares it.
+    const [nextKind, nextIndex] = order[position + 1] || [];
+    const next = nextKind === "saved" ? localVersions[nextIndex] : null;
     const showMessage = !next || !ISSUE_LABELS[next.status] || issueMessage(next) !== issueMessage(v);
     return renderLocalVersionRow(v, showMessage);
   }).join("");
-
-  const newRows = newVersions.map((v) => renderRemoteVersionRow(item.modelId, v, false)).join("");
-  const hiddenRows = hiddenVersions.map((v) => renderRemoteVersionRow(item.modelId, v, true)).join("");
 
   const localPath = localVersions.find((v) => v.hasLocalPreview)?.modelPath || "";
   let thumbHtml;
@@ -1152,9 +1160,7 @@ function buildResultCard(item, cardIndex) {
         </div>
       </div>
       <div class="cu-versions">
-        ${localRows}
-        ${newRows}
-        ${hiddenRows}
+        ${versionRows}
       </div>
     </div>`;
   for (const el of card.querySelectorAll(".cu-copy-path")) {
