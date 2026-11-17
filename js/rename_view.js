@@ -31,6 +31,13 @@ const KEPT_REASONS = {
   "dry-run-again": "Run a new dry run to name it again",
 };
 
+/* Where the preview fallback found a file's info (the "found:<source>" flag), as in Updates. */
+const FOUND_SOURCES = {
+  "ai-toolkit": "your ai-toolkit training",
+  huggingface: "Hugging Face",
+  civarchive: "civarchive",
+};
+
 /* ---------------------------------------------------------------- pure helpers */
 
 export function createRenameStore() {
@@ -194,6 +201,12 @@ export function flagInfo(flag, row, rows) {
       };
     case "file-not-in-release":
       return { level: "info", text: "This file is not in the Civitai release (a conversion or a re-upload?)" };
+    case "found":
+      return {
+        level: "info",
+        text: `Not on Civitai: named from ${FOUND_SOURCES[arg] || arg || "another source"}, so this isn't ticked`,
+        action: /^https:\/\//i.test(String(row?.foundUrl || "")) ? "found-link" : undefined,
+      };
     case "collision": {
       const peers = collisionPeers(row, rows);
       if (!peers.length) return { level: "block", text: "Another file in this folder would get the same name" };
@@ -569,7 +582,7 @@ export function baseCodeEntries(baseCodes, rows) {
 /* Escaped text back to plain text ("doesn&#39;t" -> "doesn't"). */
 export function unescapeHtml(text) {
   return String(text ?? "")
-    .replace(/&#39;|&#x27;|&apos;/g, "'")
+    .replace(/&#0*39;|&#x0*27;|&apos;/gi, "'")
     .replace(/&quot;/g, '"')
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -1348,6 +1361,8 @@ export function renderRenameView(container, deps) {
     let label = row.metadataOnly ? "Metadata" : "Saved";
     if (dup) [role, label] = ["duplicate", "Duplicate"];
     else if (row.status === "error") [role, label] = ["error", "Error"];
+    // Named from info found outside Civitai: labelled like such a file in Updates.
+    else if ((row.flags || []).some((flag) => flagParts(flag)[0] === "found")) [role, label] = ["nomatch", "Found"];
     const copyTitle = deps.copyPathTitle ? deps.copyPathTitle(row.modelPath || "") : row.modelPath || "";
     const old = `<span class="cu-ver-link cu-copy-path cu-rn-old" data-rn-action="copy-path" title="${esc(copyTitle)}">${esc(row.oldStem)}</span>`;
     // A file filed under another base's folder moves to its base's: "→ pony/name".
@@ -1399,7 +1414,10 @@ export function renderRenameView(container, deps) {
       : messages.some((html) => html.includes('data-level="warn"')) ? "warn" : "info";
     const hintsOpen = store.openHints.has(row.key);
     // The hint's text for the tooltip: tags out, entities back to characters (it is escaped once more below).
-    const firstHint = messages.length ? unescapeHtml(messages[0].replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim() : "";
+    // The hint's buttons and links ("Open", "Base codes") are left out of it.
+    const firstHint = messages.length
+      ? unescapeHtml(messages[0].replace(/<(button|a)\b[^>]*>[\s\S]*?<\/\1>/g, "").replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim()
+      : "";
     const hintButton = messages.length
       ? `<button class="cu-rn-hint-btn" data-rn-action="toggle-hints" data-level="${level}" aria-expanded="${hintsOpen}" title="${esc(messages.length > 1 ? `${firstHint} (+${messages.length - 1} more)` : firstHint)}">!${messages.length > 1 ? `<span>${messages.length}</span>` : ""}</button>`
       : "";
@@ -1425,6 +1443,8 @@ export function renderRenameView(container, deps) {
       }
     } else if (info.action === "base-link") {
       action = ` <button class="cu-text-btn" data-rn-action="base-link" data-rn-base="${esc(row.baseModel || "")}">Base codes</button>`;
+    } else if (info.action === "found-link") {
+      action = ` <a class="cu-text-btn" href="${esc(row.foundUrl)}" target="_blank" rel="noreferrer noopener" title="${esc(row.foundUrl)}">Open</a>`;
     }
     return `<div class="cu-issue-msg" data-level="${info.level}">${esc(info.text)}${action}</div>`;
   }

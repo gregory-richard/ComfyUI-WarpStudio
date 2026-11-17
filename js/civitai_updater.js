@@ -2629,6 +2629,10 @@ function injectStyles() {
       transition: color 0.15s ease;
     }
 
+    a.cu-text-btn {
+      text-decoration: none;
+    }
+
     .cu-text-btn:hover {
       color: var(--cu-bone);
       text-decoration: underline;

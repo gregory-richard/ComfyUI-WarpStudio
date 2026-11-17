@@ -71,6 +71,22 @@ def invented_words(source: str, answer_parts: List[str]) -> List[str]:
     return invented
 
 
+_ONE_LOWERCASE_WORD = re.compile(r"[a-z]{8,}")
+
+
+def run_together(source_title: str, answer_title: str) -> str:
+    """The source title when it is one long lowercase word ("noraellwood") that the answer's title
+    keeps whole, else "".
+
+    Such a title (a slug from outside Civitai) may run words or a name together.
+    Whether it does is the AI's call: it is asked once, never overruled or flagged.
+    """
+    title = (source_title or "").strip()
+    if not _ONE_LOWERCASE_WORD.fullmatch(title):
+        return ""
+    return title if title in (answer_title or "").lower().split() else ""
+
+
 def maker_in_description(maker: str, description: str) -> bool:
     """True when the maker's name appears in the description (spelling may differ)."""
     compact_maker = _compact(maker)
