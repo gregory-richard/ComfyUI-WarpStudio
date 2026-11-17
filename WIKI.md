@@ -430,8 +430,6 @@ flagged safe.
 
 The sidebar tab **Civitai** checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models.
 
-![The Civitai panel in the ComfyUI sidebar](assets/docs/panel-sidebar.png)
-
 Base models are grouped by family, because Civitai records one per version and the spellings multiply: `Flux.1 D`, `Flux.2 Klein 9B` and `Flux.2 Klein 9B-base` all file under **Flux**, while every row still prints its exact base. A version counts as **new** when its `publishedAt` date (or `createdAt`, when `publishedAt` is missing) is later than the newest local version you have of that model, not by version number.
 
 

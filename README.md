@@ -137,8 +137,6 @@ Civitai panel (below) keeps next to your models.
 The **Civitai** tab in ComfyUI's sidebar checks the models on your disk against
 their Civitai releases and lists the ones that have moved on without you.
 
-![The Civitai panel in the ComfyUI sidebar](assets/docs/panel-sidebar.png)
-
 It identifies each file by its SHA256 hash, reads the `.civitai.info` files you
 already have, and writes only `.civitai.info` and `.preview.png` files next to
 your models. Checking downloads no model; a card links you to the release page.
@@ -230,8 +228,7 @@ release, is in the [changelog](CHANGELOG.md).
 ## Credits
 
 Screenshots use demo LoRAs and stand-in images, not anyone's real models. The
-panel screenshot lists real, publicly listed Civitai models with stand-in
-thumbnails. The panel builds on ideas from
+Civitai panel builds on ideas from
 [Stable-Diffusion-Webui-Civitai-Helper](https://github.com/zixaphir/Stable-Diffusion-Webui-Civitai-Helper).
 Developed with AI assistance (GPT-5.3-Codex, Claude Opus 4.6, Claude Opus 5).
 [MIT License](LICENSE).
