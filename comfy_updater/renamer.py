@@ -7,6 +7,7 @@ Civitai, the remembered decisions or the AI, and a failed check flags the row.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
 import os
 from pathlib import Path
 import queue
@@ -84,6 +85,8 @@ class Entry:
     has_weights: bool
     # Size and mtime of ``path`` now; apply skips the entry when they changed.
     identity: dict = field(default_factory=dict)
+    # Where the preview fallback found this file's info ({"source", "url"}); {} when it didn't.
+    found: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -99,6 +102,8 @@ class ModelGroup:
     model: dict
     placed: List[Placed] = field(default_factory=list)
     slots_by_key: Dict[str, List[Placed]] = field(default_factory=dict)
+    # Named from the info the preview fallback found, not from Civitai.
+    found: bool = False
 
 
 def _identifier(value) -> str:
@@ -107,8 +112,41 @@ def _identifier(value) -> str:
     return str(value).strip()
 
 
+FOUND_ID_PREFIX = "found:"
+
+
+def _found_record(info: dict) -> dict:
+    """Where the preview fallback found this info file's fields: {"source", "url"}, or {}."""
+    record = _as_dict(_as_dict(info.get("extensions")).get("fallback"))
+    source = _text(record.get("source")).strip()
+    return {"source": source, "url": _text(record.get("url")).strip()} if source else {}
+
+
+def _id_word(text: str) -> str:
+    """A name as it goes into a model id: letters and digits only, else a short hash of it."""
+    word = _NOT_WORD.sub("", text.lower())
+    return word or hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:12]
+
+
+def _found_identity(info: dict, found: dict, sha256: str, path: Path) -> Optional[Tuple[str, str]]:
+    """(model id, version id) for a file only the fallback identified, or None without a title to name it by.
+
+    One creator's title is one model, whatever source or base its files came
+    from; a file is its version, by hash, so the ids survive a rename.
+    """
+    title = _text(_as_dict(info.get("model")).get("name")).strip()
+    if not title:
+        return None
+    creator = _text(_as_dict(info.get("creator")).get("username")).strip()
+    source = _NOT_WORD.sub("", found["source"].lower()) or "elsewhere"
+    model_id = f"{FOUND_ID_PREFIX}{source}/{_id_word(creator)}/{_id_word(title)}"
+    version_id = f"sha256:{sha256.lower()}" if sha256 else path_file_key(path)
+    return model_id, version_id
+
+
 def collect_entries(roots: Dict[str, List[Path]]) -> List[Entry]:
-    """Every entry with a Civitai identity in the renamed folders, weights or metadata-only."""
+    """Every entry with a Civitai identity, or with info the preview fallback found, in the renamed
+    folders, weights or metadata-only."""
     rename_roots = {model_type: paths for model_type, paths in roots.items() if model_type in RENAME_TYPES}
     entries: List[Entry] = []
     # Overlapping roots (one folder registered under two types, nested roots) list a file twice.
@@ -120,8 +158,13 @@ def collect_entries(roots: Dict[str, List[Path]]) -> List[Entry]:
             continue
         model_id = _identifier(info.get("modelId"))
         version_id = _identifier(info.get("id"))
+        found = _found_record(info)
+        sha256 = _stored_sha256(info)
         if not model_id or not version_id:
-            continue
+            identity = _found_identity(info, found, sha256, path) if found else None
+            if identity is None:
+                continue
+            model_id, version_id = identity
         if metadata_only:
             stem = path.name[: -len(INFO_SIDECAR_SUFFIX)]
         else:
@@ -136,9 +179,10 @@ def collect_entries(roots: Dict[str, List[Path]]) -> List[Entry]:
                 info=info,
                 model_id=model_id,
                 version_id=version_id,
-                sha256=_stored_sha256(info),
+                sha256=sha256,
                 has_weights=not metadata_only,
                 identity=_identity(path),
+                found=found,
             )
         )
     return entries
@@ -396,24 +440,82 @@ def _by_model(entries: List[Entry]) -> Dict[str, List[Entry]]:
 def _classify_model(
     model_id: str, model_entries: List[Entry], client, decisions: DecisionStore
 ) -> Tuple[Optional[ModelGroup], List[dict]]:
-    """Fetch one model and sort all its entries: the group to name (or None) and its finished rows."""
+    """Fetch one model and sort all its entries: the group to name (or None) and its finished rows.
+
+    A model Civitai no longer serves is named from the info the preview fallback
+    found for its files; its other files keep their names. A model only the
+    fallback knows is never fetched.
+    """
     model_entries = sorted(model_entries, key=lambda e: (str(e.folder).lower(), e.stem.lower(), e.stem))
+    if model_id.startswith(FOUND_ID_PREFIX):
+        return _sort_or_error(model_id, _found_model(model_id, model_entries), model_entries, decisions, found=True)
     try:
         model = client.get_model(model_id, raise_on_error=True)
         if not isinstance(model, dict):
             raise CivitaiRequestError(f"Civitai returned no data for model {model_id}")
     except CivitaiRequestError as exc:
-        not_found = getattr(exc, "status", None) == 404
-        rows = []
-        for entry in model_entries:
-            status, reason = ("kept", "not-on-civitai") if not_found else ("error", str(exc))
-            rows.append(_finished_row(entry, path_file_key(entry.path), status, reason))
-        return None, rows
+        if getattr(exc, "status", None) != 404:
+            return None, [_finished_row(entry, path_file_key(entry.path), "error", str(exc)) for entry in model_entries]
+        found = [entry for entry in model_entries if entry.found]
+        rows = [
+            _finished_row(entry, path_file_key(entry.path), "kept", "not-on-civitai")
+            for entry in model_entries if not entry.found
+        ]
+        if not found:
+            return None, rows
+        group, found_rows = _sort_or_error(model_id, _found_model(model_id, found), found, decisions, found=True)
+        return group, rows + found_rows
+    return _sort_or_error(model_id, model, model_entries, decisions)
+
+
+def _sort_or_error(
+    model_id: str, model: dict, model_entries: List[Entry], decisions: DecisionStore, *, found: bool = False
+) -> Tuple[Optional[ModelGroup], List[dict]]:
     try:
-        return _sort_model(model_id, model, model_entries, decisions)
+        return _sort_model(model_id, model, model_entries, decisions, found=found)
     except Exception as exc:  # noqa: BLE001 - one model's odd live data must not end the run
         reason = str(exc) or type(exc).__name__
         return None, [_finished_row(entry, path_file_key(entry.path), "error", reason, model) for entry in model_entries]
+
+
+def _found_version_name(info: dict) -> str:
+    """The info's version name; the fallback's placeholder (the file's own name) is none."""
+    name = _text(info.get("name")).strip()
+    return "" if os.path.splitext(name)[1].lower() in SUPPORTED_MODEL_EXTENSIONS else name
+
+
+def _found_model(model_id: str, entries: List[Entry]) -> dict:
+    """The model as the info files the preview fallback filled describe it, shaped like Civitai's.
+
+    Every entry's file is a version of its own (several copies of one file share
+    it); its files list is empty, as no live file list exists to match against.
+    """
+
+    def first(read) -> str:
+        for entry in entries:
+            value = _text(read(entry.info)).strip()
+            if value:
+                return value
+        return ""
+
+    versions: List[dict] = []
+    for entry in entries:
+        if any(version["id"] == entry.version_id for version in versions):
+            continue
+        versions.append({
+            "id": entry.version_id,
+            "name": _found_version_name(entry.info),
+            "baseModel": _text(entry.info.get("baseModel")).strip(),
+            "files": [],
+        })
+    return {
+        "id": model_id,
+        "name": first(lambda info: _as_dict(info.get("model")).get("name")),
+        "creator": {"username": first(lambda info: _as_dict(info.get("creator")).get("username"))},
+        "description": first(lambda info: info.get("description")),
+        "nsfw": any(_as_dict(entry.info.get("model")).get("nsfw") is True for entry in entries),
+        "modelVersions": versions,
+    }
 
 
 def classify(
@@ -445,9 +547,12 @@ def classify(
 
 
 def _sort_model(
-    model_id: str, model: dict, model_entries: List[Entry], decisions: DecisionStore
+    model_id: str, model: dict, model_entries: List[Entry], decisions: DecisionStore, *, found: bool = False
 ) -> Tuple[Optional[ModelGroup], List[dict]]:
-    """One fetched model's entries: the group to name (or None) and its finished rows."""
+    """One fetched model's entries: the group to name (or None) and its finished rows.
+
+    ``found``: the model is built from found info, which has no type to check the folder against.
+    """
     rows: List[dict] = []
     live_type = model.get("type")
     placed: List[Placed] = []
@@ -460,7 +565,7 @@ def _sort_model(
         file_key = f"file:{_identifier(matched.get('id'))}" if matched and _identifier(matched.get("id")) else ""
         if not file_key:
             file_key = path_file_key(entry.path)
-        if live_type not in TYPE_FIT.get(entry.model_type, set()):
+        if not found and live_type not in TYPE_FIT.get(entry.model_type, set()):
             rows.append(_finished_row(entry, file_key, "kept", "type-mismatch", model))
             continue
         if matched is not None and matched.get("type") not in MAIN_FILE_TYPES:
@@ -475,7 +580,7 @@ def _sort_model(
     rows.extend(duplicate_rows)
     if not placed:
         return None, rows
-    return ModelGroup(model_id=model_id, model=model, placed=placed, slots_by_key=_slots(placed)), rows
+    return ModelGroup(model_id=model_id, model=model, placed=placed, slots_by_key=_slots(placed), found=found), rows
 
 
 # --- Naming -----------------------------------------------------------------
@@ -979,7 +1084,10 @@ def _group_rows(
             if _is_official_file(placed) and not maker_found:
                 # An official model re-uploaded: the uploader is rarely its maker.
                 flags.append("maker-unknown")
-            if placed.file is None and entry.sha256:
+            if group.found:
+                # Not Civitai's data: the user judges it, so the file starts unticked.
+                flags.append(f"found:{entry.found.get('source') or 'elsewhere'}")
+            elif placed.file is None and entry.sha256:
                 flags.append("file-not-in-release")
             new_stem = assemble(parts)
             status = "unchanged" if new_stem == entry.stem else "change"
@@ -1009,6 +1117,7 @@ def _group_rows(
                     # The live Civitai uploader, whoever the name credits.
                     "uploader": pending.model_input.creator,
                     "metadataOnly": entry.metadata_only,
+                    **({"foundUrl": entry.found.get("url", "")} if group.found else {}),
                     **_preview_fields(entry, group.model),
                     **entry.identity,
                 }

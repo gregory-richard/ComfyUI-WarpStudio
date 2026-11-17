@@ -514,15 +514,20 @@ class PreviewFallbackTests(unittest.TestCase):
             self.assertFalse(preview_sidecar_path(model).exists())
         self.assertEqual(self.misses(), {})  # own trainings are local and never remembered
 
-    def test_fallback_stub_is_not_a_renamer_entry(self):
+    def test_filled_stub_is_a_renamer_entry_of_its_own(self):
         write_json(self.info_path, stub())
         self.sources.queue("huggingface", hf_result())
         self.run_on(self.fallback())
 
         known = self.model_file("known")
         write_json(info_sidecar_path(known), {"id": 88, "modelId": 77, "name": "v1"})
-        paths = [entry.path for entry in renamer.collect_entries({"lora": [self.lib]})]
-        self.assertEqual(paths, [known])
+        entries = {entry.path: entry for entry in renamer.collect_entries({"lora": [self.lib]})}
+        self.assertEqual(set(entries), {known, self.model})
+        found = entries[self.model]
+        self.assertEqual(found.found, {"source": "huggingface", "url": "https://huggingface.co/example/repo"})
+        self.assertTrue(found.model_id.startswith(renamer.FOUND_ID_PREFIX))
+        self.assertEqual(entries[known].found, {})
+        self.assertEqual(entries[known].model_id, "77")
 
     def test_text_is_capped(self):
         self.sources.queue(

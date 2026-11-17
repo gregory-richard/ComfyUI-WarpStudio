@@ -20,6 +20,7 @@ from comfy_updater.naming_ai import (
     split_group_answer,
     without_precision,
 )
+from comfy_updater.naming_check import invented_words
 
 
 def two_slot_model() -> ModelInput:
@@ -314,6 +315,40 @@ class NamingAiTests(unittest.TestCase):
         )
         self.assertRegex(naming_ai.PROMPT_VERSION, r"^[0-9a-f]{12}$")
         self.assertIn("version 1:", naming_ai.SYSTEM_PROMPT)
+
+    def test_every_worked_example_passes_the_invented_check(self):
+        for question, answer in prompt_examples():
+            with self.subTest(question.splitlines()[1]):
+                self.assertEqual(invented_words(example_source(question), example_parts(answer)), [])
+
+
+def prompt_examples() -> list[tuple[str, str]]:
+    """The system prompt's worked examples as (question, answer) text."""
+    blocks = naming_ai.SYSTEM_PROMPT.split("\nExamples:\n", 1)[1].strip().split("\n\n")
+    examples = []
+    for block in blocks:
+        lines = block.splitlines()
+        cut = next(index for index, line in enumerate(lines) if line.startswith("title:"))
+        examples.append(("\n".join(lines[:cut]), "\n".join(lines[cut:])))
+    return examples
+
+
+def example_source(question: str) -> str:
+    """What the renamer checks an answer against: the title, version names and file names."""
+    parts = []
+    for line in question.splitlines():
+        if line.startswith("Model title: "):
+            parts.append(line[len("Model title: "):])
+        elif line[:1].isdigit():
+            parts.append(line.split(". ", 1)[1].replace("[base:", "").replace("[file:", ""))
+    return "\n".join(parts)
+
+
+def example_parts(answer: str) -> list[str]:
+    return [
+        line.split(":", 1)[1].strip() for line in answer.splitlines()
+        if line.startswith("title:") or line.startswith("version ")
+    ]
 
 
 def one_slot_model(model_id: str, title: str) -> ModelInput:
