@@ -710,9 +710,10 @@ the request and questions, the prompt it edited, the system prompt's text as the
 server read it, kept once per chat in `systemPrompts`, and the thinking), **Use as
 input** (also a click on its dot in the graph; the chosen dot has a ring),
 **Retry** (writes it again at once and replaces it in place, not once others were made
-from it), **Recreate** (the same request as a new version beside it; both use the
-settings chosen now), **Change the request** and **Delete** (with those made from it,
-after asking). Version numbers are saved, so a deleted one leaves a gap.
+from it), **Recreate** (opens its request in a field where it was shown, to change or
+not, and writes a new version beside it from the same base and images; unchanged, the
+answers and title go along; both use the settings chosen now) and **Delete** (with
+those made from it, after asking). Version numbers are saved, so a deleted one leaves a gap.
 
 **Questions:** the LLM is told to start a reply that asks instead of writing with
 `===QUESTION===`. That reply is a **Question** card, not a version; the send button then

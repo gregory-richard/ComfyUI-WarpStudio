@@ -457,6 +457,13 @@ body:has(.wpw-backdrop) .p-toast { z-index: 1500 !important; }
 /* Your request on an open version: quiet, with a rule so it does not read as the prompt. */
 .wpw-request { padding: 2px 0 2px 10px; border-left: 2px solid var(--wpw-line); font-size: 13px; }
 .wpw-request .wpw-thumbs { margin: 6px 0 2px; }
+/* Recreate: the request in a field of its own, in the place where it was shown. */
+.wpw-modal .wpw-recreate-input {
+  display: block; width: 100%; box-sizing: border-box; margin: 0; padding: 6px 10px; resize: none;
+  font-size: 13px; line-height: 19px; background: var(--wpw-ground); border-radius: 6px; outline: none;
+  border: 1px solid color-mix(in srgb, var(--wpw-warp) 70%, transparent);
+}
+.wpw-recreate-row { display: flex; justify-content: flex-end; gap: 6px; margin: 8px 0 2px; }
 .wpw-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
 .wpw-thumbs img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; display: block; }
 .wpw-hint-line { margin-top: 8px; font-size: 12px; color: var(--wpw-muted); }
@@ -1182,11 +1189,11 @@ function startWrite(chat) {
 }
 
 /**
- * A version the AI wrote, written again from its own request, base, images and
- * answered questions: over itself (Retry), or as a new version beside it
- * (Recreate). Sent at once.
+ * A version the AI wrote, written again from its own base and images: over
+ * itself with its own request and answers (Retry), or as a new version beside
+ * it (Recreate), with the request as it was or as you changed it. Sent at once.
  */
-function writeAgainNow(chat, version, { replace }) {
+function writeAgainNow(chat, version, { replace, request = version.request }) {
   if (jobs.has(chat.id) || chat.pending) return;
   flushEdits();
   refreshTargets();
@@ -1199,24 +1206,33 @@ function writeAgainNow(chat, version, { replace }) {
     setNote(chat.id, followedTitle(version.n), true);
     return;
   }
+  const asked = String(request ?? "").trim();
+  const changed = asked !== String(version.request ?? "").trim();
+  if (!asked && !version.baseId) {
+    setNote(chat.id, "Type what you want first.", true);
+    return;
+  }
   const { images, note } = imagesFor(version.images);
   const baseText = chat.versions.find((v) => v.id === version.baseId)?.text ?? "";
   const spec = writeSpec(
     chat,
     {
-      request: version.request,
+      request: changed ? asked : version.request,
       baseId: version.baseId,
       replaceId: replace ? version.id : null,
-      turns: version.questions,
+      // The answers were to its own request; a changed one may be asked again.
+      turns: changed ? [] : version.questions,
       answer: null,
       baseText,
     },
     images
   );
   spec.titleAsked = true;
-  spec.fromVersion = true;
   // Same request, same title: a Retry keeps its own, a Recreate takes it along.
-  spec.title = version.title;
+  // A changed request is a request of its own: it is named, and a Stop puts it in the input.
+  spec.fromVersion = !changed;
+  spec.title = changed ? null : version.title;
+  if (view.recreating?.id === version.id) view.recreating = null;
   draftOf(chat.id).note = note;
   launch(chat, spec);
 }
@@ -1519,17 +1535,6 @@ function focusComposer() {
   renderNote();
   view.input.focus();
   view.input.setSelectionRange(view.input.value.length, view.input.value.length);
-}
-
-/**
- * A request written again: into the input with its images and what it edited.
- * Nothing leaves the chat; what is sent becomes the next version.
- */
-function writeAgain(chat, version) {
-  if (jobs.has(chat.id) || chat.pending) return;
-  flushEdits();
-  fillDraft(chat, version);
-  focusComposer();
 }
 
 /** The request of a step that waits for an answer goes back into the input instead. */
@@ -2409,7 +2414,11 @@ function metaParts(chat, version) {
   if (!row.length) return [];
   return [
     el("div", { class: "wpw-meta" }, ...row),
-    request && !view.requestClosed.has(version.id) ? requestPanel(version) : null,
+    request && !view.requestClosed.has(version.id)
+      ? view.recreating?.id === version.id
+        ? recreatePanel(chat, version)
+        : requestPanel(version)
+      : null,
     view.loras.has(version.id) && loraToggle(version) ? loraPanel(chat, version) : null,
   ];
 }
@@ -2446,6 +2455,86 @@ function requestPanel(version) {
     ),
     stepTurns({ images: version.images })
   );
+}
+
+/**
+ * Recreate: the request in a field where it was shown, as it was, to change
+ * or not. Recreate sends it as a new version from the same version, with the
+ * same images and the settings chosen now.
+ */
+function recreatePanel(chat, version) {
+  const editing = view.recreating;
+  const waiting = jobs.has(chat.id)
+    ? "Wait for the write in progress to finish"
+    : chat.pending
+      ? "Answer the question below first"
+      : null;
+  const send = () => writeAgainNow(chat, version, { replace: false, request: editing.text });
+  const input = el("textarea", {
+    class: "wpw-recreate-input",
+    rows: 1,
+    value: editing.text,
+    placeholder: "Optimise the prompt",
+    "aria-label": `Request for a new version beside v${version.n}`,
+    onInput: () => {
+      editing.text = input.value;
+      fitRecreate(input);
+    },
+    onKeydown: (event) => {
+      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      if (!waiting) send();
+    },
+  });
+  const go = button(
+    "Recreate",
+    send,
+    "wpw-btn wpw-primary",
+    waiting ?? "Write a new version (Ctrl+Enter)"
+  );
+  go.disabled = !!waiting;
+  view.recreateInput = input;
+  return el(
+    "div",
+    { class: "wpw-panel wpw-request is-editing" },
+    input,
+    stepTurns({ images: version.images }),
+    el("div", { class: "wpw-recreate-row" }, button("Cancel", endRecreate), go)
+  );
+}
+
+// Ten lines; a longer request scrolls in its field.
+const RECREATE_MAX_HEIGHT = 10 * 19 + 14;
+
+function fitRecreate(input) {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight + 2, RECREATE_MAX_HEIGHT)}px`;
+}
+
+/** Recreate from the ⋮: the version opens with its request ready to change. */
+function beginRecreate(chat, version) {
+  if (jobs.has(chat.id) || chat.pending) return;
+  flushEdits();
+  view.requestClosed.delete(version.id);
+  keepInPlace(version.id, () => {
+    view.open = version.id;
+    view.recreating = { id: version.id, text: version.request ?? "" };
+    renderConvo(false);
+  });
+  const input = view.recreateInput;
+  if (!input?.isConnected) return;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+/** Cancel, Esc, or another version opened: the request is shown again as it was. */
+function endRecreate() {
+  const id = view.recreating?.id;
+  if (!id) return;
+  keepInPlace(id, () => {
+    view.recreating = null;
+    renderConvo(false);
+  });
 }
 
 /** The changes: marked in the text, or side by side when most of it is new. */
@@ -2580,8 +2669,8 @@ function menuItem(name, label, { sub = null, onClick, disabled = false, danger =
 
 /**
  * The ⋮ menu of a version: its generation info and using it as the input;
- * Retry and Recreate side by side, each saying what it does; changing its
- * request; and deleting it, which asks first in the menu itself.
+ * Retry and Recreate side by side, each saying what it does; and deleting it,
+ * which asks first in the menu itself.
  */
 function openVersionMenu(chat, version, anchor) {
   if (view.popover?.versionId === version.id) {
@@ -2632,15 +2721,9 @@ function openVersionMenu(chat, version, anchor) {
       }),
     written &&
       menuItem("pi-clone", "Recreate", {
-        sub: waiting ?? `Write it again as a new version. v${n} stays`,
+        sub: waiting ?? `Change the request if you like, then a new version. v${n} stays`,
         disabled: !!waiting,
-        onClick: act(() => writeAgainNow(chat, version, { replace: false })),
-      }),
-    written &&
-      menuItem("pi-undo", "Change the request", {
-        sub: waiting ?? "Put it back into the input to edit first",
-        disabled: !!waiting,
-        onClick: act(() => writeAgain(chat, version)),
+        onClick: act(() => beginRecreate(chat, version)),
       }),
     rule(),
     menuItem("pi-trash", `Delete v${n}`, {
@@ -2712,6 +2795,8 @@ function toggleOpen(chat, version) {
   const next = openVersionId(chat) === version.id ? NONE_OPEN : version.id;
   keepInPlace(version.id, () => {
     view.open = next;
+    // Closing the card you were recreating from lets the change go.
+    view.recreating = null;
     renderConvo(false);
   });
 }
@@ -2791,6 +2876,12 @@ function svgEl(tag, attrs = {}) {
 function renderConvo(stick) {
   flushEdits();
   const chat = currentChat();
+  // Drawn again while you type in Recreate's field, the field keeps the caret.
+  const typing =
+    document.activeElement === view.recreateInput
+      ? [view.recreateInput.selectionStart, view.recreateInput.selectionEnd]
+      : null;
+  view.recreateInput = null;
   view.editors = [];
   view.live = null;
   view.graph = null;
@@ -2904,6 +2995,14 @@ function renderConvo(stick) {
     alignComposer();
   }
   for (const { editor } of view.editors) fitEditor(editor);
+  const field = view.recreateInput;
+  if (field?.isConnected) {
+    fitRecreate(field);
+    if (typing) {
+      field.focus({ preventScroll: true });
+      field.setSelectionRange(...typing);
+    }
+  }
   drawGraph();
   view.convo.scrollTop = stick ? view.convo.scrollHeight : top;
 }
@@ -3258,6 +3357,7 @@ function selectChat(id) {
   view.confirmDelete = null;
   // A chat opens on its newest version.
   view.open = null;
+  view.recreating = null;
   closeInfo();
   const chosen = store.chats.find((chat) => chat.id === id);
   if (chosen) followOpenedNode(chosen);
@@ -3355,6 +3455,7 @@ function removeVersion(chat, version) {
   const draft = draftOf(chat.id);
   if (gone.includes(draft.base)) draft.base = null;
   if (gone.includes(view.open)) view.open = null;
+  if (gone.includes(view.recreating?.id)) view.recreating = null;
   for (const id of gone) {
     for (const set of [view.changes, view.thinking, view.loras, view.requestClosed]) set.delete(id);
     view.successor.delete(id);
@@ -3814,6 +3915,7 @@ function dismiss() {
   if (view.popover) closePopover();
   else if (view.info) closeInfo();
   else if (view.renaming) view.renaming.cancel();
+  else if (view.recreating) endRecreate();
   else closeView();
 }
 
@@ -4046,6 +4148,9 @@ function buildView(promptNode) {
     loras: new Set(),
     // Versions whose request you closed: it is open on every version until then.
     requestClosed: new Set(),
+    // Recreate's field while it is open: { id of the version, the request as typed }.
+    recreating: null,
+    recreateInput: null,
     // The generation info, while it is open.
     info: null,
     // version id → the hand edit typing made of it, so a press on its card acts on that.
