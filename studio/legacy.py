@@ -110,7 +110,9 @@ def stand_down_message(found: list[OldPackage]) -> str:
     else:
         subject, rest = " and ".join(names), "them"
         verb = "are"
+    # Never "remove": uninstalling Civitai Updater before Warp Studio has started
+    # once deletes the updater data kept in its package folder.
     return (
         f"Warp Studio is installed but switched off, because {subject} {verb} still "
-        f"installed. Update or remove {rest} in the Manager, then restart."
+        f"installed. Update {rest} in the Manager, or disable {rest} there, then restart."
     )

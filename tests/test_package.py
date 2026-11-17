@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -101,3 +102,39 @@ def test_package_loads_when_detection_raises(package_loader, monkeypatch, tmp_pa
     monkeypatch.setattr(pathlib.Path, "iterdir", boom)
     package = package_loader()
     assert set(package.NODE_CLASS_MAPPINGS) == EXPECTED
+
+
+def test_civitai_updater_192_is_active(package_loader, monkeypatch, tmp_path):
+    import sys
+
+    _, user = _fake_folder_paths(
+        monkeypatch, tmp_path, [("civitai-updater", "civitai-updater", "1.9.2")]
+    )
+    package = package_loader()
+    assert package.NODE_CLASS_MAPPINGS == {}
+    assert package.NODE_DISPLAY_NAME_MAPPINGS == {}
+    assert package.WEB_DIRECTORY == "./standdown"
+    assert f"{package.__name__}.comfy_updater.plugin" not in sys.modules
+    assert not (user / "warp-studio" / "migrated.json").exists()
+
+
+def test_package_runs_and_migrates_beside_goodbye_releases(package_loader, monkeypatch, tmp_path):
+    custom, user = _fake_folder_paths(
+        monkeypatch,
+        tmp_path,
+        [("warppipe", "warppipe", "5.1.0"), ("civitai-updater", "civitai-updater", "1.10.0")],
+    )
+    updater = custom / "civitai-updater"
+    (updater / "comfy_updater").mkdir()
+    (updater / "comfy_updater" / "plugin.py").write_text("# plugin\n", encoding="utf-8")
+    (updater / ".civitai_updater").mkdir()
+    (updater / ".civitai_updater" / "config.json").write_text('{"apiKey": "x"}', encoding="utf-8")
+
+    package = package_loader()
+    assert set(package.NODE_CLASS_MAPPINGS) == EXPECTED
+    assert set(package.NODE_DISPLAY_NAME_MAPPINGS) == EXPECTED
+    assert package.WEB_DIRECTORY == "./web"
+    # The updater loads the copied config at once and writes it back with its defaults.
+    copied = user / "warp-studio" / "updater" / "config.json"
+    assert json.loads(copied.read_text(encoding="utf-8"))["apiKey"] == "x"
+    assert (user / "warp-studio" / "migrated.json").is_file()

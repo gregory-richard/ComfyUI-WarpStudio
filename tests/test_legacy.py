@@ -31,6 +31,12 @@ def test_warppipe_500_is_active(dirs):
     assert find_active_old_packages([custom], own) == [OldPackage("warppipe", "5.0.0", path)]
 
 
+def test_civitai_updater_192_is_active(dirs):
+    custom, own = dirs
+    path = make(custom, "civitai-updater", "civitai-updater", "1.9.2")
+    assert find_active_old_packages([custom], own) == [OldPackage("civitai-updater", "1.9.2", path)]
+
+
 def test_folder_name_doesnt_matter(dirs):
     custom, own = dirs
     make(custom, "ComfyUI-WarpPipe", "warppipe", "4.1.1")
@@ -75,7 +81,7 @@ def test_message_one(tmp_path):
     msg = stand_down_message([OldPackage("warppipe", "5.0.0", tmp_path)])
     assert msg == (
         "Warp Studio is installed but switched off, because WarpPipe 5.0.0 is still "
-        "installed. Update or remove it in the Manager, then restart."
+        "installed. Update it in the Manager, or disable it there, then restart."
     )
 
 
@@ -88,8 +94,8 @@ def test_message_two(tmp_path):
     )
     assert msg == (
         "Warp Studio is installed but switched off, because WarpPipe 5.0.0 and "
-        "Civitai Updater 1.9.2 are still installed. Update or remove them in the "
-        "Manager, then restart."
+        "Civitai Updater 1.9.2 are still installed. Update them in the Manager, or "
+        "disable them there, then restart."
     )
 
 
@@ -127,5 +133,5 @@ def test_message_without_version(tmp_path):
     msg = stand_down_message([OldPackage("warppipe", "unknown", tmp_path)])
     assert msg == (
         "Warp Studio is installed but switched off, because WarpPipe is still "
-        "installed. Update or remove it in the Manager, then restart."
+        "installed. Update it in the Manager, or disable it there, then restart."
     )

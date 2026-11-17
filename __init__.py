@@ -20,7 +20,7 @@ def _run_data_migration() -> None:
             Path(__file__).resolve().parent,
         )
     except Exception as exc:
-        logging.getLogger("WarpStudio").warning("Data migration failed: %s", exc)
+        logging.getLogger("WarpStudio").warning("Data migration failed: %s", exc, exc_info=True)
 
 
 # --- end data migration ---

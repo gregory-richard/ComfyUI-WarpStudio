@@ -68,11 +68,14 @@ Python.
 ### Coming from WarpPipe or Civitai Updater
 
 1. Install Warp Studio.
-2. Update the old package, or remove it. Warp Studio switches itself off, with a
-   message, while WarpPipe before 5.1.0 or Civitai Updater before 1.10.0 is
-   still active. The nodes, the panel and the routes would otherwise register
-   twice.
+2. Update the old package in the Manager, or disable it there. The old and new
+   packages must not both be active: the nodes, the panel and the routes would
+   register twice. While WarpPipe before 5.1.0 or Civitai Updater before 1.10.0
+   is still active, Warp Studio switches itself off, with a message, until the
+   old one is updated or disabled.
 3. Restart ComfyUI.
+
+Don't uninstall Civitai Updater until Warp Studio has started once: your updater data lives in its folder and is copied on that first start.
 
 On the first start, Warp Studio copies your data to its own names. It copies and
 never moves, never overwrites a file that is already there, and leaves the old
@@ -81,12 +84,12 @@ files in place. If a copy fails, it tries again on the next start.
 | Was | Now |
 | --- | --- |
 | settings `WarpPipe.*` | `WarpStudio.*` |
-| the updater's settings, which began `Civitai` + `Updater.` | `WarpStudio.Updater.*` |
-| `user/warppipe_llm_keys.json`, `warppipe_llm_log.jsonl`, `warppipe_hashes.json` | `user/warp-studio/llm_keys.json`, `llm_log.jsonl`, `hashes.json` |
-| `warp_studio_prompt_chats.json`, per ComfyUI user | `warp_studio_prompt_chats.json` |
-| the updater's `.civitai_updater/` folder in its package | `user/warp-studio/updater/` |
-| routes `/warp-studio/...` | `/warp-studio/...` |
-| the updater's routes, under its own `civitai-updater` prefix | `/warp-studio/updater/...` |
+| settings `CivitaiUpdater.*` | `WarpStudio.Updater.*` |
+| `user/warppipe_llm_keys.json`, `user/warppipe_llm_log.jsonl`, `user/warppipe_hashes.json` | `user/warp-studio/llm_keys.json`, `user/warp-studio/llm_log.jsonl`, `user/warp-studio/hashes.json` |
+| `warppipe_prompt_chats.json`, per ComfyUI user | `warp_studio_prompt_chats.json` |
+| `<package>/.civitai_updater/` (the updater's package folder) | `user/warp-studio/updater/` |
+| routes `/warppipe/...` | `/warp-studio/...` |
+| routes `/civitai-updater/...` | `/warp-studio/updater/...` |
 
 Settings appear under **Warp Studio** in ComfyUI's settings; the updater's
 groups are "Civitai Network", "Civitai General", "Civitai Path Sources",
@@ -642,8 +645,9 @@ too old to have Generate Text cannot run the renamer; the view says so.
    any part, or **Ask again** to let the naming model name the model afresh on
    the next dry run. The checkbox decides whether a file is renamed: a file you
    untick keeps its name, also in later dry runs, until you tick it again.
-3. **Apply selected** renames the ticked rows and moves the extra copies to the
-   Recycle Bin.
+3. **Apply.** The button says what it will do, as in **Rename 12 · remove 2**,
+   and asks once; **Apply** then renames the ticked rows and moves the extra
+   copies to the Recycle Bin.
 
 The same Civitai file saved twice in one folder is listed once as an extra
 copy. The copy kept is one with weights, if any, and then the one whose name
@@ -1893,7 +1897,7 @@ Those two are the sized, quantised copies — the originals live in
 ### The nodes do not appear
 
 Restart ComfyUI after installing, then check the startup log. If Warp Studio says it is
-switched off, an old WarpPipe or Civitai Updater is still active: update or remove it, see
+switched off, an old WarpPipe or Civitai Updater is still active: update or disable it, see
 [Coming from WarpPipe or Civitai Updater](#coming-from-warppipe-or-civitai-updater). Otherwise it logs
 `WarpPipe LoRA library routes registered` when it has loaded; an import failure
 appears above that as a traceback naming the file.

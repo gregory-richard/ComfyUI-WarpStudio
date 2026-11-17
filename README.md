@@ -24,8 +24,10 @@ Or clone `https://github.com/gregory-richard/ComfyUI-WarpStudio` into `ComfyUI/c
 ## Coming from WarpPipe or Civitai Updater
 
 1. Install Warp Studio.
-2. Update the old package, or remove it. Warp Studio switches itself off, with a message, while WarpPipe before 5.1.0 or Civitai Updater before 1.10.0 is still active.
+2. Update the old package in the Manager, or disable it there. The old and new packages must not both be active: while WarpPipe before 5.1.0 or Civitai Updater before 1.10.0 is still active, Warp Studio switches itself off, with a message, until the old one is updated or disabled.
 3. Restart ComfyUI. Your settings, chats, API keys, hashes and the updater's data are copied once into `ComfyUI/user/warp-studio/`. The old files stay where they were.
+
+Don't uninstall Civitai Updater until Warp Studio has started once: your updater data lives in its folder and is copied on that first start.
 
 Nothing looks different: the nodes, the Prompt Writer, the LoRA browser and the **Civitai** panel work as before. Settings now sit under **Warp Studio** in ComfyUI's settings, and the updater's groups read "Civitai Network", "Civitai General" and so on. The HTTP routes start with `/warp-studio/`.
 
@@ -124,7 +126,7 @@ a red bicycle by a lake, early morning mist <lora:film-grain-xl:0.8>
 Steps: 30, Sampler: dpmpp_2m, Schedule type: karras, CFG scale: 5.0, Seed: 44,
 Size: 1024x1024, Model hash: 4c2b8e1f0a, Model: demo-sdxl,
 Lora hashes: "film-grain-xl: 3b1f0c2a9d",
-Hashes: {"model":"4c2b8e1f0a","lora:film-grain-xl":"3b1f0c2a9d"}, Version: ComfyUI-WarpStudio
+Hashes: {"model":"4c2b8e1f0a","lora:film-grain-xl":"3b1f0c2a9d"}, Version: ComfyUI-WarpPipe
 ```
 
 It also shows what it saved next to the before image, in the same slider.
@@ -187,7 +189,7 @@ Rename** in the settings, or let the view download one (9.75 GB).
 
 1. **Start dry run** lists every old name next to its new one. Nothing on disk changes.
 2. **Review.** Rows that need a look come first and start unticked: a word that is not in Civitai's text, two files with one name, a new base code. Edit any part, or **Ask again**. Files Civitai can't serve, named from the info the preview fallback found, start unticked too.
-3. **Apply selected** renames the ticked rows, together with their `.civitai.info`, previews and any other file that shares the name. Extra copies go to the Recycle Bin.
+3. **Apply.** The button says what it will do, as in **Rename 12 · remove 2**, and asks once; **Apply** then renames the ticked rows, together with their `.civitai.info`, previews and any other file that shares the name. Extra copies go to the Recycle Bin.
 
 The naming model gets about three in four names exactly right, so read the list.
 A rename cut off by a crash can be finished or undone on the next start. Saved
