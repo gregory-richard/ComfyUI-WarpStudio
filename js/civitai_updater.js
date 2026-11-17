@@ -2933,7 +2933,11 @@ function injectStyles() {
       inset: 0 auto 0 0;
       width: 35%;
       background: linear-gradient(90deg, transparent, var(--cu-red-soft), transparent);
-      animation: cu-sweep 1.1s ease-in-out infinite;
+    }
+
+    /* Only while it shows: a hidden bar would keep sweeping for nothing. */
+    .cu-loading-bar.is-on::after {
+      animation: cu-sweep 2.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
     }
 
     @keyframes cu-sweep {
@@ -2957,18 +2961,11 @@ function injectStyles() {
       border-radius: 50%;
       border: 2px solid var(--cu-seam-strong);
       border-top-color: var(--cu-red-soft);
-      animation: cu-spin 0.8s linear infinite;
+      animation: cu-spin 1.6s linear infinite;
     }
 
     @keyframes cu-spin {
       to { transform: rotate(360deg); }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .cu-loading-bar::after,
-      .cu-spinner {
-        animation-duration: 3s;
-      }
     }
 
     /* ---- Updates / Issues switch ---- */
@@ -4061,6 +4058,13 @@ function injectStyles() {
         transition-duration: 0.01ms !important;
         animation-duration: 0.01ms !important;
         animation-delay: 0ms !important;
+      }
+
+      /* The loading indicators loop: cut to 0.01ms they would flicker, so they
+         slow down instead. More specific than the rule above, so they win. */
+      .cu-root .cu-spinner,
+      .cu-root .cu-loading-bar.is-on::after {
+        animation-duration: 5s !important;
       }
     }
 
