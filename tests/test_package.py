@@ -44,3 +44,11 @@ def test_pyproject_identity():
     assert 'name = "warp-studio"' in text and 'version = "1.0.0"' in text
     assert 'DisplayName = "Warp Studio"' in text
     assert "simplifies model management, streamlines workflows, and makes prompting easier" in text
+
+
+def test_the_package_ships_the_updater_prompt():
+    """naming_ai.py reads prompts/naming_system.txt at runtime; a wheel without
+    it breaks AI naming."""
+    text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"warp_studio.comfy_updater" = ["prompts/*.txt"]' in text
+    assert (PROJECT_ROOT / "comfy_updater" / "prompts" / "naming_system.txt").is_file()

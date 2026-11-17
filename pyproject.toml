@@ -45,6 +45,9 @@ warp_studio = "."
 # The whole prompt UI, the library browser and the save node's labels are there.
 warp_studio = ["version.txt", "node_list.json", "web/*.js", "web/*.svg", "standdown/*.js", "web/docs/*.md", "web/vendor/*.js", "web/vendor/LICENSE-codemirror.txt"]
 
+# comfy_updater/naming_ai.py reads prompts/naming_system.txt at runtime.
+"warp_studio.comfy_updater" = ["prompts/*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests/updater"]
