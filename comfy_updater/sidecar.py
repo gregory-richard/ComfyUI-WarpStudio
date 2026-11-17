@@ -25,8 +25,8 @@ def preview_sidecar_path(model_path: Path) -> Path:
 
 
 def preview_path_for(path: Path) -> Path:
-    """The ``.preview.png`` that belongs to a weights file or to its ``.civitai.info`` sidecar."""
-    if path.name.endswith(INFO_SIDECAR_SUFFIX):
+    """The ``.preview.png`` that belongs to a weights file or to its ``.civitai.info`` sidecar (in any case)."""
+    if path.name.lower().endswith(INFO_SIDECAR_SUFFIX.lower()):
         return path.with_name(f"{path.name[: -len(INFO_SIDECAR_SUFFIX)]}{PREVIEW_SIDECAR_SUFFIX}")
     return preview_sidecar_path(path)
 

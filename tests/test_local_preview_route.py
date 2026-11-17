@@ -31,6 +31,14 @@ class PreviewPathForTests(unittest.TestCase):
     def test_info_sidecar(self) -> None:
         self.assertEqual(Path("d/x.preview.png"), preview_path_for(Path("d/x.civitai.info")))
 
+    def test_info_sidecar_suffix_in_any_case(self) -> None:
+        # The lister matches the suffix case-insensitively; so must this.
+        # Names compared as text: Windows paths compare without case.
+        for info, preview in (("X.Civitai.Info", "X.preview.png"), ("x.v2.CIVITAI.INFO", "x.v2.preview.png")):
+            with self.subTest(info=info):
+                path = preview_path_for(Path("d") / info)
+                self.assertEqual((Path("d"), preview), (path.parent, path.name))
+
 
 class LocalPreviewRouteTests(unittest.TestCase):
     def setUp(self) -> None:
