@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from .fallback_http import is_allowed_url
 from .fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
-from .sidecar import read_json, write_json
+from .sidecar import read_data_file, write_json
 
 MAX_REPOS_PER_AUTHOR = 200
 MAX_TREE_PAGES = 30
@@ -38,20 +38,29 @@ _SAMPLES_URL = _SITE + "/spaces/malcolmrey/browser/resolve/main/data-hf-images.j
 _MALCOLMREY = "malcolmrey"
 _LISTING_LIMIT = 100
 _LIMIT_REACHED = "Hugging Face request limit reached"
+_CAP_REACHED = "Hugging Face listing longer than its limit"
+# Why a paged listing left pages unread.
+_BUDGET, _CAP = "budget", "cap"
 # Answers that mean the repo or author is not there: Hugging Face gives 401 for a missing or private repo.
 _GONE = frozenset({401, 404})
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 _IMAGE_FOLDERS = frozenset({"assets", "images", "samples", "examples"})
 _NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_MALCOLMREY_FILE = re.compile(r"[A-Za-z0-9]+_(.+?)_(v\d+(?:\.\d+)*)(?:_.*)?", re.IGNORECASE)
+_MALCOLMREY_FILE = re.compile(r"([A-Za-z0-9]+)_(.+?)_(v\d+(?:\.\d+)*)(?:_.*)?", re.IGNORECASE)
+
+
+def _parse_malcolmrey(filename: str) -> tuple[str, str, str] | None:
+    """``<repo>_<slug>_<version>[_<tool>].<ext>`` -> ``(repo, slug, version)``."""
+    stem = PurePosixPath(str(filename).replace("\\", "/")).stem
+    match = _MALCOLMREY_FILE.fullmatch(stem)
+    return (match.group(1), match.group(2), match.group(3)) if match else None
 
 
 def parse_malcolmrey_name(filename: str) -> tuple[str, str] | None:
     """``<repo>_<slug>_<version>[_<tool>].<ext>`` -> ``(slug, version)``."""
-    stem = PurePosixPath(str(filename).replace("\\", "/")).stem
-    match = _MALCOLMREY_FILE.fullmatch(stem)
-    return (match.group(1), match.group(2)) if match else None
+    parsed = _parse_malcolmrey(filename)
+    return (parsed[1], parsed[2]) if parsed else None
 
 
 def pick_repo_image(file_path: str, images: list[str]) -> str | None:
@@ -94,9 +103,13 @@ def _owner(repo_id: str) -> str:
     return repo_id.split("/", 1)[0]
 
 
+def _is_malcolmrey(repo_id: str) -> bool:
+    return _owner(repo_id).lower() == _MALCOLMREY
+
+
 def _malcolmrey_repo(repo_id: str) -> tuple[str, str] | None:
-    owner, _, name = repo_id.partition("/")
-    return MALCOLMREY_REPOS.get(name.lower()) if owner.lower() == _MALCOLMREY else None
+    name = repo_id.partition("/")[2]
+    return MALCOLMREY_REPOS.get(name.lower()) if _is_malcolmrey(repo_id) else None
 
 
 def _spaced(text: str) -> str:
@@ -160,7 +173,9 @@ class HuggingFaceIndex:
 
     A 404 or 401 entry contributes nothing. Any other failure, a stop, or the request
     budget makes the index partial: hits still come from what was refreshed
-    plus the cache, but a miss raises ``IndexIncomplete``.
+    plus the cache, but a miss raises ``IndexIncomplete``. A listing cut at its cap
+    (repos per author, pages per tree) makes the run partial the same way, though the
+    build goes on.
     """
 
     def __init__(self, entries: list[str], http, cache_path: Path) -> None:
@@ -176,6 +191,7 @@ class HuggingFaceIndex:
         self._hashes: dict[str, tuple[str, str]] | None = None
         self._repos: dict[str, dict] = {}
         self._error: str | None = None
+        self._capped = False  # a listing stopped at its cap with more left
         self._samples: dict | None = None
         self._samples_read = False  # the samples index was fetched and readable
         self._used = 0  # requests this index sent; the client may be shared with other sources
@@ -190,15 +206,15 @@ class HuggingFaceIndex:
             self._build()
         hit = self._hashes.get(str(sha256 or "").strip().lower())
         if hit is None:
-            if self._error is not None:
-                raise IndexIncomplete(self._error)
+            if self._partial():
+                raise IndexIncomplete(self._error or _CAP_REACHED)
             return None
         return self._result(*hit)
 
     # Building
 
     def _build(self) -> None:
-        raw = read_json(self.cache_path)
+        raw = read_data_file(self.cache_path)  # the plugin's own file: no sidecar size cap
         self._cached = {repo_id.lower(): (repo_id, data) for repo_id, data in _cached_repos(raw).items()}
         self._fresh, self._settled, self._listed = {}, set(), {}
         try:
@@ -234,6 +250,9 @@ class HuggingFaceIndex:
             if key in repos or (owner in authors and (listing is None or key in listing)):
                 self._fresh[repo_id] = data
 
+    def _partial(self) -> bool:
+        return self._error is not None or self._capped
+
     def _remaining(self) -> int:
         return MAX_REQUESTS_PER_RUN - self._used
 
@@ -246,8 +265,8 @@ class HuggingFaceIndex:
         finally:
             self._used += self.http.request_count - before
 
-    def _get_pages(self, url: str, cap: int) -> tuple[list, bool]:
-        """Up to ``cap`` pages; the flag says the budget may have cut the listing short.
+    def _get_pages(self, url: str, cap: int) -> tuple[list, str]:
+        """Up to ``cap`` pages, and what cut the listing short: ``_BUDGET`` (maybe), ``_CAP`` or "".
 
         Only a failed first page keeps its status: a later page failing says nothing
         about whether the repo or author exists.
@@ -264,7 +283,9 @@ class HuggingFaceIndex:
             raise
         finally:
             self._used += self.http.request_count - before
-        return items, allowed < cap and self.http.request_count - before >= allowed
+        if allowed < cap and self.http.request_count - before >= allowed:
+            return items, _BUDGET
+        return items, _CAP if getattr(items, "truncated", False) else ""
 
     def _refresh_author(self, author: str) -> None:
         url = f"{_API}?author={author}&expand[]=sha&limit={_LISTING_LIMIT}"
@@ -273,8 +294,8 @@ class HuggingFaceIndex:
         except SourceUnavailable as exc:
             if exc.status not in _GONE:
                 raise
-            items, cut = [], False
-        if cut:
+            items, cut = [], ""
+        if cut == _BUDGET:
             raise SourceUnavailable(_LIMIT_REACHED)
         listed: list[tuple[str, str]] = []
         keys: set[str] = set()
@@ -282,10 +303,13 @@ class HuggingFaceIndex:
             repo_id = item.get("id") if isinstance(item, dict) else None
             if not _is_repo_id(repo_id) or repo_id.lower() in keys:
                 continue
+            if len(listed) >= MAX_REPOS_PER_AUTHOR:
+                cut = _CAP
+                break
             keys.add(repo_id.lower())
             listed.append((repo_id, _sha_text(item.get("sha"))))
-            if len(listed) >= MAX_REPOS_PER_AUTHOR:
-                break
+        # The repos past the cap are unknown this run: a miss is no longer sure.
+        self._capped = self._capped or cut == _CAP
         self._listed[author.lower()] = keys
         for repo_id, sha in listed:
             if repo_id.lower() in self._settled or self._reuse(repo_id, sha):
@@ -340,12 +364,13 @@ class HuggingFaceIndex:
         except SourceUnavailable as exc:
             if exc.status not in _GONE:
                 raise
-            items, cut = [], False
-        # A tree the budget cut short keeps what it listed, with no sha so the next run lists it again.
+            items, cut = [], ""
+        # A tree cut short (budget or cap) keeps what it listed, with no sha so the next run lists it again.
         self._fresh[repo_id] = _tree_entry("" if cut else sha, base, items)
         self._settled.add(repo_id.lower())
-        if cut:
+        if cut == _BUDGET:
             raise SourceUnavailable(_LIMIT_REACHED)
+        self._capped = self._capped or cut == _CAP
 
     # Answering
 
@@ -353,14 +378,15 @@ class HuggingFaceIndex:
         data = self._repos[repo_id]
         owner, name = repo_id.split("/", 1)
         url = f"{_SITE}/{repo_id}"
-        mapped = _malcolmrey_repo(repo_id)
-        parsed = parse_malcolmrey_name(path) if mapped else None
+        parsed = _parse_malcolmrey(path) if _is_malcolmrey(repo_id) else None
         if parsed:
-            slug, version = parsed
-            image_url, lookup_failed = self._sample_url(slug, mapped[0])
+            prefix, slug, version = parsed
+            # A repo missing from the map finds its samples by the file name's prefix and gets no base.
+            framework, base = _malcolmrey_repo(repo_id) or (prefix, "")
+            image_url, lookup_failed = self._sample_url(slug, framework)
             return FallbackResult(
                 source="huggingface", url=url, title=" ".join(slug.replace("_", " ").split()), creator=owner,
-                version_name=version, base_model=mapped[1], image_url=image_url, image_lookup_failed=lookup_failed,
+                version_name=version, base_model=base, image_url=image_url, image_lookup_failed=lookup_failed,
             )
         image = pick_repo_image(path, data["images"])
         return FallbackResult(
@@ -368,7 +394,7 @@ class HuggingFaceIndex:
             version_name=PurePosixPath(path).stem, base_model=data["baseModel"],
             image_url=f"{_SITE}/{repo_id}/resolve/main/{quote(image)}" if image else "",
             # A partial run may have listed only part of a tree: its picture may be on a page never read.
-            image_lookup_failed=not image and self._error is not None,
+            image_lookup_failed=not image and self._partial(),
         )
 
     def _sample_url(self, slug: str, framework: str) -> tuple[str, bool]:
@@ -387,7 +413,13 @@ class HuggingFaceIndex:
             self._samples_read = isinstance(body, dict)
             self._samples = body if self._samples_read else {}
         by_framework = self._samples.get(slug)
-        samples = by_framework.get(framework) if isinstance(by_framework, dict) else None
+        samples = None
+        if isinstance(by_framework, dict):
+            # The framework key in any case: ``krea2`` finds ``Krea2``, ``wan`` finds ``WAN``.
+            samples = by_framework.get(framework)
+            if samples is None:
+                samples = next((value for key, value in by_framework.items()
+                                if isinstance(key, str) and key.lower() == framework.lower()), None)
         for sample in samples if isinstance(samples, list) else []:
             url = sample.get("url") if isinstance(sample, dict) else None
             if isinstance(url, str) and is_allowed_url(url):

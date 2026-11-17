@@ -21,7 +21,7 @@ from .fallback_civarchive import lookup_civarchive
 from .fallback_hf import HuggingFaceIndex
 from .fallback_http import is_allowed_url, save_preview_png
 from .fallback_types import FallbackResult, IndexIncomplete, SourceUnavailable
-from .sidecar import read_json, sidecar_identifies_model, stored_sha256, write_json
+from .sidecar import read_data_file, read_json, sidecar_identifies_model, stored_sha256, write_json
 
 MISS_DAYS = 30
 MAX_FAILURES = 3  # in a row; then the source is skipped for the rest of the scan
@@ -56,7 +56,7 @@ class MissStore:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
-        raw = read_json(self.path)
+        raw = read_data_file(self.path)  # the plugin's own file: no sidecar size cap
         misses = raw.get("misses") if isinstance(raw, dict) else None
         self._misses: dict[str, dict] = {}
         if isinstance(misses, dict):

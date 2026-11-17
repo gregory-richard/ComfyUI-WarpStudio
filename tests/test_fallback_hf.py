@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from comfy_updater import fallback_hf
 from comfy_updater.fallback_hf import (
@@ -15,6 +15,7 @@ from comfy_updater.fallback_hf import (
     parse_malcolmrey_name,
     pick_repo_image,
 )
+from comfy_updater.fallback_http import FallbackHttp, JsonPages
 from comfy_updater.fallback_types import IndexIncomplete, SourceUnavailable
 
 API = "https://huggingface.co/api/models"
@@ -99,18 +100,34 @@ class FakeHttp:
         return self._fetch(url)
 
     def get_json_pages(self, url, max_pages=100):
-        items: list = []
+        """Like ``FallbackHttp.get_json_pages``: a page that isn't a list raises; ``truncated`` marks a page left unread."""
+        items = JsonPages()
         next_url = url
         for _ in range(max_pages):
             if not next_url:
                 break
             body = self._fetch(next_url)
-            items.extend(body if isinstance(body, list) else [body])
+            if not isinstance(body, list):
+                raise SourceUnavailable("unexpected listing")
+            items.extend(body)
             next_url = self.links.get(next_url)
+        items.truncated = bool(next_url)
         return items
 
     def count(self, part: str) -> int:
         return sum(1 for url in self.urls if part in url)
+
+
+class FakeSession:
+    """A requests session for the real ``FallbackHttp``: URL -> JSON body, one page each."""
+
+    def __init__(self, bodies: dict) -> None:
+        self.bodies = bodies
+
+    def get(self, url, **kwargs):  # noqa: ARG002
+        response = MagicMock(status_code=200, links={})
+        response.iter_content.return_value = iter([json.dumps(self.bodies[url]).encode()])
+        return response
 
 
 class IndexTestCase(unittest.TestCase):
@@ -236,10 +253,47 @@ class BriefTests(IndexTestCase):
         with patch.object(fallback_hf, "MAX_REQUESTS_PER_RUN", 1000):
             index = self.index(["someone"], http)
             self.assertIsNotNone(index.find(h(199)))
-            self.assertIsNone(index.find(h(200)))
+            # Past the cap with a page left: no miss is sure this run.
+            with self.assertRaises(IndexIncomplete):
+                index.find(h(200))
         trees = [url for url in http.urls if "/tree/" in url]
         self.assertEqual(trees, [tree_url(f"someone/r{i}") for i in range(200)])
         self.assertNotIn(pages[2], http.urls)  # 200 repos need no more than 2 listing pages of 100
+
+    def test_author_cap_without_a_next_page_still_makes_the_run_partial(self):
+        bodies = {listing_url("someone"): [{"id": f"someone/r{i}", "sha": "s"} for i in range(201)]}
+        for i in range(201):
+            bodies[info_url(f"someone/r{i}")] = {"id": f"someone/r{i}", "sha": "s"}
+            bodies[tree_url(f"someone/r{i}")] = [lfs("m.safetensors", h(i))]
+        http = FakeHttp(bodies)
+        with patch.object(fallback_hf, "MAX_REQUESTS_PER_RUN", 1000):
+            index = self.index(["someone"], http)
+            self.assertIsNotNone(index.find(h(199)))
+            with self.assertRaises(IndexIncomplete):
+                index.find(h(200))
+        self.assertEqual(http.count("/tree/"), 200)
+
+    def test_author_listing_read_to_its_end_is_complete(self):
+        page2 = listing_url("malcolmrey") + "&cursor=2"
+        bodies = malcolmrey_bodies()
+        bodies[page2] = [{"id": "malcolmrey/zimage", "sha": "s1"}]
+        bodies[tree_url("malcolmrey/zimage")] = [lfs("zimage/zimage_someone_v1.safetensors", SHA2)]
+        http = FakeHttp(bodies, links={listing_url("malcolmrey"): page2})
+        index = self.index(["malcolmrey"], http)
+        self.assertEqual(index.find(SHA2).base_model, "ZImageTurbo")
+        self.assertIsNone(index.find(SHA3))
+
+    def test_capped_run_still_reads_the_samples_index(self):
+        page2 = listing_url("malcolmrey") + "&cursor=2"
+        page3 = listing_url("malcolmrey") + "&cursor=3"
+        bodies = malcolmrey_bodies()
+        bodies[page2] = []
+        http = FakeHttp(bodies, links={listing_url("malcolmrey"): page2, page2: page3})
+        index = self.index(["malcolmrey"], http)
+        self.assertEqual(index.find(SHA).image_url, SAMPLE_URL)
+        with self.assertRaises(IndexIncomplete):
+            index.find(SHA3)
+        self.assertNotIn(page3, http.urls)
 
     def test_tree_page_cap(self):
         bodies, links = other_bodies(oid=h(1000)), {}
@@ -252,8 +306,26 @@ class BriefTests(IndexTestCase):
         index = self.index([REPO], http)
         self.assertEqual(index.find(h(0)).version_name, "m0")
         self.assertEqual(index.find(h(29)).version_name, "m29")
-        self.assertIsNone(index.find(h(30)))
+        with self.assertRaises(IndexIncomplete):
+            index.find(h(30))  # on a page past the cap
         self.assertEqual(http.count("/tree/"), 30)
+        # Cached without a sha, so the next run lists it again.
+        self.assertEqual(self.cached_repos()[REPO]["sha"], "")
+        http = FakeHttp(bodies, links)
+        self.assertEqual(self.index([REPO], http).find(h(1)).version_name, "m1")
+        self.assertEqual(http.count("/tree/"), 30)
+
+    def test_tree_of_exactly_the_cap_is_complete(self):
+        bodies, links = other_bodies(oid=h(1000)), {}
+        page_urls = [tree_url(REPO)] + [tree_url(REPO) + f"&cursor={n}" for n in range(1, 30)]
+        for n, url in enumerate(page_urls):
+            bodies[url] = [lfs(f"w/m{n}.safetensors", h(n))]
+            if n + 1 < len(page_urls):
+                links[url] = page_urls[n + 1]
+        index = self.index([REPO], FakeHttp(bodies, links))
+        self.assertEqual(index.find(h(29)).version_name, "m29")
+        self.assertIsNone(index.find(h(30)))
+        self.assertEqual(self.cached_repos()[REPO]["sha"], "s9")
 
     def test_request_budget(self):
         bodies = {listing_url("someone"): [{"id": f"someone/r{i}", "sha": "s"} for i in range(4)]}
@@ -392,6 +464,15 @@ class MissingAndPartialTests(IndexTestCase):
             index.find(SHA3)
         self.assertEqual(http.urls, [listing_url("malcolmrey")])
 
+    def test_listing_page_that_is_not_a_list_makes_the_index_partial(self):
+        self.index(["malcolmrey"], FakeHttp(malcolmrey_bodies())).find(SHA)
+        session = FakeSession({listing_url("malcolmrey"): {"error": "Invalid credentials"}})
+        index = self.index(["malcolmrey"], FallbackHttp(session=session))
+        self.assertEqual(index.find(SHA).title, "someone")  # kept from the cache
+        with self.assertRaises(IndexIncomplete):
+            index.find(SHA3)  # no miss: the listing said nothing
+        self.assertEqual(set(self.cached_repos()), {"malcolmrey/krea2"})
+
     def test_later_tree_page_failure_is_not_gone(self):
         bodies = other_bodies(oid=SHA2)
         page2 = tree_url(REPO) + "&cursor=p2"
@@ -482,18 +563,48 @@ class RepoInfoTests(IndexTestCase):
 
 
 class MalcolmreyRuleTests(IndexTestCase):
-    def test_unmapped_malcolmrey_repo_uses_generic_rules(self):
+    def test_unmapped_malcolmrey_repo_takes_the_malcolmrey_rules_without_a_base(self):
+        wan_sample = "https://huggingface.co/datasets/malcolmrey/samples/resolve/main/wan/wan_some_one_00001_.png"
+        bodies = {
+            listing_url("malcolmrey"): [{"id": "malcolmrey/wan", "sha": "s1"}],
+            info_url("malcolmrey/wan"): {"id": "malcolmrey/wan", "sha": "s1",
+                                         "cardData": {"base_model": "OpenMOSS-Team/MOSS-Image-Base"}},
+            tree_url("malcolmrey/wan"): [lfs("wan/wan_some_one_v2_ai-toolkit.safetensors", SHA), plain("cover.png")],
+            # The samples framework is found from the file name's prefix, in any case.
+            SAMPLES: {"some_one": {"Krea2": [{"url": SAMPLE_URL}], "WAN": [{"url": wan_sample}]}},
+        }
+        r = self.index(["malcolmrey"], FakeHttp(bodies)).find(SHA)
+        self.assertEqual((r.creator, r.title, r.version_name, r.base_model), ("malcolmrey", "some one", "v2", ""))
+        self.assertEqual((r.image_url, r.image_lookup_failed), (wan_sample, False))
+
+    def test_unparsable_file_in_unmapped_malcolmrey_repo_uses_generic_rules(self):
         bodies = {
             listing_url("malcolmrey"): [{"id": "malcolmrey/other-things", "sha": "s1"}],
-            info_url("malcolmrey/other-things"): {"id": "malcolmrey/other-things", "sha": "s1"},
-            tree_url("malcolmrey/other-things"): [lfs("krea2_someone_v1.safetensors", SHA), plain("cover.png")],
+            info_url("malcolmrey/other-things"): {"id": "malcolmrey/other-things", "sha": "s1",
+                                                  "cardData": {"base_model": "OpenMOSS-Team/MOSS-Image-Base"}},
+            tree_url("malcolmrey/other-things"): [lfs("odd name.safetensors", SHA), plain("cover.png")],
         }
         http = FakeHttp(bodies)
         r = self.index(["malcolmrey"], http).find(SHA)
         self.assertEqual((r.creator, r.title, r.version_name, r.base_model),
-                         ("malcolmrey", "other things", "krea2_someone_v1", ""))
+                         ("malcolmrey", "other things", "odd name", "MOSS Image"))
         self.assertEqual(r.image_url, "https://huggingface.co/malcolmrey/other-things/resolve/main/cover.png")
         self.assertNotIn(SAMPLES, http.urls)
+
+    def test_mapped_repo_finds_its_samples_framework_in_any_case(self):
+        http = FakeHttp(malcolmrey_bodies(samples={"someone": {"KREA2": [{"url": SAMPLE_URL}]}}))
+        r = self.index(["malcolmrey"], http).find(SHA)
+        self.assertEqual((r.image_url, r.base_model), (SAMPLE_URL, "Krea 2"))
+
+    def test_unmapped_malcolmrey_repo_without_a_sample_has_no_picture(self):
+        bodies = {
+            listing_url("malcolmrey"): [{"id": "malcolmrey/wan", "sha": "s1"}],
+            info_url("malcolmrey/wan"): {"id": "malcolmrey/wan", "sha": "s1"},
+            tree_url("malcolmrey/wan"): [lfs("wan/wan_someone_v1.safetensors", SHA), plain("cover.png")],
+            SAMPLES: {"someone": {"Krea2": [{"url": SAMPLE_URL}]}},
+        }
+        r = self.index(["malcolmrey"], FakeHttp(bodies)).find(SHA)
+        self.assertEqual((r.title, r.image_url, r.image_lookup_failed), ("someone", "", False))
 
     def test_unparsable_file_in_mapped_repo_uses_generic_rules(self):
         bodies = malcolmrey_bodies()
@@ -594,6 +705,13 @@ class CacheAndInputTests(IndexTestCase):
             }},
         })
 
+    def test_a_cache_past_the_sidecar_size_cap_still_loads(self):
+        self.index(["malcolmrey"], FakeHttp(malcolmrey_bodies())).find(SHA)
+        http = FakeHttp(malcolmrey_bodies())
+        with patch("comfy_updater.sidecar._MAX_JSON_BYTES", 16):
+            self.assertEqual(self.index(["malcolmrey"], http).find(SHA).title, "someone")
+        self.assertEqual(http.count("/tree/"), 0)  # the unchanged repo came from the cache
+
     def test_removed_entry_is_not_matched(self):
         bodies = {**malcolmrey_bodies(), **other_bodies(oid=SHA2)}
         self.index(["malcolmrey", REPO], FakeHttp(bodies)).find(SHA)
@@ -608,7 +726,6 @@ class CacheAndInputTests(IndexTestCase):
 
     def test_malformed_bodies_are_skipped(self):
         bodies = malcolmrey_bodies()
-        bodies[listing_url("someone")] = {"error": "x"}
         bodies[listing_url("malcolmrey")] = [
             {"sha": "s1"}, "junk", {"id": 5}, {"id": "malcolmrey/../x", "sha": "s1"},
             {"id": "malcolmrey/krea2", "sha": "s1"},

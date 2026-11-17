@@ -26,6 +26,8 @@ _ALLOWED_SUFFIXES = (".hf.co",)
 _PACED_HOST = "civarchive.com"
 _PACE_SECONDS = 1.5
 _MAX_JSON_BYTES = 10_000_000
+# Longest side of a saved preview: keeps it well under the local-preview route's size cap.
+MAX_PREVIEW_SIDE = 2048
 
 
 def is_allowed_url(url: str) -> bool:
@@ -59,6 +61,12 @@ def _refuse_redirect_off_list(response, *args, **kwargs):
             response.close()
             raise requests.TooManyRedirects(f"Refused redirect to {target}")
     return response
+
+
+class JsonPages(list):
+    """The items of a paged listing; ``truncated`` says a next page was left unread."""
+
+    truncated = False
 
 
 class FallbackHttp:
@@ -119,18 +127,22 @@ class FallbackHttp:
     def get_json(self, url: str) -> Any:
         return self._json_page(url)[0]
 
-    def get_json_pages(self, url: str, max_pages: int = 100) -> list:
-        items: list = []
+    def get_json_pages(self, url: str, max_pages: int = 100) -> JsonPages:
+        """The items of a paged list endpoint, following ``Link: rel="next"`` for up to ``max_pages`` pages.
+
+        A page that isn't a list raises: a listing read as empty would pass for a complete one.
+        """
+        items = JsonPages()
         next_url: str | None = url
         for _ in range(max_pages):
             if not next_url:
                 break
             body, links = self._json_page(next_url)
-            if isinstance(body, list):
-                items.extend(body)
-            else:
-                items.append(body)
+            if not isinstance(body, list):
+                raise SourceUnavailable("unexpected listing")
+            items.extend(body)
             next_url = (links.get("next") or {}).get("url")
+        items.truncated = bool(next_url)
         return items
 
     def _read_with_links(self, url: str, max_bytes: int):
@@ -165,6 +177,7 @@ def _is_windows() -> bool:
 def save_preview_png(data: bytes, target: Path) -> bool:
     """Decode image bytes and write them as a PNG at ``target``, never replacing an existing file.
 
+    An image longer than ``MAX_PREVIEW_SIDE`` on a side is scaled down to it, keeping its shape.
     Returns False (never raises) when the data is not an image, the target
     already exists, or the target's folder is missing.
     """
@@ -178,6 +191,8 @@ def save_preview_png(data: bytes, target: Path) -> bool:
         with Image.open(io.BytesIO(data)) as image:
             if image.mode not in ("RGB", "RGBA"):
                 image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            if max(image.size) > MAX_PREVIEW_SIDE:
+                image.thumbnail((MAX_PREVIEW_SIDE, MAX_PREVIEW_SIDE), Image.LANCZOS)
             image.save(tmp_path, format="PNG")
         try:
             os.link(tmp_path, target)

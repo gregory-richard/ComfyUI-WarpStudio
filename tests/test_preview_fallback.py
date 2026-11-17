@@ -204,6 +204,16 @@ class PreviewFallbackTests(unittest.TestCase):
         self.assertEqual(self.info_path.read_bytes(), before)
         self.assertEqual(self.preview_path.read_bytes(), b"old picture")
 
+    def test_refetch_with_an_existing_preview_asks_no_source(self):
+        self.preview_path.write_bytes(b"old picture")
+        self.sources.queue("huggingface", hf_result())
+        self.sources.queue("civarchive", civ_result())
+
+        fb = self.fallback(fallbackAiToolkitFolders=[str(self.out)])
+        self.assertIsNone(self.run_on(fb, refetch=True))
+        self.assertEqual(self.sources.log, [])
+        self.assertEqual(self.preview_path.read_bytes(), b"old picture")
+
     def test_order_and_first_hit_wins(self):
         self.sources.queue("huggingface", hf_result())
         self.sources.queue("civarchive", civ_result())
@@ -774,6 +784,11 @@ class MissStoreTests(unittest.TestCase):
 
         store.forget(SHA)
         self.assertEqual(read_json(self.path), {"misses": {}})
+
+    def test_a_file_past_the_sidecar_size_cap_still_loads(self):
+        MissStore(self.path).record(SHA, "civarchive", NOW)
+        with patch("comfy_updater.sidecar._MAX_JSON_BYTES", 16):
+            self.assertTrue(MissStore(self.path).is_fresh(SHA, "civarchive", NOW))
 
 
 class ApplyToInfoTests(unittest.TestCase):

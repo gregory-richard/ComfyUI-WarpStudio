@@ -185,6 +185,20 @@ class FallbackServiceTests(unittest.TestCase):
         self.assertEqual((sha_of("b.safetensors"), False), (call["sha256"], call["refetch"]))
         self.http.assert_called_once_with(timeout_seconds=17, should_stop=control.is_cancelled)
 
+    def test_refetch_never_asks_the_fallback_about_a_file_with_a_preview(self) -> None:
+        a = self.model("a.safetensors", preview=PNG)
+        fallbacks = FakeFallbacks(answers={
+            "a.safetensors": FallbackOutcome(source="huggingface", preview_written=True, info_written=True),
+        })
+
+        _summary, items = self.run_job(fallbacks=fallbacks, refetchMetadata=True)
+
+        self.assertEqual([], fallbacks.calls)
+        self.assertEqual([], fallbacks.built)
+        self.http.assert_not_called()
+        self.assertEqual(PNG, preview_sidecar_path(a).read_bytes())
+        self.assertTrue(items["a.safetensors"]["hasLocalPreview"])
+
     def test_scan_runs_fallback_for_identified_files_too(self) -> None:
         # A removed model's info file with ids but no picture: the stored hash is what is asked about.
         self.model("a.safetensors", info={"id": 88, "modelId": 77, "files": [{"hashes": {"SHA256": "AB" * 32}}]})

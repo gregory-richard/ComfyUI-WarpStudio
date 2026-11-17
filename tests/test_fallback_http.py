@@ -126,7 +126,29 @@ class HttpTests(unittest.TestCase):
             json_data=[1], links={"next": {"url": "https://huggingface.co/api/n"}}
         )
         http = FallbackHttp(session=self.session)
-        self.assertEqual(http.get_json_pages("https://huggingface.co/api/p1", max_pages=3), [1, 1, 1])
+        pages = http.get_json_pages("https://huggingface.co/api/p1", max_pages=3)
+        self.assertEqual(pages, [1, 1, 1])
+        self.assertTrue(pages.truncated)  # a next page was left unread
+
+    def test_pages_read_to_the_end_are_not_truncated(self):
+        self.session.get.side_effect = [
+            _resp(json_data=[1], links={"next": {"url": "https://huggingface.co/api/p2"}}),
+            _resp(json_data=[2], links={}),
+        ]
+        pages = FallbackHttp(session=self.session).get_json_pages("https://huggingface.co/api/p1", max_pages=2)
+        self.assertEqual(pages, [1, 2])
+        self.assertFalse(pages.truncated)
+
+    def test_page_that_is_not_a_list_raises_unavailable(self):
+        for body in ({"error": "Invalid credentials"}, "junk", 5):
+            with self.subTest(body=body):
+                self.session.get.side_effect = [
+                    _resp(json_data=[1], links={"next": {"url": "https://huggingface.co/api/p2"}}),
+                    _resp(json_data=body, links={}),
+                ]
+                with self.assertRaises(SourceUnavailable) as ctx:
+                    FallbackHttp(session=self.session).get_json_pages("https://huggingface.co/api/p1")
+                self.assertIn("unexpected listing", str(ctx.exception))
 
     def test_pages_refuse_next_link_off_the_list(self):
         self.session.get.return_value = _resp(json_data=[1], links={"next": {"url": "https://example.com/p2"}})
@@ -201,6 +223,26 @@ class SavePreviewTests(unittest.TestCase):
             self.assertFalse(save_preview_png(_jpeg_bytes(color="red"), target))
             self.assertEqual(target.read_bytes(), before)
             self.assertEqual([p.name for p in Path(d).iterdir()], ["m.preview.png"])
+
+    def test_save_preview_png_scales_a_big_image_down_to_2048(self):
+        buf = io.BytesIO()
+        Image.new("RGB", (3000, 1000), "blue").save(buf, format="PNG")
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "m.preview.png"
+            self.assertTrue(save_preview_png(buf.getvalue(), target))
+            with Image.open(target) as im:
+                width, height = im.size
+        self.assertEqual(width, 2048)
+        self.assertAlmostEqual(height, 683, delta=1)
+
+    def test_save_preview_png_keeps_a_small_image_size(self):
+        buf = io.BytesIO()
+        Image.new("RGB", (2048, 900), "blue").save(buf, format="JPEG")
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "m.preview.png"
+            self.assertTrue(save_preview_png(buf.getvalue(), target))
+            with Image.open(target) as im:
+                self.assertEqual(im.size, (2048, 900))
 
     def test_save_preview_png_rejects_non_image(self):
         with tempfile.TemporaryDirectory() as d:
