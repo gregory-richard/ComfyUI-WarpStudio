@@ -4,7 +4,7 @@
    one must do nothing on import: it only exports functions. civitai_updater.js
    imports it, passes its request helpers in and calls renderRenameView. */
 
-const ROUTE = "/civitai-updater";
+const ROUTE = "/warp-studio/updater";
 const DRY_RUN_JOB = "rename-dry-run";
 const APPLY_JOB = "rename-apply";
 const DOWNLOAD_JOB = "naming-model-download";

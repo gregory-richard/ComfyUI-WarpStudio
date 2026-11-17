@@ -1129,13 +1129,13 @@ def key_status(base_url: str, *, env, key_file) -> dict:
 
 
 def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None:
-    """Attach the /warppipe/llm routes. Blocking work runs in a thread."""
+    """Attach the /warp-studio/llm routes. Blocking work runs in a thread."""
     import asyncio
 
     key_file = Path(user_dir) / KEY_FILE_NAME
     log_path = Path(user_dir) / LOG_FILE_NAME
 
-    @routes.get("/warppipe/llm/models")
+    @routes.get("/warp-studio/llm/models")
     async def _models(request):
         base_url = request.query.get("base_url", "") or DEFAULT_BASE_URL
         refresh = request.query.get("refresh") == "1"
@@ -1144,13 +1144,13 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None
         )
         return web.json_response(out)
 
-    @routes.get("/warppipe/llm/key_status")
+    @routes.get("/warp-studio/llm/key_status")
     async def _key_status(request):
         base_url = request.query.get("base_url", "") or DEFAULT_BASE_URL
         out = await asyncio.to_thread(key_status, base_url, env=os.environ, key_file=key_file)
         return web.json_response(out)
 
-    @routes.post("/warppipe/llm/key")
+    @routes.post("/warp-studio/llm/key")
     async def _save_key(request):
         try:
             body = await request.json()
@@ -1164,19 +1164,19 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None
             return web.json_response({"error": _scrub(str(exc), key)})
         return web.json_response(out)
 
-    @routes.get("/warppipe/llm/system_prompt")
+    @routes.get("/warp-studio/llm/system_prompt")
     async def _system_prompt(request):
         settings = await asyncio.to_thread(settings_loader, request)
         name = request.query.get("name", "")
         out = await asyncio.to_thread(handle_system_prompt, name, settings)
         return web.json_response(out)
 
-    @routes.get("/warppipe/llm/system_prompts")
+    @routes.get("/warp-studio/llm/system_prompts")
     async def _system_prompts(request):
         settings = await asyncio.to_thread(settings_loader, request)
         return web.json_response(handle_system_prompts(settings))
 
-    @routes.post("/warppipe/llm/title")
+    @routes.post("/warp-studio/llm/title")
     async def _title(request):
         try:
             body = await request.json()
@@ -1185,7 +1185,7 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None
         out = await asyncio.to_thread(handle_title, body, env=os.environ, key_file=key_file)
         return web.json_response(out)
 
-    @routes.post("/warppipe/llm/write")
+    @routes.post("/warp-studio/llm/write")
     async def _write(request):
         try:
             body = await request.json()

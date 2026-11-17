@@ -204,7 +204,7 @@ app.registerExtension({
     injectStyles();
     if (await hydrateSettingsFromBackend()) scheduleSettingsSync(true);
     // The naming-model setting lists the text encoders the backend found.
-    getJson("/civitai-updater/rename/status")
+    getJson("/warp-studio/updater/rename/status")
       .then((status) => setNamingModels(status.namingModels))
       .catch(() => {});
     app.extensionManager.registerSidebarTab({
@@ -398,14 +398,14 @@ async function loadCachedResults() {
   try {
     // Reconnect to any job that is still running server-side (scan or
     // check) so a page reload keeps progress and the pause/stop controls.
-    const activeResp = await getJson("/civitai-updater/jobs/active").catch(() => ({ job: null }));
+    const activeResp = await getJson("/warp-studio/updater/jobs/active").catch(() => ({ job: null }));
     if (superseded()) return;
     if (activeResp.job) {
       attachToRunningJob(activeResp.job);
       return;
     }
 
-    const resp = await getJson("/civitai-updater/last-check");
+    const resp = await getJson("/warp-studio/updater/last-check");
     if (superseded()) return;
     state.sidecarWarnings = Array.isArray(resp.sidecarWarnings) ? resp.sidecarWarnings : [];
     renderSidecarWarnings();
@@ -522,8 +522,8 @@ async function recoverFromLostJob() {
 }
 
 function bindEvents(root) {
-  root.querySelector("#cu-check").addEventListener("click", async () => startJob("/civitai-updater/jobs/check-updates", "check-updates"));
-  root.querySelector("#cu-scan").addEventListener("click", async () => startJob("/civitai-updater/jobs/scan", "scan"));
+  root.querySelector("#cu-check").addEventListener("click", async () => startJob("/warp-studio/updater/jobs/check-updates", "check-updates"));
+  root.querySelector("#cu-scan").addEventListener("click", async () => startJob("/warp-studio/updater/jobs/scan", "scan"));
   root.querySelector("#cu-pause").addEventListener("click", async () => togglePauseResume());
   root.querySelector("#cu-stop").addEventListener("click", async () => stopCurrentJob());
   root.querySelector("#cu-roots-toggle").addEventListener("click", () => {
@@ -723,10 +723,10 @@ async function togglePauseResume() {
   if (!state.currentJobId) return;
   try {
     if (state.currentJobStatus === "paused") {
-      await postJson(`/civitai-updater/jobs/${state.currentJobId}/resume`, {});
+      await postJson(`/warp-studio/updater/jobs/${state.currentJobId}/resume`, {});
       setStatus("Job resumed.");
     } else {
-      await postJson(`/civitai-updater/jobs/${state.currentJobId}/pause`, {});
+      await postJson(`/warp-studio/updater/jobs/${state.currentJobId}/pause`, {});
       setStatus("Job paused.");
     }
   } catch (error) {
@@ -738,7 +738,7 @@ async function stopCurrentJob() {
   if (!state.currentJobId) return;
   try {
     state.stopRequested = true;
-    await postJson(`/civitai-updater/jobs/${state.currentJobId}/stop`, {});
+    await postJson(`/warp-studio/updater/jobs/${state.currentJobId}/stop`, {});
     setStatus("Stopping\u2026");
   } catch (error) {
     state.stopRequested = false;
@@ -756,7 +756,7 @@ function pollJob(jobId) {
     if (tickInFlight) return;
     tickInFlight = true;
     try {
-      const job = await getJson(`/civitai-updater/jobs/${jobId}`);
+      const job = await getJson(`/warp-studio/updater/jobs/${jobId}`);
       consecutiveFailures = 0;
       const status = job.status || "running";
       const progress = Number(job.progress || 0);
@@ -916,7 +916,7 @@ async function loadResultPage(force) {
     const filters = filterParams();
     for (const [key, value] of filters) query.append(key, value);
     for (const key of state.collapsed) query.append("collapsed", key);
-    const data = await getJson(`/civitai-updater/jobs/${state.checkJobId}/items?${query.toString()}`);
+    const data = await getJson(`/warp-studio/updater/jobs/${state.checkJobId}/items?${query.toString()}`);
     if (requestSeq !== state.resultRequestSeq) return;
     state.resultItems = Array.isArray(data.items) ? data.items : [];
     state.resultTotal = Number(data.totalItems || 0);
@@ -1043,7 +1043,7 @@ function renderCacheInfo() {
   if (refreshEl) {
     refreshEl.addEventListener("click", () => {
       state.forceNextRecheck = true;
-      startJob("/civitai-updater/jobs/check-updates", "check-updates");
+      startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
     });
   }
 }
@@ -1612,7 +1612,7 @@ async function loadModeCounts() {
   });
   for (const [key, value] of filterParams()) query.append(key, value);
   try {
-    const data = await getJson(`/civitai-updater/jobs/${state.checkJobId}/items?${query.toString()}`);
+    const data = await getJson(`/warp-studio/updater/jobs/${state.checkJobId}/items?${query.toString()}`);
     if (data.modeCounts) state.modeCounts = data.modeCounts;
     if (data.facets) {
       state.checkFacets = data.facets;
@@ -1787,7 +1787,7 @@ function syncFacetSelection(selectionKey, facetKey) {
 }
 
 async function toggleArchivedUpdate(modelId, versionId, restore) {
-  const endpoint = restore ? "/civitai-updater/archived-updates/restore" : "/civitai-updater/archived-updates";
+  const endpoint = restore ? "/warp-studio/updater/archived-updates/restore" : "/warp-studio/updater/archived-updates";
   try {
     await postJson(endpoint, { modelId, versionIds: [versionId] });
     await loadResultPage(true);
@@ -1939,7 +1939,7 @@ function setSetting(id, value) {
 
 async function hydrateSettingsFromBackend() {
   try {
-    const data = await getJson("/civitai-updater/config");
+    const data = await getJson("/warp-studio/updater/config");
     const cfg = data.config || {};
     if (cfg.hasApiKey) {
       setSetting(SETTINGS.apiKey, "***HIDDEN***");
@@ -2020,7 +2020,7 @@ async function syncSettingsToBackend() {
     payload.namingModel = String(getSetting(SETTINGS.namingModel, "") || "");
   }
   try {
-    const data = await postJson("/civitai-updater/config", payload);
+    const data = await postJson("/warp-studio/updater/config", payload);
     state.treatSidecarsAsInstalled = treatSidecarsAsInstalled;
     if ("namingModel" in payload) {
       // A pick made while this save was in flight still needs its own save.
@@ -2155,7 +2155,7 @@ async function copyOrReveal(target, path, jobId) {
   target.dataset.cuPending = "1";
   try {
     if (again) {
-      if (jobId) await postJson("/civitai-updater/reveal", { jobId, path });
+      if (jobId) await postJson("/warp-studio/updater/reveal", { jobId, path });
     } else {
       const copied = await copyToClipboard(path);
       show(copied ? "Copied ✓" : "Copy failed", copied ? "1" : "error");
@@ -2316,7 +2316,7 @@ function fetchLocalPreview(path, urls = state.localPreviewUrls) {
   const jobId = state.checkJobId;
   const request = (async () => {
     try {
-      const response = await api.fetchApi("/civitai-updater/local-preview", {
+      const response = await api.fetchApi("/warp-studio/updater/local-preview", {
         method: "POST",
         headers: { ...GUARD_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({ jobId, path }),

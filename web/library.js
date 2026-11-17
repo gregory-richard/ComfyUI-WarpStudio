@@ -2,7 +2,7 @@
 //
 // Both views want it: the prompt colours its tags against it and completes from
 // it, and the browser lists it. They used to hold a cache each and fetch
-// /warppipe/loras separately, which is the expensive call on the server - it
+// /warp-studio/loras separately, which is the expensive call on the server - it
 // reads a sidecar for every file in the folder. One cache means one fetch, and
 // it also means the two can never be describing different libraries.
 
@@ -28,10 +28,10 @@ export function everything() {
   if (pending) return pending;
 
   pending = Promise.all([
-    ask("/warppipe/loras", "loras"),
+    ask("/warp-studio/loras", "loras"),
     // An installation may have no embeddings folder configured, and that is not
     // a reason for the LoRAs to be unavailable too.
-    ask("/warppipe/embeddings", "embeddings").catch(() => []),
+    ask("/warp-studio/embeddings", "embeddings").catch(() => []),
   ])
     .then(([lora, embedding]) => {
       cached = [...lora, ...embedding];

@@ -99,7 +99,7 @@ def register_routes(
 
     routes = PromptServer.instance.routes
 
-    @routes.get("/civitai-updater/config")
+    @routes.get("/warp-studio/updater/config")
     @_guarded
     async def get_config(request):  # noqa: ARG001
         config = config_store.get_public()
@@ -111,7 +111,7 @@ def register_routes(
             }
         )
 
-    @routes.post("/civitai-updater/config")
+    @routes.post("/warp-studio/updater/config")
     @_guarded
     async def save_config(request):
         payload = await _read_json(request)
@@ -133,7 +133,7 @@ def register_routes(
             }
         )
 
-    @routes.post("/civitai-updater/jobs/scan")
+    @routes.post("/warp-studio/updater/jobs/scan")
     @_guarded
     async def start_scan_job(request):
         payload = await _read_json(request)
@@ -146,7 +146,7 @@ def register_routes(
             return web.json_response({"error": "A job is already running."}, status=409)
         return web.json_response({"jobId": job.id})
 
-    @routes.post("/civitai-updater/jobs/check-updates")
+    @routes.post("/warp-studio/updater/jobs/check-updates")
     @_guarded
     async def start_check_updates_job(request):
         payload = await _read_json(request)
@@ -218,7 +218,7 @@ def register_routes(
         _write_progress(progress_path, job_ref)
         return web.json_response({"jobId": job_ref.id})
 
-    @routes.get("/civitai-updater/last-check")
+    @routes.get("/warp-studio/updater/last-check")
     @_guarded
     async def get_last_check(request):  # noqa: ARG001
         progress_path = config_store.data_dir / "progress.json"
@@ -273,7 +273,7 @@ def register_routes(
             }
         })
 
-    @routes.get("/civitai-updater/jobs/active")
+    @routes.get("/warp-studio/updater/jobs/active")
     @_guarded
     async def get_active_job(request):  # noqa: ARG001
         active = job_manager.get_active()
@@ -281,7 +281,7 @@ def register_routes(
             return web.json_response({"job": None})
         return web.json_response({"job": active.as_dict(include_items=False)})
 
-    @routes.get("/civitai-updater/jobs/{job_id}")
+    @routes.get("/warp-studio/updater/jobs/{job_id}")
     @_guarded
     async def get_job(request):
         job_id = request.match_info.get("job_id", "")
@@ -291,7 +291,7 @@ def register_routes(
         include_items = request.query.get("includeItems", "0").lower() in ("1", "true", "yes")
         return web.json_response(job.as_dict(include_items=include_items))
 
-    @routes.get("/civitai-updater/jobs/{job_id}/items")
+    @routes.get("/warp-studio/updater/jobs/{job_id}/items")
     @_guarded
     async def get_job_items(request):
         job_id = request.match_info.get("job_id", "")
@@ -338,7 +338,7 @@ def register_routes(
             }
         )
 
-    @routes.post("/civitai-updater/archived-updates")
+    @routes.post("/warp-studio/updater/archived-updates")
     @_guarded
     async def archive_updates(request):
         payload = await _read_json(request)
@@ -348,7 +348,7 @@ def register_routes(
         archived = archive_store.archive(model_id, version_ids)
         return web.json_response({"modelId": model_id, "archivedVersionIds": archived})
 
-    @routes.post("/civitai-updater/archived-updates/restore")
+    @routes.post("/warp-studio/updater/archived-updates/restore")
     @_guarded
     async def restore_updates(request):
         payload = await _read_json(request)
@@ -358,7 +358,7 @@ def register_routes(
         archived = archive_store.restore(model_id, version_ids)
         return web.json_response({"modelId": model_id, "archivedVersionIds": archived})
 
-    @routes.post("/civitai-updater/jobs/{job_id}/pause")
+    @routes.post("/warp-studio/updater/jobs/{job_id}/pause")
     @_guarded
     async def pause_job(request):
         job_id = request.match_info.get("job_id", "")
@@ -371,7 +371,7 @@ def register_routes(
             return web.json_response({"error": "job not found"}, status=404)
         return web.json_response(job.as_dict(include_items=False))
 
-    @routes.post("/civitai-updater/jobs/{job_id}/resume")
+    @routes.post("/warp-studio/updater/jobs/{job_id}/resume")
     @_guarded
     async def resume_job(request):
         job_id = request.match_info.get("job_id", "")
@@ -380,7 +380,7 @@ def register_routes(
             return web.json_response({"error": "job not found"}, status=404)
         return web.json_response(job.as_dict(include_items=False))
 
-    @routes.post("/civitai-updater/jobs/{job_id}/stop")
+    @routes.post("/warp-studio/updater/jobs/{job_id}/stop")
     @_guarded
     async def stop_job(request):
         job_id = request.match_info.get("job_id", "")
@@ -670,7 +670,7 @@ def _register_rename_routes(
         job = job_manager.get(job_id) if job_id else None
         return job if job is not None and job.type == RENAME_DRY_RUN_JOB else None
 
-    @routes.get("/civitai-updater/rename/status")
+    @routes.get("/warp-studio/updater/rename/status")
     @_guarded
     async def get_rename_status(request):  # noqa: ARG001
         # Reads every text encoder's header: off the event loop.
@@ -680,7 +680,7 @@ def _register_rename_routes(
         status["lastDryRun"] = dry_runs.job_id() if dry_runs is not None else None
         return web.json_response(status)
 
-    @routes.post("/civitai-updater/jobs/rename-dry-run")
+    @routes.post("/warp-studio/updater/jobs/rename-dry-run")
     @_guarded
     async def start_rename_dry_run(request):  # noqa: ARG001
         if job_manager.get_active():
@@ -729,7 +729,7 @@ def _register_rename_routes(
             return busy()
         return web.json_response({"jobId": job.id})
 
-    @routes.get("/civitai-updater/rename/rows")
+    @routes.get("/warp-studio/updater/rename/rows")
     @_guarded
     async def get_rename_rows(request):
         job = dry_run_job(request.query.get("jobId", "").strip())
@@ -737,7 +737,7 @@ def _register_rename_routes(
             return web.json_response({"error": "job not found"}, status=404)
         return web.json_response(rename_rows_payload(job, applied_jobs))
 
-    @routes.post("/civitai-updater/rename/decision")
+    @routes.post("/warp-studio/updater/rename/decision")
     @_guarded
     async def save_rename_decision(request):
         payload = _normalize_decision_payload(await _read_json(request))
@@ -794,7 +794,7 @@ def _register_rename_routes(
                 print(f"Civitai updater: could not save the dry run's edited rows ({exc}).")
         return web.json_response({"rows": result})
 
-    @routes.post("/civitai-updater/rename/base-code")
+    @routes.post("/warp-studio/updater/rename/base-code")
     @_guarded
     async def save_base_code(request):
         payload = await _read_json(request)
@@ -809,7 +809,7 @@ def _register_rename_routes(
         base_codes.set(base_model, code)
         return web.json_response({"baseCodes": base_codes.all()})
 
-    @routes.post("/civitai-updater/jobs/rename-apply")
+    @routes.post("/warp-studio/updater/jobs/rename-apply")
     @_guarded
     async def start_rename_apply(request):
         payload = _normalize_apply_payload(await _read_json(request))
@@ -846,7 +846,7 @@ def _register_rename_routes(
             response["persistWarning"] = warning
         return web.json_response(response)
 
-    @routes.post("/civitai-updater/rename/recover")
+    @routes.post("/warp-studio/updater/rename/recover")
     @_guarded
     async def recover_rename(request):
         payload = await _read_json(request)
@@ -878,24 +878,24 @@ def _register_rename_routes(
             response["persistWarning"] = warning
         return web.json_response(response)
 
-    @routes.post("/civitai-updater/rename/reveal")
+    @routes.post("/warp-studio/updater/rename/reveal")
     @_guarded
     async def reveal_rename_file(request):
         return await reveal_response(request, dry_run_job)
 
-    @routes.post("/civitai-updater/reveal")
+    @routes.post("/warp-studio/updater/reveal")
     @_guarded
     async def reveal_job_file(request):
         # Any job's results: a checked file in Updates or Issues, or a dry run row.
         return await reveal_response(request, job_manager.get)
 
-    @routes.post("/civitai-updater/local-preview")
+    @routes.post("/warp-studio/updater/local-preview")
     @_guarded
     async def local_preview(request):
         # The panel fetches this with the guard header and shows a blob URL.
         return await local_preview_response(request, job_manager.get)
 
-    @routes.post("/civitai-updater/jobs/download-naming-model")
+    @routes.post("/warp-studio/updater/jobs/download-naming-model")
     @_guarded
     async def start_naming_model_download(request):  # noqa: ARG001
         if job_manager.get_active():

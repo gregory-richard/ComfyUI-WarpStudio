@@ -98,7 +98,7 @@ export async function connectedBase(node) {
 
   let answer = null;
   try {
-    const info = await fetch(`/warppipe/model/base?name=${encodeURIComponent(name)}`).then((r) =>
+    const info = await fetch(`/warp-studio/model/base?name=${encodeURIComponent(name)}`).then((r) =>
       r.json()
     );
     if (info.base_model) answer = { name: info.base_model, fromFolder: false };

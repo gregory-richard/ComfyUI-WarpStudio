@@ -2,7 +2,7 @@
 // the prompt of each 🌀 Prompt + LoRAs, where an LLM writes and rewrites an image prompt.
 //
 // It exists only in the frontend, so it never takes part in a queued prompt.
-// Every network call goes through the /warppipe/llm routes; the browser never
+// Every network call goes through the /warp-studio/llm routes; the browser never
 // sees an API key. Chats live in the ComfyUI user folder, never in a workflow.
 //
 // What a write depends on is module-level, not part of the pop-up: several
@@ -1268,7 +1268,7 @@ async function launch(chat, spec) {
   let cancelled = false;
   try {
     await attachLoras(spec);
-    out = await streamJson("/warppipe/llm/write", spec.payload, controller.signal, (piece) => {
+    out = await streamJson("/warp-studio/llm/write", spec.payload, controller.signal, (piece) => {
       job.thinking += piece.thinking ?? "";
       job.text += piece.text ?? "";
       job.tokens = piece.tokens ?? job.tokens;
@@ -1394,7 +1394,7 @@ function titleOf(source, kind = "chat") {
       titleAsks.delete(key);
       return null;
     };
-    ask = getJson("/warppipe/llm/title", {
+    ask = getJson("/warp-studio/llm/title", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ base_url: baseUrl(), model, source: text, kind }),
@@ -3629,7 +3629,7 @@ async function showPeek(panel) {
   const run = ++peekRun;
   let out;
   try {
-    out = await getJson(`/warppipe/llm/system_prompt?name=${encodeURIComponent(name)}`);
+    out = await getJson(`/warp-studio/llm/system_prompt?name=${encodeURIComponent(name)}`);
   } catch (error) {
     out = { error: String(error?.message ?? error) };
   }
@@ -3706,7 +3706,7 @@ function toggleModels(panel) {
 
 async function refreshKeyState(state) {
   const out = await getJson(
-    `/warppipe/llm/key_status?base_url=${encodeURIComponent(baseUrl())}`
+    `/warp-studio/llm/key_status?base_url=${encodeURIComponent(baseUrl())}`
   ).catch((error) => ({ error: String(error?.message ?? error) }));
   if (out?.error) {
     state.textContent = out.error;
@@ -3809,7 +3809,7 @@ function toggleGear() {
       state.className = "wpw-key-state";
       return;
     }
-    const out = await postJson("/warppipe/llm/key", { base_url: baseUrl(), key: typed }).catch(
+    const out = await postJson("/warp-studio/llm/key", { base_url: baseUrl(), key: typed }).catch(
       (error) => ({ error: String(error?.message ?? error) })
     );
     if (out?.error) {
@@ -3870,8 +3870,8 @@ async function loadLists(refreshModels) {
   let prompts;
   try {
     [models, prompts] = await Promise.all([
-      getJson(`/warppipe/llm/models?${query}`),
-      getJson("/warppipe/llm/system_prompts"),
+      getJson(`/warp-studio/llm/models?${query}`),
+      getJson("/warp-studio/llm/system_prompts"),
     ]);
   } catch (error) {
     models = { error: `Model list unreachable: ${error?.message ?? error}` };

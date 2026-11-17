@@ -2299,7 +2299,7 @@ def model_index(folder_key: str = "loras") -> list[dict[str, Any]]:
                 # The server owns URL construction; the client just uses it.
                 "kind": folder_key,
                 "thumbnail": (
-                    "/warppipe/lora/thumbnail?name="
+                    "/warp-studio/lora/thumbnail?name="
                     + urllib.parse.quote(name)
                     + "&kind="
                     + urllib.parse.quote(folder_key)
@@ -2324,15 +2324,15 @@ def _register_routes() -> None:
     if routes is None:
         return
 
-    @routes.get("/warppipe/loras")
+    @routes.get("/warp-studio/loras")
     async def _loras(request):
         return web.json_response({"loras": lora_index()})
 
-    @routes.get("/warppipe/embeddings")
+    @routes.get("/warp-studio/embeddings")
     async def _embeddings(request):
         return web.json_response({"embeddings": embedding_index()})
 
-    @routes.get("/warppipe/model/base")
+    @routes.get("/warp-studio/model/base")
     async def _model_base(request):
         """The base model of an arbitrary model file, for matching LoRAs to it."""
         name = request.query.get("name", "")
@@ -2341,7 +2341,7 @@ def _register_routes() -> None:
             {"name": name, "base_model": base_model_of(path), "found": bool(path)}
         )
 
-    @routes.get("/warppipe/lora/thumbnail")
+    @routes.get("/warp-studio/lora/thumbnail")
     async def _thumbnail(request):
         name = request.query.get("name", "")
         kind = request.query.get("kind", "loras")
@@ -2371,7 +2371,7 @@ def _register_routes() -> None:
 
 
 def _register_prompt_writer_routes(routes, web, instance) -> None:
-    """The /warppipe/llm routes of the Prompt Writer (see prompt_writer.py)."""
+    """The /warp-studio/llm routes of the Prompt Writer (see prompt_writer.py)."""
     try:
         from . import prompt_writer
     except ImportError:
@@ -2414,7 +2414,7 @@ def _register_prompt_writer_routes(routes, web, instance) -> None:
         settings_loader=settings_loader,
         image_path=image_path,
     )
-    logger.info("WarpPipe Prompt Writer routes registered (/warppipe/llm)")
+    logger.info("WarpPipe Prompt Writer routes registered (/warp-studio/llm)")
 
 
 try:
