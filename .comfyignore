@@ -23,3 +23,6 @@
 
 # Full-size originals of the icon and banner (about 10 MB); the scaled ones stay.
 /assets/source/
+
+# Updater maintenance tools (the package itself, comfy_updater/, stays in)
+/tools/

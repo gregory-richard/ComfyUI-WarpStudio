@@ -1,11 +1,11 @@
 {
     "custom_nodes": [
         {
-            "title": "WarpPipe Nodes",
-            "reference": "https://github.com/gregory-richard/ComfyUI-WarpPipe",
-            "files": ["https://github.com/gregory-richard/ComfyUI-WarpPipe"],
+            "title": "Warp Studio",
+            "reference": "https://github.com/gregory-richard/ComfyUI-WarpStudio",
+            "files": ["https://github.com/gregory-richard/ComfyUI-WarpStudio"],
             "install_type": "git-clone",
-            "description": "Bundle a whole generation - models, conditioning, latents, prompts and every sampling parameter - into a single wire, and write prompts with their LoRAs inline. Saves images with metadata Civitai reads."
+            "description": "An all-in-one ComfyUI node suite that simplifies model management, streamlines workflows, and makes prompting easier."
         }
     ]
 }

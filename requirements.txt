@@ -1,2 +1,4 @@
-# No external dependencies required
-# This custom node only uses ComfyUI's built-in modules
+requests>=2.31.0
+Pillow>=10.0.0
+imageio-ffmpeg>=0.4.9
+send2trash>=1.8

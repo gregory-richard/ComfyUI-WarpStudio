@@ -82,3 +82,8 @@ node_modules/
 
 # Agent working notes
 .superpowers/
+
+# Civitai Updater data, and local agent folders
+.civitai_updater/
+.cursor/
+.codex

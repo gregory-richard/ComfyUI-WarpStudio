@@ -69,7 +69,9 @@ except ImportError:
 # V3 combo outputs currently validate inconsistently in ComfyUI when linked to
 # sampler/scheduler inputs. Keep the stable legacy schema by default, while
 # leaving the V3 implementation available for explicit local testing.
-ENABLE_V3_NODES = COMFY_API_AVAILABLE and os.environ.get("WARPPIPE_ENABLE_V3") == "1"
+ENABLE_V3_NODES = COMFY_API_AVAILABLE and (
+    os.environ.get("WARPPIPE_ENABLE_V3") == "1" or os.environ.get("WARPSTUDIO_ENABLE_V3") == "1"
+)
 
 # Patch for RES4LYF compatibility - GLOBAL REGISTRATION
 # We must register beta57 and bong_tangent in the global comfy.samplers lists so *other* nodes (like FaceDetailer)

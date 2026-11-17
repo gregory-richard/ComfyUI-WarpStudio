@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.13"]
+        python-version: ["3.9", "3.12", "3.13"]
 
     steps:
       - name: Checkout code
@@ -36,7 +36,7 @@ jobs:
         # only way to check the generation info actually lands where Civitai
         # looks. numpy is deliberately absent: conftest stubs it, so the suite
         # proves it does not need the real one.
-        run: python -m pip install "build==1.4.4" "pytest==8.4.2" "ruff==0.16.5" "pillow==11.3.0"
+        run: python -m pip install "build==1.4.4" "pytest==8.4.2" "ruff==0.16.5" "pillow==11.3.0" -r requirements.txt aiohttp
       - name: Lint
         run: python -m ruff check . --exclude .agents --exclude .claude
       - name: Check formatting

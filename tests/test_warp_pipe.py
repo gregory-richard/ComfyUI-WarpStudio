@@ -335,7 +335,7 @@ def test_package_exports_only_one_registration_path(package_loader, enable_v3):
         assert set(package.__all__) == {"comfy_entrypoint", "WEB_DIRECTORY"}
         assert not hasattr(package, "NODE_CLASS_MAPPINGS")
     else:
-        assert set(package.NODE_CLASS_MAPPINGS) == NODE_IDS
+        assert set(package.NODE_CLASS_MAPPINGS) == NODE_IDS | {"CivitaiUpdaterStatus"}
         assert set(package.__all__) == {
             "NODE_CLASS_MAPPINGS",
             "NODE_DISPLAY_NAME_MAPPINGS",
@@ -1761,9 +1761,9 @@ def test_the_package_ships_every_file_the_frontend_needs():
     prompt UI, no library browser and no save-node labels."""
     root = pathlib.Path(__file__).resolve().parents[1]
     declared = re.search(
-        r"^warppipe = \[(.*?)\]", (root / "pyproject.toml").read_text(encoding="utf-8"), re.M
+        r"^warp_studio = \[(.*?)\]", (root / "pyproject.toml").read_text(encoding="utf-8"), re.M
     )
-    assert declared, "package-data for warppipe not found in pyproject.toml"
+    assert declared, "package-data for warp_studio not found in pyproject.toml"
     globs = re.findall(r'"([^"]+)"', declared.group(1))
 
     shipped = [
