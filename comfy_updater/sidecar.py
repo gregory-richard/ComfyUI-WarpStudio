@@ -24,6 +24,13 @@ def preview_sidecar_path(model_path: Path) -> Path:
     return model_path.with_suffix(f"{PREVIEW_SIDECAR_SUFFIX}")
 
 
+def preview_path_for(path: Path) -> Path:
+    """The ``.preview.png`` that belongs to a weights file or to its ``.civitai.info`` sidecar (in any case)."""
+    if path.name.lower().endswith(INFO_SIDECAR_SUFFIX.lower()):
+        return path.with_name(f"{path.name[: -len(INFO_SIDECAR_SUFFIX)]}{PREVIEW_SIDECAR_SUFFIX}")
+    return preview_sidecar_path(path)
+
+
 def model_file_path(info_path: Path, info: dict | None = None) -> Path:
     """Where the weights described by a metadata-only sidecar would live.
 
@@ -42,6 +49,26 @@ def _primary_file_extension(info: dict | None) -> str:
     )
     suffix = Path(str(primary.get("name") or "")).suffix.lower() if primary else ""
     return suffix if suffix in SUPPORTED_MODEL_EXTENSIONS else ".safetensors"
+
+
+def sidecar_identifies_model(info: dict | None) -> bool:
+    if not isinstance(info, dict):
+        return False
+    return bool(info.get("modelId")) and bool(info.get("id"))
+
+
+def stored_sha256(info: dict | None) -> str:
+    """Return the SHA256 recorded in a sidecar's first file entry, if any."""
+    if not isinstance(info, dict):
+        return ""
+    files = info.get("files")
+    if not isinstance(files, list) or not files or not isinstance(files[0], dict):
+        return ""
+    hashes = files[0].get("hashes")
+    if not isinstance(hashes, dict):
+        return ""
+    value = hashes.get("SHA256") or hashes.get("sha256") or ""
+    return value.strip().lower() if isinstance(value, str) else ""
 
 
 def read_json(path: Path) -> dict | None:

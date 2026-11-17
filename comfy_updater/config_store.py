@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 import threading
@@ -23,8 +24,15 @@ DEFAULT_CONFIG = {
     # The renamer's AI: a file in ComfyUI's text_encoders folders, named as
     # CLIPLoader's clip_name (relative path, subfolders included).
     "namingModel": "",
+    # Preview fallback sources, for files Civitai cannot serve.
+    "fallbackCivarchive": False,
+    "fallbackHuggingFace": ["malcolmrey"],
+    "fallbackAiToolkitFolders": [],
+    "fallbackOwnCreator": "",
     "customPaths": {model_type: [] for model_type in SUPPORTED_MODEL_TYPES},
 }
+
+_HF_REPO_PATTERN = re.compile(r"^[A-Za-z0-9][\w.-]*(/[\w.-]+)?$")
 
 
 class ConfigStore:
@@ -85,6 +93,8 @@ class ConfigStore:
             "treatSidecarsAsInstalled",
             "matureMode",
             "namingModel",
+            "fallbackCivarchive",
+            "fallbackOwnCreator",
         ):
             if key in incoming:
                 merged[key] = incoming[key]
@@ -125,6 +135,21 @@ class ConfigStore:
             merged["namingModel"] = ""
         merged["namingModel"] = merged["namingModel"].strip()
 
+        merged["fallbackCivarchive"] = bool(merged["fallbackCivarchive"])
+        hf_repos = incoming.get("fallbackHuggingFace")
+        if isinstance(hf_repos, list):
+            merged["fallbackHuggingFace"] = _clean_hf_repos(hf_repos)
+        folders = incoming.get("fallbackAiToolkitFolders")
+        if isinstance(folders, list):
+            merged["fallbackAiToolkitFolders"] = [
+                str(Path(folder.strip()))
+                for folder in folders
+                if isinstance(folder, str) and folder.strip()
+            ]
+        if not isinstance(merged["fallbackOwnCreator"], str):
+            merged["fallbackOwnCreator"] = ""
+        merged["fallbackOwnCreator"] = merged["fallbackOwnCreator"].strip()[:100]
+
         return merged
 
     def _save(self) -> None:
@@ -155,6 +180,21 @@ class ConfigStore:
             self._config = merged
             self._save()
             return self.get()
+
+
+def _clean_hf_repos(values: list) -> list[str]:
+    """Keep valid Hugging Face repo or author names, first spelling wins, case-insensitive dedupe."""
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        name = value.strip()
+        if not _HF_REPO_PATTERN.match(name) or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        cleaned.append(name)
+    return cleaned
 
 
 def _int_in_range(value, default: int, minimum: int, maximum: int) -> int:

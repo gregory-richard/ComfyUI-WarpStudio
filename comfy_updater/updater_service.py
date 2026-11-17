@@ -6,8 +6,18 @@ import time
 from typing import Callable
 
 from .civitai_client import CivitaiClient, CivitaiRequestError
+from .fallback_http import FallbackHttp
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
-from .sidecar import info_sidecar_path, preview_sidecar_path, read_json, write_json
+from .preview_fallback import FallbackOutcome, PreviewFallback
+from .rename_store import BASE_CODES_FILENAME
+from .sidecar import (
+    info_sidecar_path,
+    preview_sidecar_path,
+    read_json,
+    sidecar_identifies_model,
+    stored_sha256,
+    write_json,
+)
 from .hashing import HashingCancelled, sha256_file
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -105,6 +115,12 @@ class UpdaterService:
             max_retries=int(config.get("maxRetries", 4)),
             should_stop=should_stop,
         )
+        # Files still without a preview after the Civitai step ask the other sources.
+        fallback = (
+            _ScanFallback(config, self.config_store.data_dir, should_stop)
+            if mode == "scan" and PreviewFallback.is_enabled(config)
+            else None
+        )
 
         stats = {
             "total": total,
@@ -113,6 +129,7 @@ class UpdaterService:
             "withUpdates": 0,
             "skipped": 0,
             "errors": 0,
+            "previewsFound": 0,
         }
         items: list[dict] = []
 
@@ -166,6 +183,37 @@ class UpdaterService:
             # copies this path to the weights instead.
             item["filePath"] = str(model_entry.get("filePath") or model_path)
 
+            preview = preview_path or preview_sidecar_path(model_path)
+            # Not for a file that errored: Civitai may serve it next time, and a
+            # preview from elsewhere would then keep out Civitai's own.
+            if (
+                fallback is not None
+                and not metadata_only
+                and item.get("status") != "error"
+                and not preview.exists()
+            ):
+                # Pause and Stop hold here as they do before the Civitai step.
+                if control:
+                    control.wait_if_paused()
+                    if control.is_cancelled():
+                        break
+                outcome = fallback.run(
+                    model_path=model_path,
+                    info_path=info_path or info_sidecar_path(model_path),
+                    preview_path=preview,
+                    local_hash=item.get("localHash") or "",
+                    refetch=refetch_metadata,
+                    on_source=_announce_source(progress, index - 1, total, model_path.name),
+                )
+                # As above: a lookup cut short by Stop is not reported.
+                if control and control.is_cancelled():
+                    break
+                if outcome is not None:
+                    item["fallbackSource"] = outcome.source
+                    stats["previewsFound"] += int(outcome.preview_written)
+            item.setdefault("fallbackSource", "")
+            item["hasLocalPreview"] = preview.exists()
+
             if item.get("status") == "ok":
                 stats["resolved"] += 1
             if item.get("status") == "not_found":
@@ -192,6 +240,7 @@ class UpdaterService:
                 "skipped": stats["skipped"],
                 "notFound": stats["notFound"],
                 "errors": stats["errors"],
+                "previewsFound": stats["previewsFound"],
                 "modelTypes": model_types,
                 "includeCustomPaths": include_custom,
                 "sidecarWarnings": sidecar_warnings,
@@ -339,9 +388,17 @@ class UpdaterService:
                 "downloadUrl": "",
                 "nsfw": False,
             }
+            # What another source found still describes this file unless it was replaced since.
+            filled_elsewhere = bool(_fallback_record(existing_info))
+            replaced = _replaced(stored_hash, local_hash)
+            if filled_elsewhere and not replaced:
+                payload.update(_fallback_fields(existing_info, model_path.name))
             # A failed lookup cannot tell "removed" from "Civitai is down", so
             # it never replaces a sidecar that already identifies the model.
-            if mode == "scan" and not metadata_only and not has_identity:
+            # What another source found is kept until the file is replaced,
+            # ids or not: it described the old file.
+            rewrite = replaced if filled_elsewhere else not has_identity
+            if mode == "scan" and not metadata_only and rewrite:
                 write_json(
                     info_path,
                     {
@@ -407,6 +464,8 @@ class UpdaterService:
             creator_name, model_versions, is_nsfw = client.get_model_versions_for_model(model_id)
         except CivitaiRequestError as exc:
             local_preview_url, local_preview_type = _first_preview(version_data)
+            # A removed model's creator and source can only come from its info file.
+            info_applies = not _replaced(stored_hash, local_hash)
             return {
                 "modelPath": str(model_path),
                 "modelType": model_type,
@@ -425,7 +484,8 @@ class UpdaterService:
                 "latestVersionName": "",
                 "latestBaseModel": "",
                 "latestVersionDate": "",
-                "creatorName": "",
+                "creatorName": _creator_name(existing_info) if info_applies else "",
+                "fallbackSource": _fallback_source(existing_info) if info_applies else "",
                 "previewUrl": local_preview_url,
                 "previewType": local_preview_type,
                 "localPreviewUrl": local_preview_url,
@@ -677,24 +737,123 @@ def _version_availability(version_data: dict) -> str:
     return availability if isinstance(availability, str) else ""
 
 
-def _sidecar_identifies_model(info: dict | None) -> bool:
-    if not isinstance(info, dict):
-        return False
-    return bool(info.get("modelId")) and bool(info.get("id"))
+# Moved to sidecar.py; the old names stay importable from here.
+_sidecar_identifies_model = sidecar_identifies_model
+_stored_sha256 = stored_sha256
 
 
-def _stored_sha256(info: dict | None) -> str:
-    """Return the SHA256 recorded in a sidecar's first file entry, if any."""
-    if not isinstance(info, dict):
-        return ""
-    files = info.get("files")
-    if not isinstance(files, list) or not files or not isinstance(files[0], dict):
-        return ""
-    hashes = files[0].get("hashes")
-    if not isinstance(hashes, dict):
-        return ""
-    value = hashes.get("SHA256") or hashes.get("sha256") or ""
-    return value.strip().lower() if isinstance(value, str) else ""
+def _text(value) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _replaced(stored_hash: str, local_hash: str | None) -> bool:
+    """True when the hash just computed differs from the one the info file records."""
+    return bool(stored_hash and local_hash and local_hash.strip().lower() != stored_hash)
+
+
+def _fallback_record(info: dict | None) -> dict:
+    """The info file's ``extensions.fallback`` (which other source filled it in), or {}."""
+    extensions = info.get("extensions") if isinstance(info, dict) else None
+    record = extensions.get("fallback") if isinstance(extensions, dict) else None
+    return record if isinstance(record, dict) else {}
+
+
+def _fallback_source(info: dict | None) -> str:
+    return _text(_fallback_record(info).get("source"))
+
+
+def _creator_name(info: dict | None) -> str:
+    creator = info.get("creator") if isinstance(info, dict) else None
+    return _text(creator.get("username")) if isinstance(creator, dict) else ""
+
+
+def _fallback_fields(info: dict, file_name: str) -> dict:
+    """A No match card's fields from an info file another source filled in."""
+    model = info.get("model")
+    version_name = _text(info.get("name"))
+    preview_url, preview_type = _first_preview(info)
+    return {
+        "modelName": _model_name(info),
+        "creatorName": _creator_name(info),
+        "baseModel": _text(info.get("baseModel")),
+        # The stub's placeholder name is the file's own name, not a version.
+        "localVersionName": "" if version_name == file_name else version_name,
+        "nsfw": isinstance(model, dict) and bool(model.get("nsfw")),
+        "fallbackSource": _fallback_source(info),
+        "localPreviewUrl": preview_url,
+        "localPreviewType": preview_type,
+    }
+
+
+# The progress line while each fallback source is asked about a file.
+_FALLBACK_PROGRESS = {
+    "ai-toolkit": "Looking in your ai-toolkit samples",
+    "huggingface": "Asking Hugging Face for a preview",
+    "civarchive": "Asking civarchive for a preview",
+}
+
+
+def _announce_source(progress: ProgressCallback, current: int, total: int, file_name: str) -> Callable[[str], None]:
+    def announce(source: str) -> None:
+        what = _FALLBACK_PROGRESS.get(source, "Looking for a preview elsewhere")
+        progress(current, total, f"{what}: {file_name}")
+
+    return announce
+
+
+def _read_base_codes(data_dir: Path) -> dict[str, str]:
+    """The renamer's base-model codes (name -> code), read only: its store rewrites the file when built.
+
+    A missing or unreadable file gives {}.
+    """
+    payload = read_json(Path(data_dir) / BASE_CODES_FILENAME)
+    codes = payload.get("codes") if isinstance(payload, dict) else None
+    if not isinstance(codes, dict):
+        return {}
+    return {name: code for name, code in codes.items() if isinstance(name, str) and isinstance(code, str) and code}
+
+
+class _ScanFallback:
+    """One scan's preview fallback, built when the first file needs it.
+
+    A failure is logged and costs only that file its fallback; the scan goes on.
+    """
+
+    def __init__(self, config: dict, data_dir: Path, should_stop=None) -> None:
+        self._config = config
+        self._data_dir = Path(data_dir)
+        self._should_stop = should_stop
+        self._fallback: PreviewFallback | None = None
+
+    def run(
+        self,
+        *,
+        model_path: Path,
+        info_path: Path,
+        preview_path: Path,
+        local_hash: str,
+        refetch: bool,
+        on_source: Callable[[str], None],
+    ) -> FallbackOutcome | None:
+        try:
+            if self._fallback is None:
+                http = FallbackHttp(
+                    timeout_seconds=int(self._config.get("requestTimeoutSeconds", 30)),
+                    should_stop=self._should_stop,
+                )
+                base_codes = _read_base_codes(self._data_dir)
+                self._fallback = PreviewFallback(self._config, self._data_dir, http, base_codes)
+            return self._fallback.run(
+                model_path=model_path,
+                info_path=info_path,
+                preview_path=preview_path,
+                sha256=local_hash or stored_sha256(read_json(info_path)),
+                refetch=refetch,
+                on_source=on_source,
+            )
+        except Exception as exc:  # noqa: BLE001 - a fallback failure must not end the scan
+            print(f"Civitai updater: could not look for a preview elsewhere for {model_path.name} ({exc})")
+            return None
 
 
 def _set_sha256_hash(version_data: dict, sha256_hash: str) -> None:

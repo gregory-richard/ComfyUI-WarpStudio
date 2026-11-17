@@ -53,7 +53,7 @@ from .renamer import (
 from .rename_folders import plan_moves, recheck_folder_flags
 from .rename_store import RenameLog
 from .request_guard import request_rejection
-from .sidecar import read_data_file, write_json
+from .sidecar import preview_path_for, read_data_file, write_json
 from .updater_service import sidecar_seed_item
 
 try:
@@ -879,6 +879,12 @@ def _register_rename_routes(
         # Any job's results: a checked file in Updates or Issues, or a dry run row.
         return await reveal_response(request, job_manager.get)
 
+    @routes.post("/civitai-updater/local-preview")
+    @_guarded
+    async def local_preview(request):
+        # The panel fetches this with the guard header and shows a blob URL.
+        return await local_preview_response(request, job_manager.get)
+
     @routes.post("/civitai-updater/jobs/download-naming-model")
     @_guarded
     async def start_naming_model_download(request):  # noqa: ARG001
@@ -1059,6 +1065,47 @@ def _job_file(job, wanted: str) -> Optional[str]:
             if isinstance(value, str) and value and _same_path(value, wanted):
                 return value
     return None
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_LOCAL_PREVIEW_BYTES = 20 * 1024 * 1024
+
+
+def _read_capped(path: Path, limit: int) -> Optional[bytes]:
+    """Up to ``limit`` + 1 bytes of the file, or None when it cannot be read."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(limit + 1)
+    except OSError:
+        return None
+
+
+async def local_preview_response(request, get_job) -> web.Response:
+    """Send the ``.preview.png`` of a file the job's results list, as image bytes.
+
+    The picture is always the one next to the listed file, never the posted
+    path itself. Open to any browser that passes the guard, like ComfyUI's own
+    model previews.
+    """
+    payload = await _read_json(request)
+    job_id = payload.get("jobId")
+    wanted = payload.get("path")
+    if not isinstance(job_id, str) or not job_id.strip() or not isinstance(wanted, str) or not wanted.strip():
+        return web.json_response({"error": "jobId and the path of a listed file are required"}, status=400)
+    job = get_job(job_id.strip())
+    if job is None:
+        return web.json_response({"error": "job not found"}, status=404)
+    listed = _job_file(job, wanted)
+    if listed is None:
+        return web.json_response({"error": "That file is not in these results."}, status=400)
+    data = await asyncio.to_thread(_read_capped, preview_path_for(Path(listed)), _MAX_LOCAL_PREVIEW_BYTES)
+    if data is None:
+        return web.json_response({"error": "This file has no local preview."}, status=404)
+    if len(data) > _MAX_LOCAL_PREVIEW_BYTES:
+        return web.json_response({"error": "The local preview is too large to show."}, status=413)
+    if not data.startswith(_PNG_SIGNATURE):
+        return web.json_response({"error": "The local preview is not a PNG image."}, status=415)
+    return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "no-cache"})
 
 
 async def reveal_response(request, get_job, *, launch=_launch_detached, platform: str = sys.platform):

@@ -29,6 +29,18 @@ const SETTINGS = {
   customEmbedding: "CivitaiUpdater.CustomPaths.Embedding",
   matureMode: "CivitaiUpdater.MatureContent",
   namingModel: "CivitaiUpdater.NamingModel",
+  fallbackCivarchive: "CivitaiUpdater.Fallback.Civarchive",
+  fallbackHuggingFace: "CivitaiUpdater.Fallback.HuggingFace",
+  fallbackAiToolkitFolders: "CivitaiUpdater.Fallback.AiToolkitFolders",
+  fallbackOwnCreator: "CivitaiUpdater.Fallback.OwnCreator",
+};
+
+// The row label column fits "No match"; the message line names the source.
+const FALLBACK_LABEL = "Found";
+const FALLBACK_SOURCES = {
+  "ai-toolkit": { phrase: "your ai-toolkit training" },
+  huggingface: { phrase: "Hugging Face" },
+  civarchive: { phrase: "civarchive" },
 };
 
 const GROUP_OPTIONS = [
@@ -148,6 +160,12 @@ const state = {
   // True only after the user picks a naming model in the settings: until then
   // the panel never posts one, so it cannot overwrite the backend's choice.
   namingModelDirty: false,
+  // Object URLs of previews read from local files, and path -> request. Kept
+  // across re-renders of the list; revoked when the results' job changes.
+  localPreviewUrls: new Set(),
+  localPreviewCache: new Map(),
+  localPreviewJobId: null,
+  lightboxLocalUrls: null,
 };
 
 app.registerExtension({
@@ -177,6 +195,10 @@ app.registerExtension({
       state.namingModelDirty = String(value ?? "") !== state.syncedNamingModel;
       scheduleSettingsSync();
     } },
+    { id: SETTINGS.fallbackCivarchive, name: "Look up previews on civarchive", type: "boolean", defaultValue: false, tooltip: "Files Civitai can't serve are looked up on civarchive.com by their SHA256 hash. Only the hash is sent.", category: ["Civitai Updater", "Preview Fallback", "Civarchive"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.fallbackHuggingFace, name: "Hugging Face authors and repos", type: "text", defaultValue: "malcolmrey", tooltip: "Matched by file hash. Authors (malcolmrey) or repos (owner/name), separated by ';' or new lines. Leave empty to skip Hugging Face.", category: ["Civitai Updater", "Preview Fallback", "Hugging Face"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.fallbackAiToolkitFolders, name: "ai-toolkit output folders", type: "text", defaultValue: "", tooltip: "Folders that hold your ai-toolkit training runs. Their sample images become previews for your own trainings. Use ';' or new lines.", category: ["Civitai Updater", "Preview Fallback", "ai-toolkit Folders"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.fallbackOwnCreator, name: "Creator of your own trainings", type: "text", defaultValue: "", category: ["Civitai Updater", "Preview Fallback", "Own Creator"], onChange: () => scheduleSettingsSync() },
   ],
   async setup() {
     injectStyles();
@@ -238,7 +260,7 @@ async function renderTab(el) {
     <section class="cu-card">
       <div class="cu-action-bar">
         <button id="cu-check" class="cu-btn cu-btn-primary cu-btn-lead cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
-        <button id="cu-scan" class="cu-btn cu-btn-ghost cu-tooltip" data-tooltip="Download missing .civitai.info sidecars and preview images. Files that already have metadata are skipped, and nothing is compared for updates.">Fetch Missing Metadata</button>
+        <button id="cu-scan" class="cu-btn cu-btn-ghost cu-tooltip" data-tooltip="Download missing .civitai.info sidecars and preview images. Files Civitai can't serve are looked up on the sources set under Preview Fallback in the settings. Files that already have metadata and a preview are skipped, and nothing is compared for updates.">Fetch Missing Metadata</button>
       </div>
       <div id="cu-cache-info" class="cu-cache-info"></div>
       <div id="cu-sidecar-warnings" class="cu-sidecar-warnings"></div>
@@ -799,6 +821,8 @@ function pollJob(jobId) {
         }
         if (state.currentJobType === "scan") {
           if (job.summary && Object.keys(job.summary).length > 0) state.scanSummary = job.summary;
+          // Cached check results predate the pictures this scan found: the next click runs a check.
+          if (job.summary?.previewsFound > 0) state.forceNextRecheck = true;
           state.scanHint = "Run Check for Updates to see available updates.";
           renderScanReport();
           renderResults();
@@ -967,7 +991,8 @@ function renderProgressCounts() {
 }
 
 function scanCounts(s) {
-  return `${s.total || 0} total \u00b7 ${s.refreshed || 0} refreshed \u00b7 ${s.skipped || 0} skipped \u00b7 ${s.notFound || 0} not found \u00b7 ${s.errors || 0} errors`;
+  const found = s.previewsFound > 0 ? ` \u00b7 ${s.previewsFound} found elsewhere` : "";
+  return `${s.total || 0} total \u00b7 ${s.refreshed || 0} refreshed \u00b7 ${s.skipped || 0} skipped \u00b7 ${s.notFound || 0} not found \u00b7 ${s.errors || 0} errors${found}`;
 }
 
 function renderCacheInfo() {
@@ -1099,11 +1124,14 @@ function buildResultCard(item, cardIndex) {
   const newRows = newVersions.map((v) => renderRemoteVersionRow(item.modelId, v, false)).join("");
   const hiddenRows = hiddenVersions.map((v) => renderRemoteVersionRow(item.modelId, v, true)).join("");
 
+  const localPath = localVersions.find((v) => v.hasLocalPreview)?.modelPath || "";
   let thumbHtml;
   if (item.previewUrl && item.previewType === "video") {
     thumbHtml = `<video src="${escapeHtml(item.previewUrl)}#t=0.5" preload="metadata" muted playsinline></video>`;
   } else if (item.previewUrl) {
     thumbHtml = `<img src="${escapeHtml(item.previewUrl)}" alt="" loading="lazy">`;
+  } else if (localPath) {
+    thumbHtml = `<img alt="">`;
   } else {
     thumbHtml = `<div class="cu-thumb-empty">No preview</div>`;
   }
@@ -1135,13 +1163,41 @@ function buildResultCard(item, cardIndex) {
   card.querySelector(".cu-thumb").addEventListener("click", () => openLightbox(item));
   // A removed model's preview URL is dead too; show the empty tile instead of
   // the browser's broken-image icon.
-  card.querySelector(".cu-thumb img")?.addEventListener("error", (ev) => {
-    ev.currentTarget.replaceWith(Object.assign(document.createElement("div"), {
-      className: "cu-thumb-empty",
-      textContent: "No preview",
-    }));
-  });
+  const thumbImg = card.querySelector(".cu-thumb img");
+  if (thumbImg) wireThumbImage(thumbImg, localPath, !thumbImg.getAttribute("src"));
+  // A dead online video falls back the same way, to a picture.
+  const thumbVideo = card.querySelector(".cu-thumb video");
+  if (thumbVideo) {
+    thumbVideo.addEventListener("error", () => {
+      const img = Object.assign(document.createElement("img"), { alt: "" });
+      thumbVideo.replaceWith(img);
+      wireThumbImage(img, localPath, true);
+    }, { once: true });
+  }
   return card;
+}
+
+// The local copy is the last resort: try it once, then show "No preview".
+// `loadNow` skips the online picture (there is none, or it already failed).
+function wireThumbImage(img, localPath, loadNow) {
+  const showNoPreview = () => img.replaceWith(Object.assign(document.createElement("div"), {
+    className: "cu-thumb-empty",
+    textContent: "No preview",
+  }));
+  let triedLocal = false;
+  const loadLocal = async () => {
+    triedLocal = true;
+    const url = await fetchLocalPreview(localPath);
+    if (url) img.src = url;
+    else showNoPreview();
+  };
+  img.addEventListener("error", () => {
+    if (localPath && !triedLocal) loadLocal();
+    else showNoPreview();
+  });
+  if (!loadNow) return;
+  if (localPath) loadLocal();
+  else showNoPreview();
 }
 
 const ISSUE_LABELS = {
@@ -1153,7 +1209,8 @@ function renderLocalVersionRow(v, showMessage = true) {
   const issue = ISSUE_LABELS[v.status];
   const date = v.publishedAt ? shortDate(v.publishedAt) : "";
   const role = issue ? issue.role : (v.metadataOnly ? "metadata" : "saved");
-  const label = issue ? issue.label : (v.metadataOnly ? "Metadata" : "Saved");
+  const source = v.status === "not_found" ? FALLBACK_SOURCES[v.fallbackSource] : null;
+  const label = source ? FALLBACK_LABEL : (issue ? issue.label : (v.metadataOnly ? "Metadata" : "Saved"));
   const filePath = v.filePath || v.modelPath || "";
   // A file Civitai never identified has no version name; its file name is
   // what the user will recognize.
@@ -1171,6 +1228,11 @@ function renderLocalVersionRow(v, showMessage = true) {
 }
 
 function issueMessage(v) {
+  const source = FALLBACK_SOURCES[v.fallbackSource];
+  if (source && (v.status === "not_found" || v.status === "error")) {
+    const found = `${v.hasLocalPreview ? "Info and preview" : "Info"} from ${source.phrase}.`;
+    return v.status === "not_found" ? `Not on Civitai. ${found}` : `${v.error || "The lookup failed."} ${found}`;
+  }
   if (v.status === "not_found") {
     return "Civitai has no release with this file's hash. It may be converted, merged, private, or never uploaded.";
   }
@@ -1239,6 +1301,7 @@ function renderResults() {
   state.lastPageKey = pageKey;
   state.resultsEl.classList.toggle("cu-quiet", samePage);
 
+  syncLocalPreviewCache();
   state.resultsEl.innerHTML = "";
   if (!state.checkJobId) {
     appendEmpty("Run Check for Updates to see results.");
@@ -1890,6 +1953,10 @@ async function hydrateSettingsFromBackend() {
     setSetting(SETTINGS.customVae, listToSettingString(custom.vae));
     setSetting(SETTINGS.customUnet, listToSettingString(custom.unet));
     setSetting(SETTINGS.customEmbedding, listToSettingString(custom.embedding));
+    setSetting(SETTINGS.fallbackCivarchive, Boolean(cfg.fallbackCivarchive ?? false));
+    setSetting(SETTINGS.fallbackHuggingFace, listToSettingString(cfg.fallbackHuggingFace));
+    setSetting(SETTINGS.fallbackAiToolkitFolders, listToSettingString(cfg.fallbackAiToolkitFolders));
+    setSetting(SETTINGS.fallbackOwnCreator, String(cfg.fallbackOwnCreator || ""));
     state.matureMode = String(cfg.matureMode || "show");
     setSetting(SETTINGS.matureMode, state.matureMode);
     state.syncedNamingModel = String(cfg.namingModel || "");
@@ -1926,6 +1993,10 @@ async function syncSettingsToBackend() {
     useComfyPaths: Boolean(getSetting(SETTINGS.useComfyPaths, true)),
     useExtraModelPaths: Boolean(getSetting(SETTINGS.useExtraModelPaths, true)),
     useCustomPaths: Boolean(getSetting(SETTINGS.useCustomPaths, true)),
+    fallbackCivarchive: Boolean(getSetting(SETTINGS.fallbackCivarchive, false)),
+    fallbackHuggingFace: parsePathSetting(getSetting(SETTINGS.fallbackHuggingFace, "malcolmrey")),
+    fallbackAiToolkitFolders: parsePathSetting(getSetting(SETTINGS.fallbackAiToolkitFolders, "")),
+    fallbackOwnCreator: String(getSetting(SETTINGS.fallbackOwnCreator, "") || "").trim(),
     customPaths: {
       checkpoint: parsePathSetting(getSetting(SETTINGS.customCheckpoint, "")),
       lora: parsePathSetting(getSetting(SETTINGS.customLora, "")),
@@ -2102,12 +2173,18 @@ function openLightbox(item) {
   const hasComparison = localVersions.some((v) => v.previewUrl) && primaryNewVersion?.previewUrl;
 
   let sections = "";
+  // Same order as the card: the online preview, then the local one, then "No preview".
+  // `localFills[i]` is the file whose local preview the element marked `i` falls back to.
+  const localFills = [];
   for (const v of localVersions) {
-    if (!v.previewUrl) continue;
+    if (!v.previewUrl && !v.hasLocalPreview) continue;
     const base = v.baseModel ? ` <span class="cu-lb-base">${escapeHtml(v.baseModel)}</span>` : "";
-    const media = v.previewType === "video"
-      ? `<video src="${escapeHtml(v.previewUrl)}" preload="auto" muted playsinline controls></video>`
-      : `<img src="${escapeHtml(v.previewUrl)}" alt="">`;
+    const local = v.hasLocalPreview ? ` data-local-index="${localFills.length}"` : "";
+    if (v.hasLocalPreview) localFills.push(v.modelPath);
+    let media;
+    if (!v.previewUrl) media = `<img${local} alt="">`;
+    else if (v.previewType === "video") media = `<video src="${escapeHtml(v.previewUrl)}"${local} preload="auto" muted playsinline controls></video>`;
+    else media = `<img src="${escapeHtml(v.previewUrl)}"${local} alt="">`;
     sections += `<div class="cu-lb-card"><div class="cu-lb-label">Local</div><div class="cu-lb-vname">${escapeHtml(v.versionName || "?")}${base}</div>${media}</div>`;
   }
   if (primaryNewVersion?.previewUrl) {
@@ -2134,6 +2211,34 @@ function openLightbox(item) {
     </div>`;
 
   document.body.appendChild(overlay);
+  const ownUrls = new Set();
+  state.lightboxLocalUrls = ownUrls;
+  const showNoPreview = (el) => el.replaceWith(Object.assign(document.createElement("div"), {
+    className: "cu-lb-empty",
+    textContent: "No preview",
+  }));
+  const loadLocal = (el, modelPath) => {
+    fetchLocalPreview(modelPath, ownUrls).then((url) => {
+      if (state.lightboxLocalUrls !== ownUrls) {
+        // Closed while the request was in flight.
+        if (url) URL.revokeObjectURL(url);
+        return;
+      }
+      if (!url) {
+        showNoPreview(el);
+        return;
+      }
+      const img = Object.assign(document.createElement("img"), { alt: "" });
+      img.addEventListener("error", () => showNoPreview(img), { once: true });
+      img.src = url;
+      el.replaceWith(img);
+    });
+  };
+  localFills.forEach((modelPath, index) => {
+    const el = overlay.querySelector(`[data-local-index="${index}"]`);
+    if (!el.getAttribute("src")) loadLocal(el, modelPath);
+    else el.addEventListener("error", () => loadLocal(el, modelPath), { once: true });
+  });
   requestAnimationFrame(() => overlay.classList.add("cu-lb-open"));
 
   overlay.querySelector(".cu-lb-backdrop").addEventListener("click", closeLightbox);
@@ -2147,6 +2252,10 @@ function openLightbox(item) {
 function closeLightbox() {
   const el = document.getElementById("cu-lightbox");
   if (el) el.remove();
+  if (state.lightboxLocalUrls) {
+    revokeLocalPreviews(state.lightboxLocalUrls);
+    state.lightboxLocalUrls = null;
+  }
   // Every way of closing must drop the key handler, or one accumulates per
   // open and they all fire on the next Escape.
   if (state.lightboxKeyHandler) {
@@ -2173,6 +2282,52 @@ async function postJson(path, payload) {
   });
   if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
+}
+
+function revokeLocalPreviews(urls) {
+  for (const url of urls) URL.revokeObjectURL(url);
+  urls.clear();
+}
+
+// The shared previews belong to one job's results: drop them when it changes
+// (or the results are cleared), so a poll's re-render reuses them instead.
+function syncLocalPreviewCache() {
+  if (state.localPreviewJobId === state.checkJobId) return;
+  revokeLocalPreviews(state.localPreviewUrls);
+  state.localPreviewCache.clear();
+  state.localPreviewJobId = state.checkJobId;
+}
+
+// A listed file's preview that lives next to it on disk. Resolves to an object
+// URL, or null when the server has none. Pass a set to own the URL yourself.
+function fetchLocalPreview(path, urls = state.localPreviewUrls) {
+  if (!state.checkJobId || !path) return Promise.resolve(null);
+  const shared = urls === state.localPreviewUrls;
+  if (shared) syncLocalPreviewCache();
+  if (shared && state.localPreviewCache.has(path)) return state.localPreviewCache.get(path);
+  const jobId = state.checkJobId;
+  const request = (async () => {
+    try {
+      const response = await api.fetchApi("/civitai-updater/local-preview", {
+        method: "POST",
+        headers: { ...GUARD_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId, path }),
+      });
+      if (!response.ok) return null;
+      const url = URL.createObjectURL(await response.blob());
+      // Its job's previews were dropped while this was in flight.
+      if (shared && state.localPreviewJobId !== jobId) {
+        URL.revokeObjectURL(url);
+        return null;
+      }
+      urls.add(url);
+      return url;
+    } catch (error) {
+      return null;
+    }
+  })();
+  if (shared) state.localPreviewCache.set(path, request);
+  return request;
 }
 
 async function errorMessage(response) {
@@ -4053,6 +4208,20 @@ function injectStyles() {
     .cu-lb-body:not(.cu-lb-compare) .cu-lb-card video {
       max-width: min(600px, 80vw);
       max-height: 75vh;
+    }
+
+    .cu-lb-empty {
+      width: min(240px, 42vw);
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 5px;
+      border: 1px solid #2e2e36;
+      background: rgba(0, 0, 0, 0.3);
+      color: #6a6772;
+      font-family: "IBM Plex Mono", Consolas, ui-monospace, monospace;
+      font-size: 9.5px;
     }
   `;
   document.head.appendChild(style);

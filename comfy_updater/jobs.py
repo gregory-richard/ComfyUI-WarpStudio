@@ -696,6 +696,8 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
                     "metadataOnly": bool(member.get("metadataOnly")),
                     "previewUrl": member.get("localPreviewUrl", ""),
                     "previewType": member.get("localPreviewType", "image"),
+                    "fallbackSource": member.get("fallbackSource", ""),
+                    "hasLocalPreview": bool(member.get("hasLocalPreview")),
                     "status": member.get("status", ""),
                     "error": member.get("error", ""),
                 }
@@ -825,6 +827,8 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
             "metadataOnly": bool(item.get("metadataOnly")),
             "previewUrl": item.get("localPreviewUrl", ""),
             "previewType": item.get("localPreviewType", "image"),
+            "fallbackSource": item.get("fallbackSource", ""),
+            "hasLocalPreview": bool(item.get("hasLocalPreview")),
             "status": item.get("status", ""),
             "error": item.get("error", ""),
         }

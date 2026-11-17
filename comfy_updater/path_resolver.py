@@ -16,6 +16,7 @@ from .sidecar import (
     SIDECAR_ERROR_SAFETENSORS,
     SIDECAR_ERROR_TOO_LARGE,
     model_file_path,
+    preview_path_for,
     read_json_diagnostic,
 )
 
@@ -152,8 +153,7 @@ def _info_stem_key(info_path: Path) -> str:
 
 
 def _preview_path_for_info(info_path: Path) -> Path:
-    base_name = info_path.name[: -len(INFO_SIDECAR_SUFFIX)]
-    return info_path.with_name(f"{base_name}{PREVIEW_SIDECAR_SUFFIX}")
+    return preview_path_for(info_path)
 
 
 def _read_identifying_sidecar(info_path: Path, sidecar_warnings: list[dict] | None = None) -> dict | None:

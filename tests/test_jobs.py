@@ -169,6 +169,41 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(1, summary["withUpdates"])
         self.assertEqual(1, summary["hiddenUpdates"])
 
+    def _fallback_item(self, **extra) -> dict:
+        item = make_item(
+            model_id="m1",
+            model_name="Model One",
+            model_type="lora",
+            local_version_id="v1",
+            local_version_name="v1",
+            local_version_date="2026-03-01T00:00:00Z",
+            base_model="SDXL 1.0",
+            model_path="C:\\models\\one.safetensors",
+            remote_versions=[],
+        )
+        item.update(extra)
+        return item
+
+    def test_local_versions_carry_fallback_fields(self) -> None:
+        self.job.items = [self._fallback_item(status="error", fallbackSource="huggingface", hasLocalPreview=True)]
+        grouped = self.manager.get_items("job-1", mode="issues")["items"][0]
+        v = grouped["localVersions"][0]
+        self.assertEqual(("huggingface", True), (v["fallbackSource"], v["hasLocalPreview"]))
+
+    def test_ungrouped_local_versions_carry_fallback_fields(self) -> None:
+        self.job.items = [
+            self._fallback_item(modelId="", modelUrl="", status="not_found", fallbackSource="civarchive", hasLocalPreview=True)
+        ]
+        grouped = self.manager.get_items("job-1", mode="issues")["items"][0]
+        self.assertEqual("", grouped["modelId"])
+        v = grouped["localVersions"][0]
+        self.assertEqual(("civarchive", True), (v["fallbackSource"], v["hasLocalPreview"]))
+
+    def test_fallback_fields_default_when_the_item_lacks_them(self) -> None:
+        self.job.items = [self._fallback_item(status="error")]
+        v = self.manager.get_items("job-1", mode="issues")["items"][0]["localVersions"][0]
+        self.assertEqual(("", False), (v["fallbackSource"], v["hasLocalPreview"]))
+
     def test_multi_select_filters_apply_to_grouped_results(self) -> None:
         self.job.items = [
             make_item(
