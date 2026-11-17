@@ -112,6 +112,18 @@ class CivarchiveTests(unittest.TestCase):
         r = parse_hash_page(page([m]), SHA)
         self.assertEqual(r.image_url, "")
 
+    def test_any_minor_flag_but_false_excludes_the_image(self):
+        for flag in (1, "true", "yes", "false"):
+            with self.subTest(minor=flag):
+                m = civitai_model()
+                m["version"]["images"] = [{"url": "https://c.genur.art/k.webp", "type": "image", "minor": flag}]
+                self.assertEqual(parse_hash_page(page([m]), SHA).image_url, "")
+        for image in ({"minor": False}, {}):
+            with self.subTest(image=image):
+                m = civitai_model()
+                m["version"]["images"] = [{"url": "https://c.genur.art/a.webp", "type": "image", **image}]
+                self.assertEqual(parse_hash_page(page([m]), SHA).image_url, "https://c.genur.art/a.webp")
+
     def test_odd_fields_are_tolerated(self):
         m = civitai_model(name=5)
         m["version"]["images"] = "nope"

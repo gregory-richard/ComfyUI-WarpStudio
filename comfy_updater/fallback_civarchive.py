@@ -80,7 +80,8 @@ def _pick_image(images: Any) -> tuple[str, int]:
         return "", 0
     best: tuple[str, int] | None = None
     for img in images:
-        if not isinstance(img, dict) or img.get("type") != "image" or img.get("minor") is True:
+        # Any minor flag but a plain false (``1``, ``"true"``, ``"yes"``, even ``"false"``) excludes the image.
+        if not isinstance(img, dict) or img.get("type") != "image" or img.get("minor") not in (None, False):
             continue
         url = img.get("url") or img.get("image_url")
         if not isinstance(url, str) or not url.strip():
