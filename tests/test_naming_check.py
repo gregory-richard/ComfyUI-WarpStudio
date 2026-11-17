@@ -9,6 +9,7 @@ from comfy_updater.naming_check import (
     is_official_title,
     maker_in_description,
     name_check_flags,
+    run_together,
     version_format,
     xl_is_base,
 )
@@ -79,6 +80,28 @@ class NamingCheckTests(unittest.TestCase):
         # The owner part of a model link, as credit_lines lists it.
         self.assertIs(True, maker_in_description("quillworks lab", "Links: huggingface.co/quillworks-lab"))
 
+
+
+class RunTogetherTests(unittest.TestCase):
+    """A title that is one long lowercase word may run words or a name together: the AI is asked, never overruled."""
+
+    def test_a_long_lowercase_title_kept_whole_is_asked_about(self) -> None:
+        self.assertEqual(run_together("noraellwood", "noraellwood"), "noraellwood")
+
+    def test_a_title_written_apart_is_not(self) -> None:
+        self.assertEqual(run_together("noraellwood", "nora ellwood"), "")
+
+    def test_a_title_with_capitals_is_the_creator_s_own_spelling(self) -> None:
+        self.assertEqual(run_together("NovaZing", "novazing"), "")
+
+    def test_a_short_word_is_not(self) -> None:
+        self.assertEqual(run_together("lustrax", "lustrax"), "")
+
+    def test_a_title_of_several_words_is_not(self) -> None:
+        self.assertEqual(run_together("nora ellwood portraits", "nora ellwood portraits"), "")
+
+    def test_digits_make_it_no_name(self) -> None:
+        self.assertEqual(run_together("photon2000style", "photon2000style"), "")
 
 
 class BaseWordTests(unittest.TestCase):

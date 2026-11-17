@@ -32,6 +32,7 @@ from .naming_ai import (
 )
 from .naming_check import (
     needs_review,
+    run_together,
     users_own_words,
     tidy_version,
     base_conflict,
@@ -607,6 +608,9 @@ class _Pending:
     # Base model -> saved code (None: the AI's answer gives it).
     base_code_of: Dict[str, Optional[str]] = field(default_factory=dict)
     retried: bool = False
+    # The first answer and its text, when it passed every check and was only asked a question:
+    # it stands if the answer to the question comes back with a problem.
+    first_clean: Optional[Tuple[ModelAnswer, str]] = None
     # Re-asked once because another model of the creator got the same title.
     clash_retried: bool = False
     clash_reasons: List[str] = field(default_factory=list)
@@ -812,6 +816,20 @@ def _answer_problems(pending: _Pending, answer: ModelAnswer) -> List[str]:
                         for code in codes)
     problems.extend(_version_clash_problems(pending, answer))
     return list(dict.fromkeys(problems))
+
+
+def _answer_questions(pending: _Pending, answer: ModelAnswer) -> List[str]:
+    """What the AI is asked about once more without its answer counting as wrong: a title that
+    keeps a long lowercase source word ("noraellwood") whole may run words or a name together."""
+    if answer.unparsed:
+        return []
+    word = run_together(pending.model_input.title, format_part(answer.title))
+    if not word:
+        return []
+    return [
+        f'"{word}" runs several words together. If they are words or a name, write them apart, '
+        "like noraellwood -> nora ellwood; keep a made-up name whole."
+    ]
 
 
 def _repeat_message(code: str, answer: ModelAnswer) -> str:
@@ -1549,16 +1567,25 @@ class _Namer:
         try:
             answer = parse_answer(text, pending.model_input)
             problems = _answer_problems(pending, answer)
+            asked = pending.retried or "title" in self.decisions.model(model_id)
+            questions = [] if asked else _answer_questions(pending, answer)
         except Exception as exc:  # noqa: BLE001
             if model_id in self._named:
                 return  # a re-ask after a title clash: its earlier rows stay
             self._emit_rows(_error_rows(pending.group, exc))
             return
-        if problems and not pending.retried:
+        if (problems or questions) and not pending.retried:
             pending.retried = True
+            if not problems:
+                pending.first_clean = (answer, text)
             # Retries go into the very next batch; after a clash re-ask the clash stays in the reasons.
-            self._retries.append((pending, retry_message(pending.model_input, problems + pending.clash_reasons)))
+            self._retries.append((pending, retry_message(pending.model_input, problems + questions + pending.clash_reasons)))
             return
+        if problems and pending.first_clean is not None:
+            # The answer to a question came back with a problem: the first answer, which had none, stands.
+            answer, text = pending.first_clean
+            problems = []
+        pending.first_clean = None
         if problems and model_id in self._named:
             return  # the clash re-ask came back worse: the earlier rows stay (and are flagged at the end)
         # Cached per model, as this model's own answer: reusable whatever the group size.

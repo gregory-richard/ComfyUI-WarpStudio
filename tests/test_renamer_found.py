@@ -118,7 +118,9 @@ class CollectFoundTests(unittest.TestCase):
         self.assertEqual(entry.found["source"], "civarchive")
 
 
-class NameFoundTests(unittest.TestCase):
+class FoundCase(unittest.TestCase):
+    """A library of found files and a dry run over it; no tests of its own."""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -147,6 +149,8 @@ class NameFoundTests(unittest.TestCase):
         [row] = [row for row in rows if row["oldStem"] == stem]
         return row
 
+
+class NameFoundTests(FoundCase):
     def test_the_naming_model_names_it_from_the_found_info_without_asking_civitai(self) -> None:
         write_found(self.lora, "quill - mira hollow (krea2)")
         generator = FakeGenerator({"mirahollow": "title: mira hollow\noriginal:\nversion 1: v1"})
@@ -258,6 +262,67 @@ class NameFoundTests(unittest.TestCase):
         self.assertEqual(row["parts"]["title"], "mira hollow portrait")
         self.assertIn("found:huggingface", row["flags"])
         self.assertFalse(row["selected"])
+
+
+class RunTogetherTitleTests(FoundCase):
+    """A title that is one long lowercase word is asked about once; the AI decides whether to split it."""
+
+    STEM = "quill - nora ellwood (krea2)"
+
+    def setUp(self) -> None:
+        super().setUp()
+        write_found(self.lora, self.STEM, title="noraellwood")
+
+    def test_a_title_kept_whole_is_asked_about_once_and_the_split_answer_is_used(self) -> None:
+        generator = FakeGenerator({"noraellwood": [
+            "title: noraellwood\noriginal:\nversion 1: v1",
+            "title: nora ellwood\noriginal:\nversion 1: v1",
+        ]})
+        _client, rows = self.dry_run(generator)
+        self.assertEqual(len(generator.messages), 2)
+        self.assertIn('"noraellwood" runs several words together', generator.messages[1])
+        row = self.row(rows, self.STEM)
+        self.assertEqual(row["parts"]["title"], "nora ellwood")
+        self.assertEqual(row["flags"], ["found:huggingface"])
+
+    def test_an_answer_that_keeps_it_whole_again_stands_and_is_not_asked_again(self) -> None:
+        answer = "title: noraellwood\noriginal:\nversion 1: v1"
+        generator = FakeGenerator({"noraellwood": answer})
+        _client, rows = self.dry_run(generator)
+        self.assertEqual(len(generator.messages), 2)
+        row = self.row(rows, self.STEM)
+        self.assertEqual(row["parts"]["title"], "noraellwood")
+        self.assertEqual(row["flags"], ["found:huggingface"])
+        again = FakeGenerator({"noraellwood": answer})
+        self.dry_run(again)
+        self.assertEqual(again.messages, [])  # cached
+
+    def test_a_split_with_an_invented_word_falls_back_to_the_first_answer(self) -> None:
+        generator = FakeGenerator({"noraellwood": [
+            "title: noraellwood\noriginal:\nversion 1: v1",
+            "title: nora elwood\noriginal:\nversion 1: v1",
+        ]})
+        _client, rows = self.dry_run(generator)
+        row = self.row(rows, self.STEM)
+        self.assertEqual(row["parts"]["title"], "noraellwood")
+        self.assertEqual(row["flags"], ["found:huggingface"])
+        again = FakeGenerator({"noraellwood": "title: other\noriginal:\nversion 1: v1"})
+        _client, rows = self.dry_run(again)
+        self.assertEqual(again.messages, [])  # the first answer was cached
+        self.assertEqual(self.row(rows, self.STEM)["parts"]["title"], "noraellwood")
+
+    def test_a_title_you_decided_is_not_asked_about(self) -> None:
+        [entry] = collect_entries(self.roots)
+        self.decisions.set_model(entry.model_id, title="noraellwood")
+        generator = FakeGenerator({"noraellwood": "title: noraellwood\noriginal:\nversion 1: v1"})
+        self.dry_run(generator)
+        self.assertEqual(len(generator.messages), 1)
+
+    def test_a_first_answer_with_a_real_problem_is_still_flagged_after_the_retry(self) -> None:
+        generator = FakeGenerator({"noraellwood": "title: noraellwood\noriginal:\nversion 1: v7"})
+        _client, rows = self.dry_run(generator)
+        self.assertEqual(len(generator.messages), 2)
+        self.assertIn("invented:v7", self.row(rows, self.STEM)["flags"])
 
 
 class SplitNameTests(unittest.TestCase):
