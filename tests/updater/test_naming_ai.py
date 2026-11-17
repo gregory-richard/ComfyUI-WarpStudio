@@ -1,0 +1,452 @@
+from __future__ import annotations
+
+import hashlib
+import unittest
+from pathlib import Path
+
+from comfy_updater import naming_ai
+from comfy_updater.naming_ai import (
+    ModelAnswer,
+    ModelInput,
+    Slot,
+    build_group_message,
+    build_message,
+    credit_lines,
+    link_owners,
+    description_excerpt,
+    parse_answer,
+    parse_group_answer,
+    retry_message,
+    split_group_answer,
+    without_precision,
+)
+from comfy_updater.naming_check import invented_words
+
+
+def two_slot_model() -> ModelInput:
+    return ModelInput(
+        model_id="1001",
+        creator="tidemint",
+        title="Lumegrid (Krea 2 / Z-Image / Qwen) - Realism LoRA",
+        description="<p>Realism LoRA &amp; more.</p>",
+        slots=[
+            Slot(key="1", version_id="11", file_id="111", version_name="Krea 2 Zest Preview FIX", base_model="Krea 2"),
+            Slot(
+                key="2",
+                version_id="12",
+                file_id="121",
+                version_name="Krea 2 Mellow V1",
+                base_model="Krea 3",
+                file_name="lumegrid_mellow.safetensors",
+            ),
+        ],
+        new_bases=["Krea 3"],
+    )
+
+
+class NamingAiTests(unittest.TestCase):
+    def test_build_message_exact_format(self):
+        expected = (
+            "Creator: tidemint\n"
+            "Model title: Lumegrid (Krea 2 / Z-Image / Qwen) - Realism LoRA\n"
+            "Versions:\n"
+            "1. Krea 2 Zest Preview FIX [base: Krea 2]\n"
+            "2. Krea 2 Mellow V1 [base: Krea 3] [file: lumegrid_mellow.safetensors]\n"
+            "New base models: Krea 3\n"
+            "Credit lines (only for the original line): none"
+        )
+        self.assertEqual(build_message(two_slot_model()), expected)
+
+    def test_build_message_omits_new_bases_line_when_empty(self):
+        mi = two_slot_model()
+        mi.new_bases = []
+        self.assertNotIn("New base models", build_message(mi))
+        lines = build_message(mi).split("\n")
+        self.assertTrue(lines[-2].endswith("[file: lumegrid_mellow.safetensors]"))
+        self.assertTrue(lines[-1].startswith("Credit lines"))
+
+    def test_build_message_shows_only_the_credit_lines(self):
+        mi = two_slot_model()
+        mi.description = (
+            "<p>Trigger: lumegrid. Version 5 is out!</p>"
+            "<p>Not my model. Original model at <a>someone/thing</a>.</p>"
+        )
+        message = build_message(mi)
+        self.assertTrue(message.endswith(
+            "Credit lines (only for the original line): Not my model. Original model at someone/thing ."
+        ))
+        self.assertNotIn("Trigger", message)
+        self.assertNotIn("Version 5", message)
+
+    def test_build_message_plain_characters_and_no_precision_words(self):
+        mi = two_slot_model()
+        mi.title = "0745 Dress\uff081.5 and pony\uff09"
+        mi.slots[0].version_name = "v1.0\uff08pony\uff09_fp16"
+        mi.slots[1].file_name = "lumegrid_mellow_BF16.safetensors"
+        mi.slots.append(Slot(key="3", version_id="13", file_id="131", version_name="bf16", base_model="Krea 2"))
+        lines = build_message(mi).split("\n")
+        self.assertEqual(lines[1], "Model title: 0745 Dress(1.5 and pony)")
+        self.assertEqual(lines[3], "1. v1.0(pony) [base: Krea 2]")
+        self.assertEqual(lines[4], "2. Krea 2 Mellow V1 [base: Krea 3] [file: lumegrid_mellow.safetensors]")
+        self.assertEqual(lines[5], "3. [base: Krea 2]")
+
+    def test_without_precision(self):
+        cases = {
+            "krea2_raw_int8_convrot": "krea2_raw",
+            "11.0 (BF16 + FP8)": "11.0",
+            "ZiTX_11.0_FP8.safetensors": "ZiTX_11.0.safetensors",
+            "v4.0 INT8 Expanded": "v4.0 Expanded",
+            "fp8_e4m3fn (legacy)": "(legacy)",
+            "Wan22_fp8_scaled": "Wan22",
+            "Krea 2 - fp8": "Krea 2",
+            "a - b_fp8": "a - b",
+            "zo-mix_fp16": "zo-mix",
+            "model-q4_k_m.gguf": "model.gguf",
+            "bf16": "",
+            "x_Q8_0": "x",
+            "fp8 scaled": "",
+            # A hyphen without spaces stays one; a dot stays one dot.
+            "x-fp8-y": "x-y",
+            "name.fp16.x": "name.x",
+            # Untouched: no precision word, one only inside a longer word, or a
+            # word that is also a real name word.
+            "Q8 Turbo": "Q8 Turbo",
+            "Q3 Release": "Q3 Release",
+            "Scaled Down": "Scaled Down",
+            "Leggy - MOSS": "Leggy - MOSS",
+            "Upscaled v2": "Upscaled v2",
+            "lumegrid_zesty_4820519.safetensors": "lumegrid_zesty_4820519.safetensors",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(without_precision(name), expected)
+
+    def test_credit_lines_keeps_only_credit_sentences(self):
+        html_text = (
+            "<p>Great model for portraits. Trigger: abc.</p>"
+            "<ul><li>Original model by <b>maker</b>.</li><li>Steps: 8</li></ul>"
+            "<p>I am not the creator, just uploading it. Full credit goes to Some One.</p>"
+            "<p>Original model by  maker .</p>"
+        )
+        self.assertEqual(
+            credit_lines(html_text),
+            "Original model by maker . I am not the creator, just uploading it. Full credit goes to Some One.",
+        )
+
+    def test_credit_lines_empty_and_limited(self):
+        self.assertEqual(credit_lines(""), "")
+        self.assertEqual(credit_lines("<p>Trigger: abc. Steps: 8.</p>"), "")
+        long = "<p>" + " ".join("Original by maker number %d." % i for i in range(100)) + "</p>"
+        self.assertLessEqual(len(credit_lines(long)), 600)
+        # Whole sentences only.
+        self.assertEqual(credit_lines(long, limit=60), "Original by maker number 0. Original by maker number 1.")
+        # A first sentence longer than the limit is cut after a whole word.
+        self.assertEqual(credit_lines("<p>Original by Thornquill and friends.</p>", limit=20), "Original by")
+
+    def test_credit_lines_skips_weak_cues(self):
+        html_text = "<p>I originally made this for fun. The official workflow is on github, says the author.</p>"
+        self.assertEqual(credit_lines(html_text), "")
+        self.assertEqual(credit_lines("<p>Model Developer: Some Lab.</p>"), "Model Developer: Some Lab.")
+
+    def test_credit_lines_keeps_originally_posted_sentences(self):
+        for verb in ("posted", "released", "uploaded", "published", "created"):
+            with self.subTest(verb=verb):
+                self.assertEqual(
+                    credit_lines(f"<p>Nice model. Originally {verb} by Some Lab.</p>"),
+                    f"Originally {verb} by Some Lab.",
+                )
+
+    def test_credit_lines_appends_the_owners_of_model_links(self):
+        html_text = (
+            '<p>Originally Posted; <a href="https://huggingface.co/quillworks-lab/Glow-4B">link</a></p>'
+            "<p>Workflow: https://github.com/emberfold/glow-nodes and "
+            '<a href="https://www.modelscope.cn/models/reedpond/glow">here</a>, '
+            '<a href="https://hf.co/spaces/tinkerer/demo">demo</a></p>'
+            '<p>Again: <a href="https://hf.co/Quillworks-Lab/Glow-9B">9B</a></p>'
+        )
+        # A credit-cue sentence: the link owners follow it (hf.co counts as huggingface.co).
+        self.assertEqual(
+            credit_lines(html_text),
+            "Originally Posted; link Links: huggingface.co/quillworks-lab, github.com/emberfold, "
+            "modelscope.cn/reedpond, huggingface.co/tinkerer",
+        )
+
+    def test_credit_lines_link_owners_only_with_a_credit_sentence_or_an_official_file(self):
+        # A LoRA that only links its tools: no owners, they did not make the model.
+        tools = (
+            '<p>Trained with <a href="https://github.com/kohya-trainer/sd-scripts">sd-scripts</a>. '
+            'Nodes: <a href="https://github.com/nodewright/comfy-nodes">here</a>.</p>'
+        )
+        self.assertEqual(credit_lines(tools), "")
+        # An official file re-uploaded with only a link to where it came from.
+        official = '<p>Steps: 8. <a href="https://huggingface.co/quillworks-lab/Glow">get it</a></p>'
+        self.assertEqual(credit_lines(official), "")
+        self.assertEqual(credit_lines(official, official=True), "Links: huggingface.co/quillworks-lab")
+
+    def test_link_owners_skip_pages_that_are_not_owners(self):
+        html_text = " ".join(
+            f'<a href="https://{path}">x</a>'
+            for path in (
+                "huggingface.co/api/models", "huggingface.co/new", "huggingface.co/docs/diffusers",
+                "github.com/apps/bot", "github.com/features/actions", "github.com/orgs/somegroup/teams",
+                "github.com/", "hf.co/quillworks-lab/a", "huggingface.co/quillworks-lab/b",
+            )
+        )
+        self.assertEqual(link_owners(html_text), ["huggingface.co/quillworks-lab"])
+
+    def test_credit_lines_keeps_links_within_the_limit(self):
+        long = "<p>" + " ".join("Original by maker number %d." % i for i in range(100)) + "</p>"
+        text = credit_lines(long + "<p>https://huggingface.co/quillworks-lab/Glow</p>")
+        self.assertLessEqual(len(text), 600)
+        self.assertTrue(text.endswith(" Links: huggingface.co/quillworks-lab"), text)
+        self.assertTrue(text.startswith("Original by maker number 0."))
+
+    def test_description_excerpt_strips_tags_and_entities(self):
+        self.assertEqual(
+            description_excerpt("<p>Original model at <a>fernwick/QSD</a>&nbsp;.</p>"),
+            "Original model at fernwick/QSD .",
+        )
+
+    def test_description_excerpt_collapses_whitespace_and_limits(self):
+        self.assertEqual(description_excerpt("<p>a\n\n  b</p><p>c</p>"), "a b c")
+        self.assertEqual(description_excerpt("x" * 2000), "x" * 1500)
+        self.assertEqual(description_excerpt("abcdef", limit=3), "abc")
+        self.assertEqual(description_excerpt(""), "")
+
+    def test_parse_answer_reads_every_part(self):
+        answer = parse_answer(
+            "title: lumegrid realism\noriginal:\nversion 1: zest preview fix\nversion 2: v1 mellow",
+            two_slot_model(),
+        )
+        self.assertIsInstance(answer, ModelAnswer)
+        self.assertEqual(answer.title, "lumegrid realism")
+        self.assertEqual(answer.original, "")
+        self.assertEqual(answer.versions, {"1": "zest preview fix", "2": "v1 mellow"})
+        self.assertFalse(answer.unparsed)
+
+    def test_parse_answer_ignores_prose_and_think_remnants(self):
+        text = (
+            "<think>\n\n</think>\n\n"
+            "Here is the cleaned name:\n"
+            "Title: lumegrid realism\n"
+            "Original: fernwick\n"
+            "Version 1: zest preview fix\n"
+            "VERSION 2: v1 mellow\n"
+            "base Krea 3: krea3\n"
+            "Hope this helps!"
+        )
+        answer = parse_answer(text, two_slot_model())
+        self.assertEqual(answer.title, "lumegrid realism")
+        self.assertEqual(answer.original, "fernwick")
+        self.assertEqual(answer.versions, {"1": "zest preview fix", "2": "v1 mellow"})
+        self.assertEqual(answer.bases, {"Krea 3": "krea3"})
+        self.assertFalse(answer.unparsed)
+
+    def test_parse_answer_drops_thinking_before_stray_close_tag(self):
+        text = (
+            "Let me think. Draft:\n"
+            "title: lumegrid realism lora\n"
+            "version 1: krea 2 zest\n"
+            "</think>\n"
+            "title: lumegrid realism\n"
+            "version 1: zest preview fix\n"
+        )
+        answer = parse_answer(text, two_slot_model())
+        self.assertEqual(answer.title, "lumegrid realism")
+        self.assertEqual(answer.versions, {"1": "zest preview fix"})
+
+    def test_parse_answer_accepts_markdown_wrapping(self):
+        bold = parse_answer("**title:** lumegrid realism\n**Version 1**: zest preview fix", two_slot_model())
+        self.assertFalse(bold.unparsed)
+        self.assertEqual(bold.title, "lumegrid realism")
+        self.assertEqual(bold.versions, {"1": "zest preview fix"})
+        bullets = parse_answer("- title: lumegrid realism\n* original:\n- version 2: v1 mellow", two_slot_model())
+        self.assertEqual(bullets.title, "lumegrid realism")
+        self.assertEqual(bullets.original, "")
+        self.assertEqual(bullets.versions, {"2": "v1 mellow"})
+        fenced = parse_answer(
+            "```text\ntitle: lumegrid realism\nversion 1: zest preview fix\nbase Krea 3: krea3\n```",
+            two_slot_model(),
+        )
+        self.assertEqual(fenced.title, "lumegrid realism")
+        self.assertEqual(fenced.versions, {"1": "zest preview fix"})
+        self.assertEqual(fenced.bases, {"Krea 3": "krea3"})
+        heading = parse_answer("## Title: `lumegrid realism`", two_slot_model())
+        self.assertEqual(heading.title, "lumegrid realism")
+
+    def test_parse_answer_missing_version_line(self):
+        answer = parse_answer("title: lumegrid realism\noriginal:\nversion 1: zest preview fix", two_slot_model())
+        self.assertNotIn("2", answer.versions)
+        self.assertEqual(answer.versions, {"1": "zest preview fix"})
+        self.assertFalse(answer.unparsed)
+
+    def test_parse_answer_empty_version_is_kept_as_empty(self):
+        answer = parse_answer("title: lumegrid realism\nversion 1:\nversion 2: v1", two_slot_model())
+        self.assertEqual(answer.versions, {"1": "", "2": "v1"})
+
+    def test_parse_answer_ignores_unknown_slots_and_bases(self):
+        answer = parse_answer(
+            "title: lumegrid realism\nversion 3: v9\nbase Krea 9: krea9\nbase krea 3: krea3",
+            two_slot_model(),
+        )
+        self.assertEqual(answer.versions, {})
+        self.assertEqual(answer.bases, {"Krea 3": "krea3"})
+
+    def test_parse_answer_refusal_is_unparsed(self):
+        answer = parse_answer("I can't help with that.", two_slot_model())
+        self.assertTrue(answer.unparsed)
+        self.assertEqual(answer.title, "")
+        self.assertEqual(answer.versions, {})
+
+    def test_retry_message_ends_with_problems(self):
+        mi = two_slot_model()
+        message = retry_message(mi, ['"v4" is not a version number in the source'])
+        self.assertTrue(message.startswith(build_message(mi)))
+        self.assertTrue(
+            message.endswith('- "v4" is not a version number in the source\nAnswer again in the same format.')
+        )
+
+    def test_system_prompt_and_version(self):
+        path = Path(naming_ai.__file__).parent / "prompts" / "naming_system.txt"
+        self.assertEqual(naming_ai.SYSTEM_PROMPT, path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            naming_ai.PROMPT_VERSION,
+            hashlib.sha256(naming_ai.SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12],
+        )
+        self.assertRegex(naming_ai.PROMPT_VERSION, r"^[0-9a-f]{12}$")
+        self.assertIn("version 1:", naming_ai.SYSTEM_PROMPT)
+
+    def test_every_worked_example_passes_the_invented_check(self):
+        for question, answer in prompt_examples():
+            with self.subTest(question.splitlines()[1]):
+                self.assertEqual(invented_words(example_source(question), example_parts(answer)), [])
+
+
+def prompt_examples() -> list[tuple[str, str]]:
+    """The system prompt's worked examples as (question, answer) text."""
+    blocks = naming_ai.SYSTEM_PROMPT.split("\nExamples:\n", 1)[1].strip().split("\n\n")
+    examples = []
+    for block in blocks:
+        lines = block.splitlines()
+        cut = next(index for index, line in enumerate(lines) if line.startswith("title:"))
+        examples.append(("\n".join(lines[:cut]), "\n".join(lines[cut:])))
+    return examples
+
+
+def example_source(question: str) -> str:
+    """What the renamer checks an answer against: the title, version names and file names."""
+    parts = []
+    for line in question.splitlines():
+        if line.startswith("Model title: "):
+            parts.append(line[len("Model title: "):])
+        elif line[:1].isdigit():
+            parts.append(line.split(". ", 1)[1].replace("[base:", "").replace("[file:", ""))
+    return "\n".join(parts)
+
+
+def example_parts(answer: str) -> list[str]:
+    return [
+        line.split(":", 1)[1].strip() for line in answer.splitlines()
+        if line.startswith("title:") or line.startswith("version ")
+    ]
+
+
+def one_slot_model(model_id: str, title: str) -> ModelInput:
+    return ModelInput(
+        model_id=model_id,
+        creator="maker",
+        title=title,
+        description="",
+        slots=[Slot(key="1", version_id=model_id + "1", file_id="", version_name="v1", base_model="Krea 2")],
+        new_bases=[],
+    )
+
+
+class GroupedQuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.inputs = [one_slot_model("1", "Alpha Glow"), one_slot_model("2", "Beta Fog"), two_slot_model()]
+
+    def test_group_message_is_the_intro_then_each_single_message_under_a_header(self):
+        message = build_group_message(self.inputs)
+        sections = "\n\n".join(f"Model {n}:\n{build_message(mi)}" for n, mi in enumerate(self.inputs, start=1))
+        self.assertEqual(message, naming_ai.GROUP_INTRO + "\n\n" + sections)
+        # The intro explains grouped questions with a worked example ...
+        self.assertIn('"Model 1:"', naming_ai.GROUP_INTRO)
+        self.assertIn("Example answer:", naming_ai.GROUP_INTRO)
+        # ... and the example's own headers never pass for the answer's.
+        self.assertEqual(split_group_answer(naming_ai.GROUP_INTRO, 3), ["", "", ""])
+
+    def test_zero_based_headers_are_unparsed_for_every_model(self):
+        # Numbered from 0, every answer would land on the wrong model.
+        text = "Model 0:\ntitle: a\nModel 1:\ntitle: b\nModel 2:\ntitle: c"
+        self.assertEqual(split_group_answer(text, 3), ["", "", ""])
+        self.assertEqual([a.unparsed for a in parse_group_answer(text, self.inputs)], [True, True, True])
+
+    def test_group_message_of_one_model_is_the_single_message(self):
+        self.assertEqual(build_group_message(self.inputs[:1]), build_message(self.inputs[0]))
+
+    def test_split_reads_one_section_per_header(self):
+        text = (
+            "Model 1:\ntitle: alpha glow\noriginal:\nversion 1: v1\n\n"
+            "Model 2:\ntitle: beta fog\noriginal:\nversion 1: v1\n\n"
+            "Model 3:\ntitle: lumegrid realism\noriginal:\nversion 1: zest\nversion 2: mellow v1\nbase Krea 3: krea3\n"
+        )
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.title for a in answers], ["alpha glow", "beta fog", "lumegrid realism"])
+        self.assertEqual(answers[2].versions, {"1": "zest", "2": "mellow v1"})
+        self.assertEqual(answers[2].bases, {"Krea 3": "krea3"})
+        self.assertFalse(any(a.unparsed for a in answers))
+
+    def test_split_sections_are_single_answers(self):
+        text = "Model 1:\ntitle: a\nModel 2:\ntitle: b\n"
+        sections = split_group_answer(text, 2)
+        self.assertEqual([parse_answer(s, mi).title for s, mi in zip(sections, self.inputs)], ["a", "b"])
+        self.assertNotIn("Model", sections[0])
+
+    def test_missing_section_is_unparsed_for_that_model_only(self):
+        text = "Model 1:\ntitle: alpha glow\nversion 1: v1\nModel 3:\ntitle: lumegrid\n"
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.unparsed for a in answers], [False, True, False])
+        self.assertEqual(answers[2].title, "lumegrid")
+
+    def test_prose_and_markdown_around_sections_are_ignored(self):
+        text = (
+            "<think>Model 1: title: wrong</think>Here are the answers.\n"
+            "**Model 1:**\ntitle: alpha glow\nversion 1: v1\n\n"
+            "### Model 2\n- title: beta fog\n- version 1: v1\n\nHope this helps!"
+        )
+        answers = parse_group_answer(text, self.inputs[:2])
+        self.assertEqual([a.title for a in answers], ["alpha glow", "beta fog"])
+
+    def test_header_with_the_answer_on_the_same_line(self):
+        answers = parse_group_answer("Model 1: title: alpha glow\nModel 2: title: beta fog", self.inputs[:2])
+        self.assertEqual([a.title for a in answers], ["alpha glow", "beta fog"])
+
+    def test_out_of_order_section_is_unparsed(self):
+        text = "Model 2:\ntitle: beta fog\nModel 1:\ntitle: alpha glow\nModel 3:\ntitle: lumegrid\n"
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.unparsed for a in answers], [True, False, False])
+        self.assertEqual(answers[1].title, "beta fog")
+
+    def test_wrong_header_numbers_are_unparsed(self):
+        # A repeated number is ambiguous; a number past the group is nobody's.
+        text = "Model 1:\ntitle: a\nModel 1:\ntitle: b\nModel 4:\ntitle: d\n"
+        answers = parse_group_answer(text, self.inputs)
+        self.assertEqual([a.unparsed for a in answers], [True, True, True])
+
+    def test_no_headers_at_all_is_unparsed_for_every_model(self):
+        answers = parse_group_answer("title: alpha glow\nversion 1: v1", self.inputs[:2])
+        self.assertEqual([a.unparsed for a in answers], [True, True])
+
+    def test_model_title_line_is_not_a_header(self):
+        sections = split_group_answer("Model 1:\ntitle: x\nModel title: Beta\nModel 2:\ntitle: y", 2)
+        self.assertIn("Model title: Beta", sections[0])
+
+    def test_grouped_questions_leave_the_system_prompt_alone(self):
+        # Explained in the grouped message only: the system prompt, so every cache key, is unchanged.
+        self.assertNotIn("Model 1:", naming_ai.SYSTEM_PROMPT)
+        self.assertNotIn("Model 1:", build_group_message(self.inputs[:1]))
+
+
+if __name__ == "__main__":
+    unittest.main()

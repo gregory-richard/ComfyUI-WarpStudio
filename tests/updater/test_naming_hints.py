@@ -1,0 +1,217 @@
+import unittest
+from pathlib import Path
+
+from comfy_updater.naming_ai import Slot
+from comfy_updater.naming_check import (
+    base_named_by,
+    invented_words,
+    needs_review,
+    tidy_version,
+    users_own_words,
+    base_numbers, base_vocabulary, creator_in_title, glued_names, name_check_flags, noise_words, title_in_version,
+    type_words,
+)
+from comfy_updater.renamer import _names_from_files, _telling_hint
+
+
+class _Pending:
+    def __init__(self, source: str) -> None:
+        self.source = source
+
+
+def slot(key: str, name: str) -> Slot:
+    return Slot(key=key, version_id=key, file_id=key, version_name=name, base_model="Wan Video 2.2 T2V-A14B")
+
+
+class TypeWordTests(unittest.TestCase):
+    def test_lora_on_its_own_is_flagged(self) -> None:
+        self.assertEqual(["lora"], type_words("realism lora v1"))
+        self.assertIn("type-word:lora", name_check_flags("realism lora", "v1", frozenset()))
+
+    def test_lora_inside_a_word_is_not(self) -> None:
+        self.assertEqual([], type_words("floral explorer"))
+
+
+class TellingHintTests(unittest.TestCase):
+    def test_the_differing_words_of_the_version_names(self) -> None:
+        pending = _Pending("source")
+        hint = _telling_hint(pending, (slot("1", "2.2-Speed-T2V-0928-H"), ""), (slot("2", "2.2 Speed T2V H"), ""), frozenset())
+        self.assertEqual(': "0928" only in "2.2-Speed-T2V-0928-H".', hint)
+        self.assertEqual("source", pending.source)
+
+    def test_same_version_names_point_to_the_file_names(self) -> None:
+        pending = _Pending("source")
+        hint = _telling_hint(
+            pending,
+            (slot("1", "Speed H"), "speed_v1.1_high_fp16.safetensors"),
+            (slot("2", "Speed H"), "speed_0928_high.safetensors"),
+            frozenset(),
+        )
+        self.assertIn("Their files are", hint)
+        # Words taken from the file names are then not "invented".
+        self.assertIn("speed_0928_high.safetensors", pending.source)
+
+    def test_nothing_to_tell_them_apart(self) -> None:
+        pending = _Pending("source")
+        self.assertEqual(".", _telling_hint(pending, (slot("1", "H"), "a.safetensors"), (slot("2", "H"), "a.safetensors"), frozenset()))
+
+
+class GluedNameTests(unittest.TestCase):
+    VOCAB = base_vocabulary(["Krea 2", "krea2", "Pony", "pony"])
+
+    def test_a_base_glued_into_the_models_own_name_must_stay(self) -> None:
+        self.assertEqual(["KreaCore"], glued_names("KreaCore", "kore", self.VOCAB))
+        self.assertEqual(["PonyRealism"], glued_names("PonyRealism", "realism", self.VOCAB))
+
+    def test_kept_whole_or_separate_words_pass(self) -> None:
+        self.assertEqual([], glued_names("KreaCore", "kreacore", self.VOCAB))
+        self.assertEqual([], glued_names("Pony Realism", "realism", self.VOCAB))  # a base tag in its own word
+        self.assertEqual([], glued_names("Krea2 Glow", "glow", self.VOCAB))
+
+    def test_full_width_brackets_split_words(self) -> None:
+        self.assertEqual([], glued_names("0149 TIFA BUNNY（pony and 1.5）", "0149 tifa bunny", self.VOCAB))
+        self.assertEqual([], glued_names("0156 bubble bath（sd1.5,pdxl,sdxl）", "0156 bubble bath", self.VOCAB))
+
+    def test_a_longer_name_that_only_starts_with_a_base_passes(self) -> None:
+        vocab = base_vocabulary(["Anima", "anima", "Pony", "pony"])
+        self.assertEqual([], glued_names("Oversized breast cup (AnimagineXL V3 & Pony)", "oversized breast cup", vocab))
+
+    def test_a_base_tag_written_as_one_word_passes(self) -> None:
+        title = "Stealth Fellatio (under table) LoRa | PonyXL & Illustrious"
+        self.assertEqual([], glued_names(title, "stealth fellatio under table", self.VOCAB))
+
+
+class NameRepeatTests(unittest.TestCase):
+    def test_the_creator_in_the_title(self) -> None:
+        self.assertEqual(["xlabs"], creator_in_title("xlabs flux realism", "xlabs"))
+        self.assertEqual([], creator_in_title("donutsdelivery", "donutsdelivery"))  # named after its creator
+        self.assertEqual([], creator_in_title("flux realism", "xlabs"))
+        self.assertEqual(["stable yogi"], creator_in_title("babes by stable yogi", "stable_yogi"))
+
+    def test_an_official_title_may_carry_its_maker(self) -> None:
+        vocab = base_vocabulary(["Qwen", "qwen"])
+        self.assertNotIn("creator-in-title:qwen", name_check_flags("qwen image 2.1", "turbo", vocab, creator="qwen"))
+
+    def test_the_title_repeated_in_the_version(self) -> None:
+        self.assertEqual(["amateur selfies"], title_in_version("ultra real amateur selfies", "amateur selfies v1"))
+        self.assertEqual([], title_in_version("high heels", "v1 high"))  # one word is not a repeat
+
+    def test_high_and_low_noise(self) -> None:
+        self.assertEqual(["high noise"], noise_words("v1 high noise"))
+        self.assertEqual(["lownoise"], noise_words("lownoise"))
+        self.assertEqual([], noise_words("v1 high"))
+        # On a Wan model a lone "h" / "l" is high / low noise; elsewhere it is just a letter.
+        self.assertEqual(["h"], noise_words("0928 h", "Wan Video 2.2 T2V-A14B"))
+        self.assertEqual([], noise_words("0928 h", "Krea 2"))
+
+    def test_high_and_low_written_out_are_not_invented(self) -> None:
+        self.assertEqual([], invented_words("2.2-Lightning-T2V-0928-H", ["0928 high"]))
+        self.assertEqual(["high"], invented_words("2.2 Lightning T2V", ["high"]))
+
+
+class BaseNamedByTests(unittest.TestCase):
+    CODES = {"Krea 2": "krea2", "Krea 2 Turbo": "krea2", "Flux.1 D": "flux1d", "ZImageTurbo": "zit", "ZImageBase": "zib"}
+
+    def test_a_word_names_one_base(self) -> None:
+        self.assertEqual("Krea 2", base_named_by("krea2", self.CODES, exclude="Flux.1 D"))  # one code for both Kreas
+        self.assertEqual("ZImageTurbo", base_named_by("zit", self.CODES))
+
+    def test_a_word_naming_no_base_or_several(self) -> None:
+        self.assertEqual("", base_named_by("speed", self.CODES))
+        self.assertEqual("", base_named_by("", self.CODES))
+
+
+class BaseNumberTests(unittest.TestCase):
+    def test_the_base_number_as_a_version_is_flagged(self) -> None:
+        self.assertEqual(["v2.2"], base_numbers("v2.2", "Wan Video 2.2 T2V-A14B"))
+        self.assertIn("base-number:v2.2", name_check_flags("speed", "v2.2", frozenset(), base_model="Wan Video 2.2 T2V-A14B"))
+
+    def test_real_versions_pass(self) -> None:
+        self.assertEqual([], base_numbers("v1.0", "SDXL 1.0"))  # x.0 tells nothing
+        self.assertEqual([], base_numbers("v2", "Krea 2"))  # no dot: usually a real second version
+        self.assertEqual([], base_numbers("v1.5", "Wan Video 2.2 T2V-A14B"))
+
+
+def clash_row(key: str, old: str, version: str = "v2.2") -> dict:
+    return {
+        "key": key, "versionId": key, "oldStem": old, "status": "change",
+        "newStem": f"maker - speed - {version} (wan)", "flags": ["version-clash"],
+        "parts": {"creator": "maker", "title": "speed", "version": version, "precision": "", "base": "wan"},
+    }
+
+
+class NamesFromFilesTests(unittest.TestCase):
+    def test_clashing_versions_keep_the_users_names_in_the_scheme(self) -> None:
+        rows = [clash_row("1", "maker - speed - 4steps - 0928 - high (wan)"), clash_row("2", "maker - speed - 4steps - low (wan)")]
+        rows[0]["flags"] += ["maker-from-description", "base-number:v2.2", "new-base-code"]
+        _names_from_files(rows)
+        self.assertEqual(["new-base-code"], rows[0]["flags"])
+        rows[0]["flags"] = []
+        self.assertEqual("maker - speed - 4steps 0928 high (wan)", rows[0]["newStem"])
+        self.assertEqual("maker - speed - 4steps low (wan)", rows[1]["newStem"])
+        self.assertEqual([], rows[0]["flags"])
+        self.assertEqual("file", rows[0]["nameSource"])
+
+    def test_names_that_would_still_clash_stay_flagged(self) -> None:
+        rows = [clash_row("1", "maker - speed - high (wan)"), clash_row("2", "maker - speed - high (wan)")]
+        _names_from_files(rows)
+        self.assertEqual(["version-clash"], rows[0]["flags"])
+        self.assertNotIn("nameSource", rows[0])
+
+    def test_a_name_without_creator_and_title_stays_flagged(self) -> None:
+        rows = [clash_row("1", "speed_high"), clash_row("2", "maker - speed - low (wan)")]
+        _names_from_files(rows)
+        self.assertEqual(["version-clash"], rows[1]["flags"])
+
+
+class InformationHintTests(unittest.TestCase):
+    def test_hints_that_only_inform_need_no_review(self) -> None:
+        self.assertFalse(needs_review([]))
+        self.assertFalse(needs_review(["maker-from-description", "creator-from-file-name", "file-not-in-release"]))
+
+    def test_any_other_hint_needs_review(self) -> None:
+        self.assertTrue(needs_review(["creator-from-file-name", "invented:foo"]))
+        self.assertTrue(needs_review(["collision"]))
+
+
+class TidyVersionTests(unittest.TestCase):
+    VOCAB = base_vocabulary(["Illustrious", "illustrious", "ill", "ZImageTurbo", "zit", "Pony", "pony"])
+
+    def test_trailing_zeros_go(self) -> None:
+        self.assertEqual("v1", tidy_version("v1.0", self.VOCAB))
+        self.assertEqual("v2.5", tidy_version("2.5.0", self.VOCAB))
+        self.assertEqual("v2.5 nsfw", tidy_version("v2.5 nsfw", self.VOCAB))
+
+    def test_noise_is_written_high_or_low(self) -> None:
+        self.assertEqual("0928 high", tidy_version("0928 high noise", self.VOCAB))
+        self.assertEqual("low", tidy_version("lownoise", self.VOCAB))
+        self.assertEqual("v2 high", tidy_version("v2 h", self.VOCAB, base_model="Wan Video 2.2 T2V-A14B"))
+        self.assertEqual("v2 h", tidy_version("v2 h", self.VOCAB, base_model="Pony"))
+
+    def test_a_version_of_only_base_names_is_no_version(self) -> None:
+        self.assertEqual("", tidy_version("illustrious", self.VOCAB))
+        self.assertEqual("", tidy_version("pony", self.VOCAB))
+        self.assertEqual("pony v2", tidy_version("pony v2", self.VOCAB))
+        self.assertEqual("", tidy_version("", self.VOCAB))
+
+
+class UsersOwnWordsTests(unittest.TestCase):
+    VOCAB = base_vocabulary(["Wan Video 2.2 I2V-A14B", "wan2.2 14b i2v"])
+
+    def test_what_a_model_does_is_no_base_word(self) -> None:
+        self.assertNotIn("base-word:i2v", name_check_flags("wan video 2.2", "i2v high", self.VOCAB))
+        self.assertEqual("i2v", tidy_version("i2v", self.VOCAB))
+
+    def test_a_typed_version_gets_no_wording_hints(self) -> None:
+        flags = ["base-word:wan", "version-format:v1.0", "noise-word:high noise", "maker-unknown"]
+        self.assertEqual(["maker-unknown"], users_own_words(flags, {"version"}, "deep glide", "wan v1.0 high noise"))
+
+    def test_the_naming_models_own_part_is_still_checked(self) -> None:
+        flags = ["base-word:wan", "creator-in-title:maker"]
+        self.assertEqual(flags, users_own_words(flags, {"version"}, "maker wan glide", "wan v1"))
+        self.assertEqual(["base-word:wan"], users_own_words(flags, {"title"}, "maker glide", "wan v1"))
+        self.assertEqual(flags, users_own_words(flags, set(), "maker wan glide", "wan v1"))
+
+
+if __name__ == "__main__":
+    unittest.main()

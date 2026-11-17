@@ -1,0 +1,343 @@
+# Changelog
+
+## Unreleased
+
+### Added
+- A **Rename** view next to **Updates** and **Issues** renames your model files
+  after their current Civitai releases, as
+  `creator - title - version [precision] (base)`, all lowercase. Precision is
+  given only to checkpoints and UNets, never to LoRAs. It is read from the
+  file, or for a metadata-only entry taken from Civitai's file info when the
+  release has a single main model file.
+  Sidecars, previews and any other file sharing the model's name are renamed
+  with it.
+- The names are cleaned by a local text model that ComfyUI's built-in
+  **Generate Text** node runs, through ComfyUI's queue (its jobs show in the
+  queue history). Pick it under **Settings → Civitai Updater → Rename → Naming
+  model**, or download Comfy-Org's `qwen3.5_9b_int8_convrot.safetensors`
+  (9.75 GB) from the view. A ComfyUI without Generate Text cannot run the
+  renamer, and the view says so.
+- A dry run lists every old name next to its new one and changes nothing. You
+  review it, one card per model as in **Updates** (flags, edits, **Keep current
+  name**, **Ask again**, extra copies to remove) and then **Apply selected**. Edits and applied names are remembered
+  per model; applied names stay locked until **Ask again**.
+- Kept, not renamed: models Civitai no longer serves, the VAE folder, files
+  whose Civitai match is not the release's main model file or whose type does
+  not fit the folder, and anything you keep.
+- A rename interrupted by a crash or restart can be finished or undone from the
+  Rename view. Extra copies you remove go to the Recycle Bin, through the new
+  `send2trash` requirement.
+- There is no backwards compatibility: saved workflows and images that use the
+  old names show those LoRAs and models as missing until you re-pick them.
+- The naming model gets roughly three in four names exactly right on models it
+  has not seen in testing. Review the list before you apply it.
+- Clashes are asked about once more before they are flagged: two versions of a
+  model that would get the same name, and two models by one creator that would
+  get the same title under the same base code (one idea released per base is
+  fine). The naming model is told which Civitai names clash; still clashing,
+  the rows are flagged and not ticked. Unresolved answers are not saved.
+- The maker of a re-uploaded official model is read from "originally
+  posted/released ..." lines and the owners of its Hugging Face, GitHub or
+  ModelScope links. An official file whose maker is not found is flagged, so
+  you set the creator yourself; a maker from the description offers
+  **Use <maker>** or **Use <uploader>**.
+- Flagged rows show the model's Civitai title and uploader, and a clash names
+  the other file or model. **Keep this name** is now **Keep current name**.
+
+### Changed
+- A card in **Updates** lists its versions as one list, newest on top. Saved
+  files, new releases and hidden releases are in release-date order, so the
+  newest release no longer sits under the oldest saved file.
+
+## [1.9.2] - 2026-11-04
+
+### Security
+- The panel's HTTP routes accept only requests from the panel itself. Every
+  request needs the `X-Civitai-Updater: 1` header, a request whose `Origin`
+  is another site (or that the browser marks cross-site) is refused, and POST
+  bodies must be `application/json`. Before, any web page open in the same
+  browser could change the settings, add scan folders and start scans through
+  ComfyUI's unauthenticated server (CSRF).
+- A new custom model folder must be an existing, absolute folder and not a
+  whole drive or the filesystem root. A refused folder is not saved and the
+  panel's status line says why; the other settings are saved as usual.
+  Folders already saved are kept, and scans skip any that do not qualify.
+- Preview images and videos are downloaded only from Civitai over https, and
+  a redirect away from Civitai is refused. Preview URLs come from
+  `.civitai.info` files that other tools also write, so a sidecar could point
+  the server at any address, including the local network.
+- ffmpeg reads the downloaded preview video only as a local file in a known
+  video container (`-protocol_whitelist file`, `-format_whitelist`), so a
+  playlist disguised as `.mp4` cannot make it open other files or URLs.
+
+## [1.9.1] - 2026-10-18
+
+### Fixed
+- **Hide** could empty the whole results list. With the **Types** or **Bases**
+  filter narrowed, hiding the last model that matched it dropped that option
+  and the filter went back to `all`, but the list kept the answer to the old
+  filter: `No updates found`, with 0 on both view tabs. The list now reloads
+  under the filter the menus show. Turning off **Show hidden** when the only
+  selected base belonged to hidden releases did the same and is fixed too.
+
+## [1.9.0] - 2026-10-04
+
+### Added
+- An **Issues** view next to **Updates** lists the models Civitai could not
+  match (`No match`) or check (`Error`), with the reason under each file. Until
+  now they were only counts in the summary line.
+- New releases that cost Buzz to download are badged: **Buzz · 5d left** for
+  early access (free after the date in the tooltip), **Buzz · always** for a
+  release with no free date. The public API gives no price. The old `Early`
+  badge relied on an `availability` value Civitai no longer reports.
+
+### Fixed
+- **Check for Updates** within the cache duration showed the saved results even
+  after Model Scope was changed, or after the last check was stopped. Both now
+  run a check.
+- Only the cards still waiting for their re-check are marked `Provisional`
+  during a check, instead of every card until the job ends. Each card settles
+  as its own files finish.
+- The results the panel shows are no longer dropped after about six later
+  **Fetch Missing Metadata** runs, which showed "The server was restarted" on
+  the next page click.
+- **Stop** no longer waits for a large file to finish hashing, or for Civitai
+  retries to run out. The panel says `Stopping…` until the job ends.
+- The Registry release workflow runs the tests first and publishes only when
+  they pass. CI also checks the panel script's syntax.
+- Clicking a `METADATA` row copies the path of the model file, with the
+  extension the sidecar names (usually `.safetensors`), instead of the path of
+  its `.civitai.info`.
+- **Fetch Missing Metadata** with **Refetch** no longer replaces a good
+  `.civitai.info` with an empty stub when Civitai cannot be reached or no
+  longer lists the model.
+- A model that was not found before and is found by a later **Fetch Missing
+  Metadata** now gets its full sidecar instead of keeping the stub.
+- The API key is sent only to Civitai over https. A preview link in a sidecar
+  written by another tool used to receive it.
+- Opening the panel in a fresh ComfyUI folder no longer erases the API key and
+  custom paths: ComfyUI reports every setting as changed when it registers them,
+  and those empty values were saved before the stored ones were loaded.
+- A `config.json` or `archived_updates.json` that cannot be read at startup is
+  never overwritten during that session. Files saved with a BOM or as UTF-16
+  load instead of being reset (or, for UTF-16, stopping the plugin from loading).
+- A check no longer reports an error, and drops the update it found, when the
+  sidecar next to the model cannot be written (a read-only folder, for example).
+- Saved results larger than 16 MB (a few thousand models) are no longer
+  ignored as if no check had run.
+- A sidecar date without a time zone no longer makes the result list fail.
+- A full **Bases** selection no longer hides models whose version has no base
+  model.
+- Collapsing every group no longer leaves an empty list with no header to
+  expand them again.
+- Reopening the tab keeps the Model Scope and option checkboxes, the status
+  line, and the "Last checked" line.
+- The scan report counts models that were not found.
+- A preview video that hangs ffmpeg no longer stalls the job.
+
+## [1.8.1] - 2026-09-16
+
+### Fixed
+- A finished check could leave the panel listing the previous check's results.
+  The panel loads the saved results when it opens, and the server scans every
+  model folder before answering, which takes a few seconds. Clicking **Check for
+  Updates** before that answer arrived let it take over the list afterwards:
+  the progress bar and the `Done` message followed the new check while every
+  card came from the old one, until the page was reloaded. A check started in
+  the meantime now keeps the list, and a finished check always shows its own
+  results.
+- While a check runs, the previous results no longer offer a release you have
+  downloaded since. Once the check has listed your files, results for deleted
+  files are dropped and new files are filled in from their `.civitai.info`, so a
+  model counts the version you just saved before its files are re-checked.
+- Status polls no longer overlap when the server is slow to answer. Two
+  overlapping polls could both see the check finish, and the second one ended
+  it with `Scan complete` instead of the update count.
+
+## [1.8.0] - 2026-09-11
+
+### Fixed
+- A model that Civitai has removed (404) or refuses without an API key (401/403) is
+  reported as an error item during an update check instead of quietly passing as
+  up to date. The message says which it was.
+- A local version whose sidecar carries no release date no longer turns every other
+  release into a `NEW` row. The date is taken from Civitai's own entry for that
+  version; when even that is missing, nothing is claimed as new.
+- Re-checking a subset of model types no longer wipes the other types from the
+  saved results. The check replaces only the types it ran over, the rest are
+  carried over, and the "changes detected" pill stops flagging every unchecked
+  model as newly added.
+- The panel recovers when ComfyUI is restarted underneath it: a job the server
+  no longer knows is dropped and the last saved results are reloaded, instead of
+  every request failing until the page is refreshed.
+- Copying a file path works over plain HTTP (a LAN address, for example), where
+  the browser clipboard API is unavailable and the click used to throw.
+- A `config.json` or `archived_updates.json` that fails to parse is moved aside
+  as `*.corrupt-<timestamp>` before defaults are written, so an API key, custom
+  paths, or hidden releases can be recovered by hand rather than being lost.
+- The lightbox no longer leaks a keyboard listener each time it is closed with
+  the button or backdrop.
+
+### Improved
+- **Fetch Missing Metadata** retries models Civitai did not know last time, using
+  the hash recorded in their stub sidecar instead of re-hashing the file, and
+  reports them as `not found` rather than `skipped`. Force rehash still re-reads
+  the file.
+- The User-Agent sent to Civitai carries the release version read from
+  `pyproject.toml` instead of a hard-coded `0.1`.
+- The stacked single-column card layout now keys off the panel's own width, the
+  way the other narrow-panel rules do, rather than a window-width rule that never
+  applied to a sidebar.
+- Removed the leftover domain and NSFW parameters from the client and cache URL
+  helpers; links have been fixed to `civitai.red` since 1.3.0.
+- Wiki pages, the publishing checklist, and the issue template were brought in
+  line with the code: every route and config field is documented, the
+  non-existent `legacy_a1111/` directory is gone, and the publisher id is
+  described as the slug it is.
+- Added a GitHub Actions workflow that runs the test suite on Python 3.9 and 3.12
+  for every push and pull request.
+
+## [1.7.0] - 2026-09-09
+
+### Added
+- The progress bar now carries a time estimate alongside the percentage. Per-file
+  cost varies enormously - a cached sidecar returns instantly, hashing a 6GB
+  checkpoint does not - so the rate is smoothed through a moving average rather
+  than a naive elapsed-over-done average. The estimate ticks down between file
+  completions instead of freezing during a long hash, excludes time spent paused,
+  and reads `estimating...` until the first file lands.
+
+### Improved
+- **Scan Metadata Only** is now **Fetch Missing Metadata**, naming what the button
+  is for rather than what it does not do. Its tooltip says that files with
+  existing metadata are skipped and that nothing is compared for updates.
+- The two action buttons were a matched pair on a grid, which read as two co-equal
+  primary actions. **Check for Updates** now leads at full width, and the metadata
+  fetch sits under it as a quiet utility action.
+- The refetch option is now **Refetch metadata that already exists** and names the
+  button it modifies, instead of referring to "scans" generically.
+
+## [1.6.0] - 2026-08-30
+
+### Added
+- Two-level grouping for results, set in a new **Arrange** control: group by model type and then by base model (the default, sorted A-Z), by either alone, or not at all. Group headers count what is waiting across the whole result set (`3 models - 4 new`) and collapse to put a type aside.
+- Base models are rolled up into families, so `Flux.1 D`, `Flux.2 Klein 9B` and `Flux.2 Klein 9B-base` file under one **Flux** group instead of three; unrecognised values keep their own name rather than being swept into a catch-all. Each row still prints its exact base model.
+- **Furthest behind** sort, ordering by the gap between your newest local version and the newest release.
+- **Mature content** setting: show everything, blur previews (the image only, so titles stay readable), or hide mature models entirely. Hiding filters server-side and reports how many models were left out instead of quietly shrinking the list.
+- Motion for the three moments that carry meaning: results rising in on load, a card settling from provisional to checked with its release dot igniting, and a caret turning on collapse. All of it honours `prefers-reduced-motion`.
+
+### Improved
+- Every control shares one height, radius and type ramp; the two action buttons are a matched pair on a grid, and native select chrome was replaced so a dropdown and a filter menu are the same object. The primary button now reads as a pressable object rather than a flat colour fill.
+- Red is reserved strictly for releases and the action that finds them - checkboxes and text links are neutral again.
+- Paging stays over cards with grouping on, so the rendered list is bounded no matter how large the library grows; a group crossing a page break repeats its header marked `cont.`, the way a ledger section does.
+
+### Fixed
+- Collapsing a group no longer makes it disappear with no way back: bands are now drawn from the group outline rather than from the cards, so a folded band keeps its header, its counts and its caret.
+- The result list stopped rebuilding itself on every poll tick. A running check refreshes results every 800ms, which tore down and recreated every card and replayed the entry animation, so the panel appeared to flicker constantly. Renders are now skipped entirely when nothing changed, and the entry animation only plays when the page itself changes - a card settling from provisional to checked still announces itself.
+- The filter menus showed no dropdown affordance at all: built on `<details>`, they had no caret and read as inert text fields beside real selects. Every dropdown now carries the same chevron (which flips when open), states its label and value in different weights, and the checkbox is drawn instead of left to the platform's white default.
+- A stray `display: block` further down the stylesheet was silently cancelling the flex layout on those filter summaries, which is why their contents never aligned.
+- The availability badge no longer truncates to `EARLY ACC...` in a narrow row.
+
+## [1.5.0] - 2026-08-28
+
+Never published on its own: the version in `pyproject.toml` went from 1.4.1
+straight to 1.6.0, so these changes first reached the Registry in 1.6.0.
+
+### Added
+- Re-running Check for Updates no longer starts from an empty panel: the previous results are carried over as provisional entries and each card refreshes in place as its model is re-checked — so after downloading a new version, a refresh immediately shows the current state instead of a blank list.
+- Missing local previews are backfilled during update checks: sidecars saved while the API was SFW-filtered often contain no image URLs, so the check now pulls the preview from the freshly fetched remote metadata for the installed version and downloads the missing `.preview.png`.
+- Video preview conversion falls back to the ffmpeg binary bundled with `imageio-ffmpeg` (now a listed dependency) when ffmpeg is not on PATH, and logs a one-time notice when neither is available.
+- Cancelling an update check keeps the carried-over previous results plus everything checked so far, instead of blanking the panel down to the partial run.
+
+### Fixed
+- API requests now use `civitai.red/api/v1`: since Civitai's April 2026 domain split, `civitai.com` serves SFW-filtered API responses, so hash lookups and update checks for mature models returned `not_found`. Model page links were already on `civitai.red`.
+- Custom embedding paths are no longer silently wiped from the backend config on every settings sync; partial `customPaths` payloads only update the model types they contain, and the frontend now exposes an "Embedding Paths" setting alongside the other model types.
+- Video preview thumbnails no longer fail for the large preview videos common on Civitai: the 25MB download cap (which silently aborted 30-60MB videos) was replaced by a fast path that extracts the first frame from the first 12MB, with a full-download fallback capped at 80MB.
+- Sidecar files containing valid JSON that is not an object (a list or bare string) are classified as invalid with a warning instead of surfacing raw Python errors in results.
+- Reloading the page during a metadata scan reconnects to the running job with progress and Pause/Stop controls (previously only update checks reconnected).
+- Grouped result cards no longer mislabel a local video preview as an image when the newest remote version has no preview media.
+- The "changes detected" cache pill no longer renders empty "()" details after toggling the sidecar tracking setting.
+
+### Improved
+- Redesigned the panel as a "release ledger": flat ink surfaces with hairline seams, IBM Plex Mono for dates/counts/labels, Space Grotesk for names, and a release rail in every card — hollow dot for versions you have, red dot for a new release, dashed ring for metadata-only, gray for hidden. Red now means exactly one thing (a new release on civitai.red); the glassmorphism, hover zooms, and per-type pill colors are gone.
+- Result columns adapt to the actual sidebar width via container queries, so version names stay readable in a narrow panel; model names get priority over creator/badges when space runs out.
+- Filter dropdowns stay open while toggling options instead of collapsing after every checkbox click.
+- Keyboard focus is now visible throughout the panel, and animations respect the reduced-motion system preference.
+- Summary lines omit zero-value counts, so the common case reads `2071 checked - 41 updates` instead of padding the line with `0 hidden - 0 errors` and wrapping it in a narrow sidebar.
+- Refreshed the README, registry banner, and registry icon to match the panel: the banner and icon are now the release rail itself. The documentation screenshot was regenerated from the new UI and shows only SFW models.
+- Version names no longer squeeze the `Hide` button out of view in very narrow rows.
+- The backend now refuses to start a second concurrent job (HTTP 409) instead of racing two jobs over the same sidecar files, and the UI surfaces server-provided error messages.
+- Finished job records are pruned so long ComfyUI sessions no longer accumulate result sets in memory.
+- The last-check inspection runs off the server event loop, so large model libraries no longer stall other ComfyUI requests while it walks the disk.
+- Preview downloads close their HTTP streams and clean up temp files reliably on Windows.
+- Authentication failures logged from the Civitai API now distinguish a missing API key from an invalid one.
+- Added the MIT `LICENSE` file matching the declared package metadata.
+
+## [1.4.1] - 2026-08-05
+
+### Fixed
+- Invalidly encoded, binary, or implausibly large `.civitai.info` files are ignored instead of aborting model discovery or consuming excessive memory; UTF-8, UTF-16, and UTF-32 sidecars remain supported.
+- Invalid sidecars now produce expandable, non-blocking warnings in the updater UI, including a rename suggestion when a SafeTensors model has the wrong extension.
+
+## [1.4.0] - 2026-07-30
+
+### Added
+- Optional sidecar-only model tracking, enabled by default, so valid orphan `.civitai.info` files count as installed Civitai versions.
+- Metadata-only labels for update cards and cache-aware detection when tracked sidecars are added, removed, or disabled.
+- ComfyUI V3 extension entrypoint while retaining legacy node registration compatibility.
+- Availability badges for non-public Civitai model versions.
+
+### Fixed
+- Model lookup failures now produce actionable error items instead of appearing as update-free results.
+- Metadata-only entries use their stored version IDs and never attempt to hash missing model weights.
+
+### Improved
+- Sidecar discovery ignores malformed metadata and avoids duplicate entries when a matching model weight exists.
+- Expanded automated coverage for sidecar discovery, refresh behavior, force-rehash handling, grouping, and error reporting.
+
+## [1.3.0] - 2026-05-22
+
+### Removed
+- Obsolete "Civitai Domain" settings option from the frontend UI and backend configurations.
+
+### Improved
+- Model and version links now always open on `civitai.red` to bypass mature content warnings and redirection prompts.
+
+## [1.2.0] - 2026-05-21
+
+### Added
+- Preferred Civitai domain configuration setting (`civitai.com` or `civitai.red` mirror) to dynamically format model page and version links.
+- Interactive hover tooltips using custom `.cu-tooltip` styling.
+- Tooltip-enabled information triggers (`ⓘ`) next to settings options ("Force rehash", "Refetch existing metadata during scans").
+
+### Fixed
+- API key overwrite vulnerability that wiped backend credentials on browser settings hydration.
+- Polling resilience in frontend to retry up to 5 times during server restart or network interruption.
+- Intercepted 401/403 errors in API client to log clear authentication warnings instead of misleading 404 logs.
+
+### Improved
+- Premium UI aesthetics, including glassmorphism layouts, card hovering scale micro-animations, and smooth filter dropdown transitions.
+- Renamed buttons "Scan + Check Updates" -> "Check for Updates" and "Scan Only (Metadata)" -> "Scan Metadata Only" for better clarity.
+- Styled cache status checks as visual colored pills (`cached` in green, `stale` in orange, `changes detected` in red) with descriptive hover tooltips.
+- Aligned user documentation (`README.md` and `wiki/Usage.md`) with the new control panel labels.
+
+## [1.1.0] - 2026-03-04
+
+### Added
+- PNG preview sidecar generation for model files.
+- Improved scan/check UI flow clarity.
+
+### Fixed
+- Correct Comfy Registry `PublisherId` to `gregrichrd`.
+- Set explicit MIT license metadata for registry compatibility.
+
+### Improved
+- Refreshed docs, disclosure text, screenshot, and publisher metadata.
+
+## [1.0.0] - 2026-02-22
+
+### Added
+- Initial ComfyUI release packaging for Civitai Updater.
+- Registry-ready icon and banner assets.
+- Sidebar custom monochrome icon support.
+- README refresh with banner, UI screenshot, and attribution.
