@@ -1469,14 +1469,14 @@ function makeStrip() {
 }
 
 app.registerExtension({
-  name: "warppipe.promptUI",
+  name: "warpstudio.promptUI",
   settings: [
     {
       id: CODE_EDITOR_SETTING,
       name: "Code editor in the prompt boxes",
       type: "boolean",
       defaultValue: true,
-      category: ["WarpPipe", "Prompt boxes", "Code editor"],
+      category: ["Warp Studio", "Prompt boxes", "Code editor"],
       tooltip:
         "Sections starting //// fold while you type. Off, the boxes are plain text boxes without folding.",
       // Also called once with the stored value, when there is nothing to change.

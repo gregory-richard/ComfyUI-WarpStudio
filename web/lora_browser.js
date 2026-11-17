@@ -418,7 +418,7 @@ function openBrowser(node) {
 }
 
 app.registerExtension({
-  name: "warppipe.loraBrowser",
+  name: "warpstudio.loraBrowser",
   async setup() {
     const style = document.createElement("style");
     style.textContent = STYLE;

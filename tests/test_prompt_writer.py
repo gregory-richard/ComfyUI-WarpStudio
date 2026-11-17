@@ -80,7 +80,8 @@ def server():
 
 
 def _key_file(tmp_path, key="k"):
-    f = tmp_path / "warppipe_llm_keys.json"
+    f = tmp_path / "warp-studio" / "llm_keys.json"
+    f.parent.mkdir(exist_ok=True)
     f.write_text(json.dumps({"127.0.0.1": key}), encoding="utf-8")
     return f
 
@@ -106,7 +107,8 @@ def test_key_bound_to_host():
 
 
 def test_key_file_names_other_hosts(tmp_path):
-    f = tmp_path / "warppipe_llm_keys.json"
+    f = tmp_path / "warp-studio" / "llm_keys.json"
+    f.parent.mkdir(exist_ok=True)
     f.write_text('{"127.0.0.1": "local"}')
     assert pw.key_for("http://127.0.0.1:1234/v1", {}, f) == "local"
     assert pw.key_for("http://localhost:1234/v1", {}, f) is None
@@ -351,7 +353,7 @@ def test_handle_write_uses_setting_folder_and_reference(server, tmp_path):
         },
         env={},
         key_file=_key_file(tmp_path, "LOCALKEY"),
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=lambda name: str(img) if name == "ref.png" else None,
     )
     chat = next(r for r in server.requests if r["path"].endswith("/chat/completions"))
@@ -391,7 +393,7 @@ def test_handle_write_model_list_failure_keeps_write(server, tmp_path):
         },
         env={},
         key_file=tmp_path / "none.json",
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=lambda name: None,
     )
     assert out["text"] == "OUT" and out["cost"] is None
@@ -412,7 +414,7 @@ def test_handle_write_unknown_reference_is_error(server, tmp_path):
         },
         env={},
         key_file=tmp_path / "none.json",
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=lambda name: None,
     )
     assert "error" in out and "nope.png" in out["error"]
@@ -428,7 +430,7 @@ def _write_kwargs(tmp_path, image_path=lambda name: None, opener=_no_request):
     return dict(
         env={},
         key_file=tmp_path / "none.json",
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=image_path,
         opener=opener,
     )
@@ -568,7 +570,7 @@ def test_handle_write_foreign_host_never_gets_key(tmp_path):
         },
         env={"NANOGPT_API_KEY": "NANOKEY"},
         key_file=tmp_path / "none.json",
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=lambda name: None,
         opener=opener,
     )
@@ -588,7 +590,7 @@ def test_handle_write_nanogpt_without_key_says_how_to_add_one(tmp_path):
         },
         env={},
         key_file=tmp_path / "none.json",
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=lambda name: None,
         opener=lambda *a, **k: pytest.fail("no request expected"),
     )
@@ -607,7 +609,7 @@ def test_handle_models(server, tmp_path):
 def test_handle_system_prompts(tmp_path):
     assert "SystemPromptDir" in pw.handle_system_prompts({})["error"]
     (tmp_path / "a.txt").write_text("x")
-    out = pw.handle_system_prompts({"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)})
+    out = pw.handle_system_prompts({"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)})
     assert out == {"names": ["a.txt"]}
 
 
@@ -624,7 +626,7 @@ def test_handle_write_refuses_traversal_and_non_image_reference(tmp_path):
     kwargs = dict(
         env={},
         key_file=None,
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=lambda name: str(secret),
         opener=lambda *a, **k: pytest.fail("no request expected"),
     )
@@ -760,7 +762,7 @@ def test_system_prompts_newest_version_first(tmp_path):
 
 def test_handle_system_prompt(tmp_path):
     (tmp_path / "v2.7.txt").write_text("MASTER", encoding="utf-8")
-    settings = {"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)}
+    settings = {"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)}
     assert pw.handle_system_prompt("v2.7.txt", settings) == {"name": "v2.7.txt", "text": "MASTER"}
     assert "error" in pw.handle_system_prompt("../secret.txt", settings)
     assert "error" in pw.handle_system_prompt("missing.txt", settings)
@@ -1468,7 +1470,7 @@ def _logged_write(server, tmp_path, reply, *, key="LOCALKEY", stopped=None, extr
         body,
         env={},
         key_file=_key_file(tmp_path, key),
-        settings={"WarpPipe.PromptWriter.SystemPromptDir": str(tmp_path)},
+        settings={"WarpStudio.PromptWriter.SystemPromptDir": str(tmp_path)},
         image_path=lambda name: str(img),
         stopped=stopped,
         log_path=log,
@@ -1627,3 +1629,9 @@ def test_handle_write_passes_a_known_thinking_level_on(server, tmp_path, raw, se
     assert out["text"] == "OUT"
     assert _chat_body(server).get("reasoning_effort") == sent
     assert _log_lines(log)[0]["reasoning_effort"] == sent
+
+
+def test_the_log_creates_its_warp_studio_folder(tmp_path):
+    log = tmp_path / "warp-studio" / "llm_log.jsonl"
+    pw.append_log(log, {"event": "request"})
+    assert json.loads(log.read_text(encoding="utf-8"))["event"] == "request"

@@ -1102,7 +1102,7 @@ def _hash_cache_path() -> Optional[str]:
         except Exception:
             continue
         if base and os.path.isdir(base):
-            return os.path.join(base, "warppipe_hashes.json")
+            return os.path.join(base, "warp-studio", "hashes.json")
     return None
 
 
@@ -1136,6 +1136,7 @@ def _write_atomically(path: str, write) -> bool:
     directory = os.path.dirname(path) or "."
     temporary = os.path.join(directory, f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp")
     try:
+        os.makedirs(directory, exist_ok=True)
         write(temporary)
         os.replace(temporary, path)
         return True

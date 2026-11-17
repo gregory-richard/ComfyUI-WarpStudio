@@ -15,7 +15,7 @@ const FRIENDLY_LABELS = {
 };
 
 app.registerExtension({
-  name: "warppipe.providerUI",
+  name: "warpstudio.providerUI",
   async nodeCreated(node) {
     if (node.comfyClass !== NODE_ID) return;
 

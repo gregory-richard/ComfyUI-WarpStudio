@@ -84,14 +84,14 @@ import {
   visibleVersions,
 } from "./prompt_chats.js";
 
-const SETTING_DIR = "WarpPipe.PromptWriter.SystemPromptDir";
-const SETTING_BASE_URL = "WarpPipe.PromptWriter.BaseUrl";
-const SETTING_MODEL = "WarpPipe.PromptWriter.Model";
-const SETTING_SYSTEM_PROMPT = "WarpPipe.PromptWriter.SystemPrompt";
-const SETTING_TEMPERATURE = "WarpPipe.PromptWriter.Temperature";
-const SETTING_TITLE_MODEL = "WarpPipe.PromptWriter.TitleModel";
-const SETTING_LORA_SCOPE = "WarpPipe.PromptWriter.LoraScope";
-const SETTING_REASONING = "WarpPipe.PromptWriter.ReasoningEffort";
+const SETTING_DIR = "WarpStudio.PromptWriter.SystemPromptDir";
+const SETTING_BASE_URL = "WarpStudio.PromptWriter.BaseUrl";
+const SETTING_MODEL = "WarpStudio.PromptWriter.Model";
+const SETTING_SYSTEM_PROMPT = "WarpStudio.PromptWriter.SystemPrompt";
+const SETTING_TEMPERATURE = "WarpStudio.PromptWriter.Temperature";
+const SETTING_TITLE_MODEL = "WarpStudio.PromptWriter.TitleModel";
+const SETTING_LORA_SCOPE = "WarpStudio.PromptWriter.LoraScope";
+const SETTING_REASONING = "WarpStudio.PromptWriter.ReasoningEffort";
 const LORA_SCOPES = ["off", "list", "all"];
 const DEFAULT_TITLE_MODEL = "gemma-4-26b-a4b-it-chimeraxheretic";
 
@@ -719,8 +719,8 @@ function uid() {
 }
 
 function ensureStyle() {
-  if (document.getElementById("wpw-style")) return;
-  document.head.appendChild(el("style", { id: "wpw-style", textContent: STYLE }));
+  if (document.getElementById("ws-prompt-writer-style")) return;
+  document.head.appendChild(el("style", { id: "ws-prompt-writer-style", textContent: STYLE }));
 }
 
 function getSetting(id, fallback) {
@@ -4223,14 +4223,14 @@ export async function openPromptWriter(promptNode) {
 }
 
 app.registerExtension({
-  name: "WarpPipe.PromptWriter",
+  name: "warpstudio.promptWriter",
   settings: [
     {
       id: SETTING_DIR,
       name: "System prompt folder",
       type: "text",
       defaultValue: "",
-      category: ["WarpPipe", "Prompt Writer", "System prompt folder"],
+      category: ["Warp Studio", "Prompt Writer", "System prompt folder"],
       tooltip:
         "Folder of system prompts for 🌀 Prompt Writer. Only .txt files directly in this folder are listed.",
     },

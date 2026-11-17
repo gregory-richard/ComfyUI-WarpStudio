@@ -1874,3 +1874,14 @@ def test_the_v3_send_and_compare_nodes_match_the_legacy_ones(warp_pipe_loader, m
     assert output.metadata["ui"]["before"] == []
     assert len(output.metadata["ui"]["after"]) == 1
     assert warp_pipe.WarpCompareV3.GET_SCHEMA().metadata["is_output_node"] is True
+
+
+def test_the_hash_cache_is_written_into_the_warp_studio_folder(warp_pipe, tmp_path, monkeypatch):
+    import types
+
+    fake = types.ModuleType("folder_paths")
+    fake.get_user_directory = lambda: str(tmp_path)
+    monkeypatch.setitem(sys.modules, "folder_paths", fake)
+    monkeypatch.setattr(warp_pipe, "_hash_cache", {"a": "b"})
+    warp_pipe._persist_hash_cache()
+    assert (tmp_path / "warp-studio" / "hashes.json").is_file()

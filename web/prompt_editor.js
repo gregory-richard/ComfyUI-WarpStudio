@@ -56,7 +56,7 @@ function fillPlaceholder(element, parts) {
 // Hidden rather than removed is also what keeps the box's size honest: its
 // offsets, its scrollHeight and its padding are still there to be asked.
 
-export const CODE_EDITOR_SETTING = "WarpPipe.CodeEditor";
+export const CODE_EDITOR_SETTING = "WarpStudio.CodeEditor";
 
 let cm = null;
 

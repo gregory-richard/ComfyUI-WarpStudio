@@ -563,8 +563,8 @@ function setupPreviewMirror() {
   }
 }
 
-window.WarpPipe = window.WarpPipe ?? {};
-window.WarpPipe.warpSend = { ...(window.WarpPipe.warpSend ?? {}), drawPreviewInto };
+window.WarpStudio = window.WarpStudio ?? {};
+window.WarpStudio.warpSend = { ...(window.WarpStudio.warpSend ?? {}), drawPreviewInto };
 
 // --- Node setup ----------------------------------------------------------------
 
@@ -757,7 +757,7 @@ function registerSelect() {
 }
 
 app.registerExtension({
-  name: "WarpPipe.WarpSend",
+  name: "warpstudio.warpSend",
 
   actionBarButtons: [
     {

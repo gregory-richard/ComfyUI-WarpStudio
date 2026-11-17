@@ -32,3 +32,32 @@ def sources():
 def test_no_old_route_prefix(sources):
     hits = [(path.name, old) for path, text in sources for old in OLD_ROUTES if old in text]
     assert hits == []
+
+
+OLD_NAMES = [
+    '"WarpPipe.',
+    '"CivitaiUpdater.',
+    'name: "warppipe.',
+    "wpw-style",
+    "cu-styles",
+    "window.WarpPipe",
+    "civitai-updater.rename",
+    "warppipe_prompt_chats",
+    "warppipe_llm_",
+    "warppipe_hashes",
+    'category: ["WarpPipe"',
+    'category: ["Civitai Updater"',
+    'TAB_ID = "civitai-updater"',
+    '"civitai-updater.ui"',
+]
+
+
+def test_no_old_unique_names(sources):
+    hits = [(path.name, old) for path, text in sources for old in OLD_NAMES if old in text]
+    assert hits == []
+
+
+def test_workflow_properties_keep_their_names(sources):
+    text = "".join(t for _, t in sources)
+    for prop in ("warppipeWidgets", "warppipeFolded", "warppipeListRows"):
+        assert prop in text

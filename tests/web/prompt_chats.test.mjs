@@ -77,7 +77,7 @@ function chatWith(...ids) {
 const ids = (chats) => chats.map((c) => c.id);
 
 test("CHATS_FILE and emptyStore", () => {
-  assert.equal(CHATS_FILE, "warppipe_prompt_chats.json");
+  assert.equal(CHATS_FILE, "warp_studio_prompt_chats.json");
   assert.deepEqual(emptyStore(), { version: 1, chats: [] });
   assert.notEqual(emptyStore().chats, emptyStore().chats);
 });

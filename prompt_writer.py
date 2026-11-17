@@ -31,10 +31,10 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://nano-gpt.com/api/v1"
-SETTING_DIR = "WarpPipe.PromptWriter.SystemPromptDir"
-KEY_FILE_NAME = "warppipe_llm_keys.json"
+SETTING_DIR = "WarpStudio.PromptWriter.SystemPromptDir"
+KEY_FILE_NAME = "warp-studio/llm_keys.json"
 # What was asked and what came back, one JSON line each, kept on this machine.
-LOG_FILE_NAME = "warppipe_llm_log.jsonl"
+LOG_FILE_NAME = "warp-studio/llm_log.jsonl"
 LOG_MAX_BYTES = 20 * 1024 * 1024
 NANOGPT_ENV = "NANOGPT_API_KEY"
 NANOGPT_HOSTS = frozenset({"nano-gpt.com", "api.nano-gpt.com"})
@@ -936,6 +936,7 @@ def append_log(path: Optional[Path], entry: dict, rotate: bool = False) -> None:
     path = Path(path)
     try:
         with _LOG_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
             if rotate and path.is_file() and path.stat().st_size > LOG_MAX_BYTES:
                 os.replace(path, path.with_name(path.name + ".1"))
             with open(path, "a", encoding="utf-8") as handle:

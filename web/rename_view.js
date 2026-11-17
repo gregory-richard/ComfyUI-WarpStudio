@@ -11,10 +11,10 @@ const DOWNLOAD_JOB = "naming-model-download";
 export const RENAME_JOB_TYPES = [DRY_RUN_JOB, APPLY_JOB, DOWNLOAD_JOB];
 const NO_SEND2TRASH = "Removing extra copies needs the send2trash package. Install it into ComfyUI's Python (pip install send2trash) and restart ComfyUI.";
 const PAGE = 150;
-const LAST_JOB_KEY = "civitai-updater.rename.dryRunJob";
-const SELECTION_KEY = "civitai-updater.rename.selection";
+const LAST_JOB_KEY = "warp-studio.rename.dryRunJob";
+const SELECTION_KEY = "warp-studio.rename.selection";
 /* Files the user unticked: they keep their names in later dry runs too, until ticked again. */
-const UNTICKED_KEY = "civitai-updater.rename.unticked";
+const UNTICKED_KEY = "warp-studio.rename.unticked";
 const NAMED = new Set(["change", "unchanged"]);
 const PART_WORDS = { creator: "creator", title: "title", version: "version", precision: "precision", base: "base code" };
 
@@ -1140,7 +1140,7 @@ export function renderRenameView(container, deps) {
         ${canDownload ? `<div class="cu-rn-actions">
           <button class="cu-btn cu-btn-sm" data-rn-action="download"${disabledIf(store.busy || otherJob())}>Download naming model (9.75 GB)</button>
         </div>
-        ${(status.namingModels || []).length ? `<div class="cu-rn-hint">Or choose one of your ${plural(status.namingModels.length, "text encoder")} in Settings \u203a Civitai Updater \u203a Rename.</div>` : ""}` : ""}
+        ${(status.namingModels || []).length ? `<div class="cu-rn-hint">Or choose one of your ${plural(status.namingModels.length, "text encoder")} in Settings \u203a Warp Studio \u203a Civitai Rename.</div>` : ""}` : ""}
       </div>`);
     }
 

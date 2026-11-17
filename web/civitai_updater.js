@@ -2,8 +2,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 
-const TAB_ID = "civitai-updater";
-const EXTENSION_NAME = "civitai-updater.ui";
+const TAB_ID = "warp-studio-updater";
+const EXTENSION_NAME = "warpstudio.updater";
 const TAB_ICON_CLASS = "cu-tab-icon";
 const TAB_ICON = `pi pi-refresh ${TAB_ICON_CLASS}`;
 const TAB_ICON_URL = new URL("./icon-monochrome.svg", import.meta.url).href;
@@ -13,26 +13,26 @@ const POLL_MS = 800;
 const ETA_SMOOTHING = 0.25;
 
 const SETTINGS = {
-  apiKey: "CivitaiUpdater.APIKey",
-  cacheTtlMinutes: "CivitaiUpdater.CacheTtlMinutes",
-  requestTimeoutSeconds: "CivitaiUpdater.RequestTimeoutSeconds",
-  maxRetries: "CivitaiUpdater.MaxRetries",
-  requestDelayMs: "CivitaiUpdater.RequestDelayMs",
-  treatSidecarsAsInstalled: "CivitaiUpdater.TreatSidecarsAsInstalled",
-  useComfyPaths: "CivitaiUpdater.PathSources.UseComfy",
-  useExtraModelPaths: "CivitaiUpdater.PathSources.UseExtraModelPaths",
-  useCustomPaths: "CivitaiUpdater.PathSources.UseCustom",
-  customCheckpoint: "CivitaiUpdater.CustomPaths.Checkpoint",
-  customLora: "CivitaiUpdater.CustomPaths.Lora",
-  customVae: "CivitaiUpdater.CustomPaths.VAE",
-  customUnet: "CivitaiUpdater.CustomPaths.UNet",
-  customEmbedding: "CivitaiUpdater.CustomPaths.Embedding",
-  matureMode: "CivitaiUpdater.MatureContent",
-  namingModel: "CivitaiUpdater.NamingModel",
-  fallbackCivarchive: "CivitaiUpdater.Fallback.Civarchive",
-  fallbackHuggingFace: "CivitaiUpdater.Fallback.HuggingFace",
-  fallbackAiToolkitFolders: "CivitaiUpdater.Fallback.AiToolkitFolders",
-  fallbackOwnCreator: "CivitaiUpdater.Fallback.OwnCreator",
+  apiKey: "WarpStudio.Updater.APIKey",
+  cacheTtlMinutes: "WarpStudio.Updater.CacheTtlMinutes",
+  requestTimeoutSeconds: "WarpStudio.Updater.RequestTimeoutSeconds",
+  maxRetries: "WarpStudio.Updater.MaxRetries",
+  requestDelayMs: "WarpStudio.Updater.RequestDelayMs",
+  treatSidecarsAsInstalled: "WarpStudio.Updater.TreatSidecarsAsInstalled",
+  useComfyPaths: "WarpStudio.Updater.PathSources.UseComfy",
+  useExtraModelPaths: "WarpStudio.Updater.PathSources.UseExtraModelPaths",
+  useCustomPaths: "WarpStudio.Updater.PathSources.UseCustom",
+  customCheckpoint: "WarpStudio.Updater.CustomPaths.Checkpoint",
+  customLora: "WarpStudio.Updater.CustomPaths.Lora",
+  customVae: "WarpStudio.Updater.CustomPaths.VAE",
+  customUnet: "WarpStudio.Updater.CustomPaths.UNet",
+  customEmbedding: "WarpStudio.Updater.CustomPaths.Embedding",
+  matureMode: "WarpStudio.Updater.MatureContent",
+  namingModel: "WarpStudio.Updater.NamingModel",
+  fallbackCivarchive: "WarpStudio.Updater.Fallback.Civarchive",
+  fallbackHuggingFace: "WarpStudio.Updater.Fallback.HuggingFace",
+  fallbackAiToolkitFolders: "WarpStudio.Updater.Fallback.AiToolkitFolders",
+  fallbackOwnCreator: "WarpStudio.Updater.Fallback.OwnCreator",
 };
 
 // The row label column fits "No match"; the message line names the source.
@@ -171,34 +171,34 @@ const state = {
 app.registerExtension({
   name: EXTENSION_NAME,
   settings: [
-    { id: SETTINGS.apiKey, name: "API Key", type: "text", defaultValue: "", attrs: { type: "password", autocomplete: "off" }, tooltip: "Optional Civitai API key for restricted resources.", category: ["Civitai Updater", "Network", "API Key"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.cacheTtlMinutes, name: "Cache Duration (minutes)", type: "number", defaultValue: 240, attrs: { min: 0, max: 10080, step: 30 }, tooltip: "How long to reuse cached check results before re-checking. 0 = always check fresh.", category: ["Civitai Updater", "General", "Cache Duration"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.requestTimeoutSeconds, name: "Request Timeout (seconds)", type: "number", defaultValue: 30, attrs: { min: 5, max: 300, step: 1 }, category: ["Civitai Updater", "Network", "Request Timeout"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.maxRetries, name: "Max Retries", type: "number", defaultValue: 4, attrs: { min: 0, max: 10, step: 1 }, category: ["Civitai Updater", "Network", "Max Retries"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.requestDelayMs, name: "Delay Between Models (ms)", type: "number", defaultValue: 120, attrs: { min: 0, max: 3000, step: 10 }, tooltip: "Small delay between model checks to reduce request bursts.", category: ["Civitai Updater", "Network", "Request Delay"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.treatSidecarsAsInstalled, name: "Treat .civitai.info as Installed", type: "boolean", defaultValue: true, tooltip: "Count valid .civitai.info files as installed model versions when the weight file is missing.", category: ["Civitai Updater", "General", "Sidecar-only Models"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.useComfyPaths, name: "Use Comfy Default Paths", type: "boolean", defaultValue: true, category: ["Civitai Updater", "Path Sources", "Comfy Defaults"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.useExtraModelPaths, name: "Use extra_model_paths.yaml", type: "boolean", defaultValue: true, category: ["Civitai Updater", "Path Sources", "Extra Model Paths"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.useCustomPaths, name: "Use Custom Paths", type: "boolean", defaultValue: true, category: ["Civitai Updater", "Path Sources", "Custom Paths"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.customCheckpoint, name: "Checkpoint Paths", type: "text", defaultValue: "", tooltip: "Optional extra checkpoint roots. Use ';' or new lines.", category: ["Civitai Updater", "Custom Paths", "Checkpoint"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.customLora, name: "LoRA Paths", type: "text", defaultValue: "", tooltip: "Optional extra LoRA roots. Use ';' or new lines.", category: ["Civitai Updater", "Custom Paths", "LoRA"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.customVae, name: "VAE Paths", type: "text", defaultValue: "", tooltip: "Optional extra VAE roots. Use ';' or new lines.", category: ["Civitai Updater", "Custom Paths", "VAE"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.customUnet, name: "UNet Paths", type: "text", defaultValue: "", tooltip: "Optional extra UNet roots. Use ';' or new lines.", category: ["Civitai Updater", "Custom Paths", "UNet"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.customEmbedding, name: "Embedding Paths", type: "text", defaultValue: "", tooltip: "Optional extra embedding roots. Use ';' or new lines.", category: ["Civitai Updater", "Custom Paths", "Embedding"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.apiKey, name: "API Key", type: "text", defaultValue: "", attrs: { type: "password", autocomplete: "off" }, tooltip: "Optional Civitai API key for restricted resources.", category: ["Warp Studio", "Civitai Network", "API Key"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.cacheTtlMinutes, name: "Cache Duration (minutes)", type: "number", defaultValue: 240, attrs: { min: 0, max: 10080, step: 30 }, tooltip: "How long to reuse cached check results before re-checking. 0 = always check fresh.", category: ["Warp Studio", "Civitai General", "Cache Duration"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.requestTimeoutSeconds, name: "Request Timeout (seconds)", type: "number", defaultValue: 30, attrs: { min: 5, max: 300, step: 1 }, category: ["Warp Studio", "Civitai Network", "Request Timeout"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.maxRetries, name: "Max Retries", type: "number", defaultValue: 4, attrs: { min: 0, max: 10, step: 1 }, category: ["Warp Studio", "Civitai Network", "Max Retries"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.requestDelayMs, name: "Delay Between Models (ms)", type: "number", defaultValue: 120, attrs: { min: 0, max: 3000, step: 10 }, tooltip: "Small delay between model checks to reduce request bursts.", category: ["Warp Studio", "Civitai Network", "Request Delay"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.treatSidecarsAsInstalled, name: "Treat .civitai.info as Installed", type: "boolean", defaultValue: true, tooltip: "Count valid .civitai.info files as installed model versions when the weight file is missing.", category: ["Warp Studio", "Civitai General", "Sidecar-only Models"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.useComfyPaths, name: "Use Comfy Default Paths", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Comfy Defaults"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.useExtraModelPaths, name: "Use extra_model_paths.yaml", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Extra Model Paths"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.useCustomPaths, name: "Use Custom Paths", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Custom Paths"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.customCheckpoint, name: "Checkpoint Paths", type: "text", defaultValue: "", tooltip: "Optional extra checkpoint roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "Checkpoint"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.customLora, name: "LoRA Paths", type: "text", defaultValue: "", tooltip: "Optional extra LoRA roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "LoRA"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.customVae, name: "VAE Paths", type: "text", defaultValue: "", tooltip: "Optional extra VAE roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "VAE"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.customUnet, name: "UNet Paths", type: "text", defaultValue: "", tooltip: "Optional extra UNet roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "UNet"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.customEmbedding, name: "Embedding Paths", type: "text", defaultValue: "", tooltip: "Optional extra embedding roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "Embedding"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.matureMode, name: "Mature content", type: "combo", defaultValue: "show", options: [
         { value: "show", text: "Show everything" },
         { value: "blur", text: "Blur previews" },
         { value: "hide", text: "Hide mature models" },
-      ], tooltip: "Blur hides the preview image only \u2014 titles stay readable so you can still identify a model. Hide removes mature models from results and reports how many were left out.", category: ["Civitai Updater", "General", "Mature Content"], onChange: () => { scheduleSettingsSync(); onMatureModeChanged(); } },
-    { id: SETTINGS.namingModel, name: "Naming model", type: "combo", defaultValue: "", options: (value) => namingModelOptions(value), tooltip: "The text encoder that Generate Text runs to propose the new file names. The list shows the files in your text_encoders folders.", category: ["Civitai Updater", "Rename", "Naming Model"], onChange: (value) => {
+      ], tooltip: "Blur hides the preview image only \u2014 titles stay readable so you can still identify a model. Hide removes mature models from results and reports how many were left out.", category: ["Warp Studio", "Civitai General", "Mature Content"], onChange: () => { scheduleSettingsSync(); onMatureModeChanged(); } },
+    { id: SETTINGS.namingModel, name: "Naming model", type: "combo", defaultValue: "", options: (value) => namingModelOptions(value), tooltip: "The text encoder that Generate Text runs to propose the new file names. The list shows the files in your text_encoders folders.", category: ["Warp Studio", "Civitai Rename", "Naming Model"], onChange: (value) => {
       // Only a choice made here is sent: the backend picks the model itself after a download.
       state.namingModelDirty = String(value ?? "") !== state.syncedNamingModel;
       scheduleSettingsSync();
     } },
-    { id: SETTINGS.fallbackCivarchive, name: "Look up previews on civarchive", type: "boolean", defaultValue: false, tooltip: "Files Civitai can't serve are looked up on civarchive.com by their SHA256 hash. Only the hash is sent.", category: ["Civitai Updater", "Preview Fallback", "Civarchive"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.fallbackHuggingFace, name: "Hugging Face authors and repos", type: "text", defaultValue: "malcolmrey", tooltip: "Matched by file hash. Authors (malcolmrey) or repos (owner/name), separated by ';' or new lines. Leave empty to skip Hugging Face.", category: ["Civitai Updater", "Preview Fallback", "Hugging Face"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.fallbackAiToolkitFolders, name: "ai-toolkit output folders", type: "text", defaultValue: "", tooltip: "Folders that hold your ai-toolkit training runs. Their sample images become previews for your own trainings. Use ';' or new lines.", category: ["Civitai Updater", "Preview Fallback", "ai-toolkit Folders"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.fallbackOwnCreator, name: "Creator of your own trainings", type: "text", defaultValue: "", category: ["Civitai Updater", "Preview Fallback", "Own Creator"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.fallbackCivarchive, name: "Look up previews on civarchive", type: "boolean", defaultValue: false, tooltip: "Files Civitai can't serve are looked up on civarchive.com by their SHA256 hash. Only the hash is sent.", category: ["Warp Studio", "Civitai Preview Fallback", "Civarchive"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.fallbackHuggingFace, name: "Hugging Face authors and repos", type: "text", defaultValue: "malcolmrey", tooltip: "Matched by file hash. Authors (malcolmrey) or repos (owner/name), separated by ';' or new lines. Leave empty to skip Hugging Face.", category: ["Warp Studio", "Civitai Preview Fallback", "Hugging Face"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.fallbackAiToolkitFolders, name: "ai-toolkit output folders", type: "text", defaultValue: "", tooltip: "Folders that hold your ai-toolkit training runs. Their sample images become previews for your own trainings. Use ';' or new lines.", category: ["Warp Studio", "Civitai Preview Fallback", "ai-toolkit Folders"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.fallbackOwnCreator, name: "Creator of your own trainings", type: "text", defaultValue: "", category: ["Warp Studio", "Civitai Preview Fallback", "Own Creator"], onChange: () => scheduleSettingsSync() },
   ],
   async setup() {
     injectStyles();
@@ -1521,7 +1521,7 @@ function renderMatureNotice() {
   const note = document.createElement("div");
   note.className = "cu-mature-note";
   const word = state.matureHidden === 1 ? "model" : "models";
-  note.textContent = `${state.matureHidden} mature ${word} hidden \u2014 change this in Settings \u2192 Civitai Updater.`;
+  note.textContent = `${state.matureHidden} mature ${word} hidden \u2014 change this in Settings \u2192 Warp Studio \u2192 Civitai General.`;
   state.resultsEl.appendChild(note);
 }
 
@@ -2349,9 +2349,9 @@ async function errorMessage(response) {
 }
 
 function injectStyles() {
-  if (document.getElementById("cu-styles")) return;
+  if (document.getElementById("ws-updater-styles")) return;
   const style = document.createElement("style");
-  style.id = "cu-styles";
+  style.id = "ws-updater-styles";
   style.textContent = `
     @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@500;700&display=swap");
 

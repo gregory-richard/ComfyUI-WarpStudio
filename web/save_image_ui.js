@@ -34,7 +34,7 @@ function migrateSingleToggle(node, values) {
 }
 
 app.registerExtension({
-  name: "warppipe.saveImageUI",
+  name: "warpstudio.saveImageUI",
   async nodeCreated(node) {
     if (node.comfyClass !== NODE_ID) return;
 

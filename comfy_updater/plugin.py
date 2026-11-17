@@ -12,13 +12,22 @@ from .updater_service import UpdaterService
 _INITIALIZED = False
 
 
+def data_dir_for(root_dir: Path) -> Path:
+    """Where the updater keeps its data: the ComfyUI user folder, or the package folder."""
+    try:
+        import folder_paths
+    except ImportError:
+        return root_dir / ".civitai_updater"
+    return Path(folder_paths.get_user_directory()) / "warp-studio" / "updater"
+
+
 def initialize_plugin() -> None:
     global _INITIALIZED
     if _INITIALIZED:
         return
 
     root_dir = Path(__file__).resolve().parents[1]
-    data_dir = root_dir / ".civitai_updater"
+    data_dir = data_dir_for(root_dir)
 
     config_store = ConfigStore(data_dir)
     archive_store = ArchivedUpdateStore(data_dir)

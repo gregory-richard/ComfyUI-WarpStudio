@@ -3,7 +3,7 @@
 
 import { diffStats, diffWords } from "./prompt_writer_core.js";
 
-export const CHATS_FILE = "warppipe_prompt_chats.json";
+export const CHATS_FILE = "warp_studio_prompt_chats.json";
 /** Written by the LLM. */
 export const KIND_WRITTEN = "written";
 /** Edited by hand, in the Prompt Writer or in the node's prompt box. */
