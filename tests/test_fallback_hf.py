@@ -307,6 +307,18 @@ class BudgetTests(IndexTestCase):
         self.assertEqual(self.index([REPO], http).find(h(4)).version_name, "m4")
         self.assertEqual(http.count("/tree/"), 5)
 
+    def test_budget_counts_only_this_index_requests(self):
+        http = FakeHttp(malcolmrey_bodies())
+        for _ in range(4):  # another source sharing the client, before the build
+            http.request_count += 1
+        with patch.object(fallback_hf, "MAX_REQUESTS_PER_RUN", 3):
+            index = self.index(["malcolmrey"], http)
+            self.assertIsNone(index.find(SHA3))  # listing + tree: 2 of 3
+            for _ in range(10):  # and between finds
+                http.request_count += 1
+            self.assertTrue(index.find(SHA).image_url)  # the sample index still fits
+        self.assertEqual(http.count(SAMPLES), 1)
+
     def test_budget_is_checked_before_single_requests(self):
         second = "example/second"
         bodies = {
@@ -371,10 +383,34 @@ class MissingAndPartialTests(IndexTestCase):
         with self.assertRaises(SourceUnavailable):
             index.find(SHA3)
         self.assertEqual(http.request_count, 1)
+        r = index.find(SHA)
+        self.assertEqual((r.title, r.image_url), ("someone", ""))  # a partial run sends nothing more
+        with self.assertRaises(SourceUnavailable):
+            index.find(SHA3)
+        self.assertEqual(http.urls, [listing_url("malcolmrey")])
+
+    def test_later_tree_page_failure_is_not_gone(self):
+        bodies = other_bodies(oid=SHA2)
+        page2 = tree_url(REPO) + "&cursor=p2"
+        links = {tree_url(REPO): page2}
+        index = self.index([REPO], FakeHttp(bodies, links))  # page 2 answers 404
+        with self.assertRaises(SourceUnavailable):
+            index.find(SHA3)
+
+        bodies[page2] = [lfs("w/second.safetensors", SHA)]
+        http = FakeHttp(bodies, links)
+        self.assertEqual(self.index([REPO], http).find(SHA).version_name, "second")
+        self.assertEqual(http.count("/tree/"), 2)
+
+    def test_later_listing_page_failure_keeps_the_author(self):
+        self.index(["malcolmrey"], FakeHttp(malcolmrey_bodies())).find(SHA)
+        page2 = listing_url("malcolmrey") + "&cursor=2"
+        http = FakeHttp(malcolmrey_bodies(), links={listing_url("malcolmrey"): page2}, errors={page2: error(401)})
+        index = self.index(["malcolmrey"], http)
         self.assertEqual(index.find(SHA).title, "someone")
         with self.assertRaises(SourceUnavailable):
             index.find(SHA3)
-        self.assertEqual(http.urls, [listing_url("malcolmrey"), SAMPLES])
+        self.assertEqual(set(self.cached_repos()), {"malcolmrey/krea2"})
 
     def test_tree_failure_makes_the_index_partial_and_saves_what_was_listed(self):
         bodies = malcolmrey_bodies()

@@ -177,7 +177,7 @@ class HuggingFaceIndex:
         self._repos: dict[str, dict] = {}
         self._error: str | None = None
         self._samples: dict | None = None
-        self._start = 0
+        self._used = 0  # requests this index sent; the client may be shared with other sources
         # Build state, reset by each _build.
         self._cached: dict[str, tuple[str, dict]] = {}  # lowercase repo id -> (repo id, cached entry)
         self._fresh: dict[str, dict] = {}
@@ -197,7 +197,6 @@ class HuggingFaceIndex:
     # Building
 
     def _build(self) -> None:
-        self._start = self.http.request_count
         raw = read_json(self.cache_path)
         self._cached = {repo_id.lower(): (repo_id, data) for repo_id, data in _cached_repos(raw).items()}
         self._fresh, self._settled, self._listed = {}, set(), {}
@@ -235,20 +234,35 @@ class HuggingFaceIndex:
                 self._fresh[repo_id] = data
 
     def _remaining(self) -> int:
-        return MAX_REQUESTS_PER_RUN - (self.http.request_count - self._start)
+        return MAX_REQUESTS_PER_RUN - self._used
 
     def _get_json(self, url: str):
         if self._remaining() <= 0:
             raise SourceUnavailable(_LIMIT_REACHED)
-        return self.http.get_json(url)
+        before = self.http.request_count
+        try:
+            return self.http.get_json(url)
+        finally:
+            self._used += self.http.request_count - before
 
     def _get_pages(self, url: str, cap: int) -> tuple[list, bool]:
-        """Up to ``cap`` pages; the flag says the budget may have cut the listing short."""
+        """Up to ``cap`` pages; the flag says the budget may have cut the listing short.
+
+        Only a failed first page keeps its status: a later page failing says nothing
+        about whether the repo or author exists.
+        """
         allowed = min(cap, self._remaining())
         if allowed <= 0:
             raise SourceUnavailable(_LIMIT_REACHED)
         before = self.http.request_count
-        items = self.http.get_json_pages(url, max_pages=allowed)
+        try:
+            items = self.http.get_json_pages(url, max_pages=allowed)
+        except SourceUnavailable as exc:
+            if self.http.request_count - before > 1:
+                raise SourceUnavailable(str(exc)) from exc
+            raise
+        finally:
+            self._used += self.http.request_count - before
         return items, allowed < cap and self.http.request_count - before >= allowed
 
     def _refresh_author(self, author: str) -> None:
@@ -354,12 +368,15 @@ class HuggingFaceIndex:
         )
 
     def _sample_url(self, slug: str, framework: str) -> str:
-        """The first listed sample for this slug; fetched at most once per run, and only for a hit."""
+        """The first listed sample for this slug; fetched at most once per run, only for a hit,
+        and never after a partial build (that run sends nothing more)."""
         if self._samples is None:
-            try:
-                body = self._get_json(_SAMPLES_URL)
-            except SourceUnavailable:
-                body = None
+            body = None
+            if self._error is None:
+                try:
+                    body = self._get_json(_SAMPLES_URL)
+                except SourceUnavailable:
+                    pass
             self._samples = body if isinstance(body, dict) else {}
         by_framework = self._samples.get(slug)
         samples = by_framework.get(framework) if isinstance(by_framework, dict) else None
