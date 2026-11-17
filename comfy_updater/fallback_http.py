@@ -10,6 +10,8 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import requests
+from urllib3.exceptions import LocationParseError
+from urllib3.util import parse_url
 
 try:
     from PIL import Image
@@ -28,10 +30,17 @@ _MAX_JSON_BYTES = 10_000_000
 
 def is_allowed_url(url: str) -> bool:
     """True for https URLs on the fallback allow-list (Hugging Face and civarchive hosts)."""
+    if "\\" in url:
+        return False
     try:
         parts = urlsplit(url)
         host = (parts.hostname or "").lower()
-    except ValueError:
+        if parts.username is not None or parts.password is not None:
+            return False
+        # requests uses urllib3's parser; both parsers must agree on the host.
+        if (parse_url(url).host or "").lower() != host:
+            return False
+    except (ValueError, LocationParseError):
         return False
     if parts.scheme != "https" or not host:
         return False
@@ -41,8 +50,12 @@ def is_allowed_url(url: str) -> bool:
 def _refuse_redirect_off_list(response, *args, **kwargs):
     """Stop a fetch that redirects anywhere off the allow-list."""
     if response.is_redirect:
-        target = urljoin(response.url, response.headers.get("Location", ""))
-        if not is_allowed_url(target):
+        try:
+            target = urljoin(response.url, response.headers.get("Location", ""))
+            allowed = is_allowed_url(target)
+        except ValueError:
+            target, allowed = "an invalid address", False
+        if not allowed:
             response.close()
             raise requests.TooManyRedirects(f"Refused redirect to {target}")
     return response
@@ -100,7 +113,7 @@ class FallbackHttp:
         data, links = self._read_with_links(url, _MAX_JSON_BYTES)
         try:
             return json.loads(data.decode("utf-8")), links
-        except ValueError as exc:  # includes UnicodeDecodeError
+        except (ValueError, RecursionError) as exc:  # includes UnicodeDecodeError
             raise SourceUnavailable("invalid JSON") from exc
 
     def get_json(self, url: str) -> Any:
@@ -145,6 +158,10 @@ class FallbackHttp:
         return self._read(url, max_bytes)
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def save_preview_png(data: bytes, target: Path) -> bool:
     """Decode image bytes and write them as a PNG at ``target``, never replacing an existing file.
 
@@ -169,18 +186,27 @@ def save_preview_png(data: bytes, target: Path) -> bool:
             return False
         except OSError:
             pass
-        # Hard links unsupported here: exclusive create still never overwrites.
-        try:
-            with open(target, "xb") as out:
-                try:
-                    out.write(tmp_path.read_bytes())
-                except BaseException:
-                    out.close()
-                    target.unlink(missing_ok=True)
-                    raise
+        # Hard links unsupported here.
+        if _is_windows():
+            # Atomic; raises FileExistsError when the target exists.
+            os.rename(tmp_path, target)
             return True
-        except FileExistsError:
-            return False
+        # Exclusive create never overwrites; remove a partial target on any failure.
+        out = open(target, "xb")
+        try:
+            out.write(tmp_path.read_bytes())
+            out.flush()
+            out.close()
+        except BaseException:
+            try:
+                out.close()
+            except Exception:  # noqa: BLE001
+                pass
+            target.unlink(missing_ok=True)
+            raise
+        return True
+    except FileExistsError:
+        return False
     except Exception:  # noqa: BLE001
         return False
     finally:

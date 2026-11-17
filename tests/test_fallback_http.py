@@ -50,6 +50,10 @@ class AllowListTests(unittest.TestCase):
             ("https://huggingface.co.evil.com/x", False),
             ("https://127.0.0.1/x", False),
             ("https://civitai.com/x", False),
+            ("https://evil.example\\@huggingface.co/x", False),
+            ("https://huggingface.co\\@evil.example/x", False),
+            ("https://user:pw@huggingface.co/x", False),
+            ("https://user@huggingface.co/x", False),
         ):
             self.assertEqual(is_allowed_url(url), ok, url)
 
@@ -59,6 +63,19 @@ class AllowListTests(unittest.TestCase):
             _refuse_redirect_off_list(resp)
         resp.headers = {"Location": "https://cdn-lfs.hf.co/y"}
         self.assertIs(_refuse_redirect_off_list(resp), resp)
+
+
+class HardeningTests(unittest.TestCase):
+    def test_malformed_redirect_location_is_refused(self):
+        resp = MagicMock(is_redirect=True, url="https://huggingface.co/x", headers={"Location": "https://[bad/"})
+        with self.assertRaises(requests.TooManyRedirects):
+            _refuse_redirect_off_list(resp)
+
+    def test_deeply_nested_json_raises_unavailable(self):
+        session = MagicMock()
+        session.get.return_value = _resp(chunks=[b"[" * 200_000])
+        with self.assertRaises(SourceUnavailable):
+            FallbackHttp(session=session).get_json("https://huggingface.co/api/x")
 
 
 class HttpTests(unittest.TestCase):
@@ -197,6 +214,46 @@ class SavePreviewTests(unittest.TestCase):
                 before = target.read_bytes()
                 self.assertFalse(save_preview_png(_jpeg_bytes(color="red"), target))
                 self.assertEqual(target.read_bytes(), before)
+
+    def test_fallback_write_failing_on_flush_leaves_no_target(self):
+        class FailingWriter:
+            def __init__(self, path):
+                self._fh = open(path, "xb")
+
+            def write(self, data):
+                return self._fh.write(data[:10])
+
+            def flush(self):
+                raise OSError(errno.ENOSPC, "disk full")
+
+            def close(self):
+                self._fh.close()
+
+        real_open = open
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "m.preview.png"
+
+            def fake_open(path, mode="r", *a, **k):
+                if str(path) == str(target) and mode == "xb":
+                    return FailingWriter(path)
+                return real_open(path, mode, *a, **k)
+
+            with patch("comfy_updater.fallback_http.os.link", side_effect=OSError(errno.EPERM, "no links")),                     patch("comfy_updater.fallback_http._is_windows", return_value=False),                     patch("builtins.open", fake_open):
+                self.assertFalse(save_preview_png(_jpeg_bytes(), target))
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_windows_fallback_renames_atomically_and_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "m.preview.png"
+            with patch("comfy_updater.fallback_http.os.link", side_effect=OSError(errno.EPERM, "no links")),                     patch("comfy_updater.fallback_http._is_windows", return_value=True):
+                self.assertTrue(save_preview_png(_jpeg_bytes(), target))
+                with Image.open(target) as im:
+                    self.assertEqual(im.format, "PNG")
+                self.assertEqual([p.name for p in Path(d).iterdir()], ["m.preview.png"])
+                before = target.read_bytes()
+                self.assertFalse(save_preview_png(_jpeg_bytes(color="red"), target))
+                self.assertEqual(target.read_bytes(), before)
+                self.assertEqual([p.name for p in Path(d).iterdir()], ["m.preview.png"])
 
 
 if __name__ == "__main__":
