@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,9 +31,9 @@ def _resp(status=200, json_data=None, links=None, chunks=None, json_error=False)
     resp.status_code = status
     resp.links = links or {}
     if json_error:
-        resp.json.side_effect = ValueError("bad json")
-    else:
-        resp.json.return_value = json_data
+        chunks = [b"{not json"]
+    elif json_data is not None:
+        chunks = [json.dumps(json_data).encode()]
     resp.iter_content.return_value = iter(chunks or [])
     return resp
 
@@ -80,6 +81,11 @@ class HttpTests(unittest.TestCase):
 
     def test_invalid_json_raises_unavailable(self):
         self.session.get.return_value = _resp(json_error=True)
+        with self.assertRaises(SourceUnavailable):
+            FallbackHttp(session=self.session).get_json("https://huggingface.co/api/x")
+
+    def test_oversized_json_raises_unavailable(self):
+        self.session.get.return_value = _resp(chunks=[b"[" + b"1," * 6_000_000, b"1]"])
         with self.assertRaises(SourceUnavailable):
             FallbackHttp(session=self.session).get_json("https://huggingface.co/api/x")
 

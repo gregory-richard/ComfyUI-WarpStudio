@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import time
 import uuid
@@ -22,6 +23,7 @@ _ALLOWED_HOSTS = ("huggingface.co", "civarchive.com", "c.genur.art")
 _ALLOWED_SUFFIXES = (".hf.co",)
 _PACED_HOST = "civarchive.com"
 _PACE_SECONDS = 1.5
+_MAX_JSON_BYTES = 10_000_000
 
 
 def is_allowed_url(url: str) -> bool:
@@ -95,17 +97,11 @@ class FallbackHttp:
         return response
 
     def _json_page(self, url: str):
-        response = self._open(url)
+        data, links = self._read_with_links(url, _MAX_JSON_BYTES)
         try:
-            try:
-                body = response.json()
-            except ValueError as exc:
-                raise SourceUnavailable("invalid JSON") from exc
-            except requests.RequestException as exc:
-                raise SourceUnavailable(str(exc)) from exc
-            return body, response.links or {}
-        finally:
-            response.close()
+            return json.loads(data.decode("utf-8")), links
+        except ValueError as exc:  # includes UnicodeDecodeError
+            raise SourceUnavailable("invalid JSON") from exc
 
     def get_json(self, url: str) -> Any:
         return self._json_page(url)[0]
@@ -124,7 +120,7 @@ class FallbackHttp:
             next_url = (links.get("next") or {}).get("url")
         return items
 
-    def _read(self, url: str, max_bytes: int) -> bytes:
+    def _read_with_links(self, url: str, max_bytes: int):
         response = self._open(url)
         try:
             data = bytearray()
@@ -135,9 +131,12 @@ class FallbackHttp:
                         raise SourceUnavailable("response too large")
             except requests.RequestException as exc:
                 raise SourceUnavailable(str(exc)) from exc
-            return bytes(data)
+            return bytes(data), response.links or {}
         finally:
             response.close()
+
+    def _read(self, url: str, max_bytes: int) -> bytes:
+        return self._read_with_links(url, max_bytes)[0]
 
     def get_text(self, url: str, max_bytes: int = 5_000_000) -> str:
         return self._read(url, max_bytes).decode("utf-8", errors="replace")
