@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from comfy_updater.civitai_client import CivitaiClient
+from comfy_updater.civitai_client import CivitaiClient, _is_civitai_https_url
 from comfy_updater.constants import (
     MODEL_BY_ID_URL,
     MODEL_VERSION_BY_ID_URL,
@@ -36,6 +36,15 @@ class CivitaiClientUrlTests(unittest.TestCase):
         self.assertEqual(f"comfyui-civitai-updater/{PLUGIN_VERSION}", USER_AGENT)
         client = CivitaiClient(api_key="", timeout_seconds=30, max_retries=0)
         self.assertEqual(USER_AGENT, client.default_headers["User-Agent"])
+
+    def test_user_info_or_backslash_is_not_a_civitai_url(self) -> None:
+        for url in (
+            "https://evil.example\\@civitai.red/x",
+            "https://user@civitai.red/x",
+            "https://civitai.red@evil.example/x",
+        ):
+            self.assertFalse(_is_civitai_https_url(url), url)
+        self.assertTrue(_is_civitai_https_url("https://civitai.red/api/x"))
 
 
 if __name__ == "__main__":

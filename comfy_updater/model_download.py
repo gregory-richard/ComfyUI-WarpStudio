@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import os
+import re
 from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlsplit
@@ -53,6 +54,8 @@ def file_sha256(file: dict) -> str:
 
 def is_public_https(url: str) -> bool:
     """An https URL whose host is not localhost or a local, private or reserved IP address."""
+    if re.search(r"[@\\]", re.split(r"[/?#]", url.split("://", 1)[-1], maxsplit=1)[0]):
+        return False
     try:
         parts = urlsplit(url)
         host = (parts.hostname or "").lower().rstrip(".")
@@ -80,6 +83,7 @@ def is_public_https(url: str) -> bool:
 
 def open_download(session, url: str, *, api_key: str, timeout: float, max_redirects: int = 5):
     """Follow a download link hop by hop and return the final streaming response."""
+    url = _normalise(url)
     if not _is_civitai_https_url(url):
         raise DownloadError("Refused a download link that isn't Civitai's.")
     hops = 0
@@ -101,7 +105,7 @@ def open_download(session, url: str, *, api_key: str, timeout: float, max_redire
                 hops += 1
                 if hops > max_redirects:
                     raise DownloadError("Too many redirects.")
-                url = urljoin(url, response.headers["Location"])
+                url = _normalise(urljoin(url, response.headers["Location"]))
                 if not _is_civitai_https_url(url) and not is_public_https(url):
                     raise DownloadError(f"Refused a redirect to {urlsplit(url).hostname or 'that address'}.")
                 response.close()
@@ -117,6 +121,14 @@ def open_download(session, url: str, *, api_key: str, timeout: float, max_redire
         except BaseException:
             response.close()
             raise
+
+
+def _normalise(url: str) -> str:
+    """The URL as requests will send it, so the checks see the host that is really connected to."""
+    try:
+        return requests.Request("GET", url).prepare().url or ""
+    except (requests.RequestException, ValueError):
+        return ""
 
 
 def download_to(

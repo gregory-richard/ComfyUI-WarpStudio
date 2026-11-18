@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
@@ -360,7 +361,15 @@ _CIVITAI_DOMAINS = ("civitai.red", "civitai.com")
 
 
 def _is_civitai_https_url(url: str) -> bool:
+    # urlsplit treats a backslash as an ordinary character, urllib3 as the end of the
+    # host, so a link with user info or a backslash could send the key elsewhere.
+    authority = url.split("://", 1)[1] if "://" in url else ""
+    authority = re.split(r"[/?#]", authority, maxsplit=1)[0]
+    if "@" in authority or "\\" in authority:
+        return False
     parts = urlsplit(url)
+    if parts.username or parts.password:
+        return False
     host = (parts.hostname or "").lower()
     return parts.scheme == "https" and any(host == domain or host.endswith(f".{domain}") for domain in _CIVITAI_DOMAINS)
 

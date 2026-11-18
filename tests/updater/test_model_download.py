@@ -4,6 +4,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -197,6 +198,25 @@ class ModelDownloadTests(unittest.TestCase):
                     self.run_download(session)
                 self.assertEqual(len(session.calls), 1)
                 self.assert_folder_empty()
+
+    def test_a_backslash_redirect_never_carries_the_key(self):
+        evil = "https://evil.example\\@civitai.red/x"
+        session = FakeSession(
+            {CIVITAI: FakeResponse(302, {"Location": evil}), requests.Request("GET", evil).prepare().url: _ok()}
+        )
+        try:
+            self.run_download(session)
+        except DownloadError:
+            pass
+        for url, headers, _kwargs in session.calls[1:]:
+            self.assertNotEqual(urlsplit(url).hostname, "civitai.red")
+            self.assertNotIn("Authorization", headers)
+
+    def test_userinfo_in_a_link_is_refused(self):
+        session = FakeSession({})
+        with self.assertRaises(DownloadError):
+            self.run_download(session, url="https://evil.example\\@civitai.red/api/download/models/202")
+        self.assertEqual(session.calls, [])
 
     def test_only_a_civitai_link_starts_a_download(self):
         session = FakeSession({})
