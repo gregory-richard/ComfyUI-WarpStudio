@@ -569,8 +569,9 @@ on the server.
   a metadata fetch, the naming model download) shows `Waiting for the check`
   (or the dry run, and so on) in the same slot, and starts by itself when that job
   ends; the download takes the job slot before any job started later.
-  Cancel removes it. It is checked again when it starts: if the file moved or the
-  saved results changed meanwhile, the card shows an ordinary download error.
+  Cancel removes it. It is checked again when it starts: if a rename that was cut off still needs
+  recovering, or a Replace's old file is no longer where it was, the card shows an
+  error saying so.
   Only a rename that was cut off and still needs recovering refuses a download. The running one shows its percentage (`Downloading` while the
   size is unknown) with **Stop**; Stop deletes its partial file. A finished one
   shows `Downloaded`. A stopped one shows no note, and **Download** comes back. The job bar follows the run, and ends with
@@ -1252,8 +1253,9 @@ not load.
 ```
 GET /warp-studio/loras
 GET /warp-studio/embeddings
+GET /warp-studio/models
 GET /warp-studio/model/base?name=<name>
-GET /warp-studio/lora/thumbnail?name=<name>&kind=<loras|embeddings|missing>[&full=1]
+GET /warp-studio/lora/thumbnail?name=<name>&kind=<loras|embeddings|checkpoints|diffusion_models|missing>[&full=1]
 GET /warp-studio/loras/missing
 GET  /warp-studio/llm/models?base_url=<url>[&refresh=1]
 GET  /warp-studio/llm/system_prompts
@@ -1303,6 +1305,10 @@ image data.
       "url": "https://civitai.red/models/58390?modelVersionId=583901",
       "triggers": ["highly detailed", "intricate detail"],
       "has_preview": true,
+      "model_id": 58390,
+      "version_id": 583901,
+      "published": "2025-03-14T10:22:41.000Z",
+      "added": "2025-04-02T18:05:09.123456+00:00",
       "kind": "loras",
       "thumbnail": "/warp-studio/lora/thumbnail?name=sdxl%2F...&kind=loras"
     }
@@ -1319,6 +1325,9 @@ image data.
 | `base_model` | the sidecar's `baseModel`, tidied |
 | `title` | the sidecar's `model.name` |
 | `url` | built from the sidecar's `modelId` and `id` |
+| `model_id`, `version_id` | the sidecar's `modelId` and `id`, as integers; `null` when there is no sidecar or the value is not an integer |
+| `published` | the sidecar's `publishedAt` as written, else its `createdAt`; `null` when neither is there |
+| `added` | the weights file's modification time, ISO-8601 in UTC; `null` for an entry with no weights (a downloadable one) |
 | `triggers` | the sidecar's `trainedWords`, split on commas |
 | `has_preview`, `thumbnail` | whether an image sits beside the file; the server owns URL construction |
 
@@ -1348,6 +1357,14 @@ tag.
 
 ---
 
+### `GET /warp-studio/models`
+
+The checkpoints and diffusion models, in the same shape as the LoRA index and
+keyed `models`. Each entry's `kind` is `checkpoints` or `diffusion_models`, and
+its `thumbnail` uses that kind.
+
+---
+
 ### `GET /warp-studio/model/base`
 
 The base model of one file, for matching LoRAs against the checkpoint that is
@@ -1374,7 +1391,7 @@ The preview image beside a model.
 | Parameter | |
 | --- | --- |
 | `name` | the model's `id` from the index |
-| `kind` | `loras`, `embeddings` or `missing` (the preview of a LoRA that is not on this drive); anything else is a 400 |
+| `kind` | `loras`, `embeddings`, `checkpoints`, `diffusion_models` or `missing` (the preview of a LoRA that is not on this drive); anything else is a 400 |
 | `full` | `1` to serve the original instead of the thumbnail |
 
 Without `full`, a WebP capped at 320px on the long side, built on first request
@@ -1623,9 +1640,9 @@ POST /warp-studio/updater/delete-model
 ```
 
 - `GET downloads` returns `{jobId, requests, canTrash}`: the running download job's id (or `null`) and every request with its state (`waiting`, `downloading`, `done`, `stopped` or `error`), progress and message. A reloaded panel reads it to paint its cards.
-- `POST downloads` takes `{source: "updates", jobId, modelId, versionId, modelPath, replace}` for a release in a check job's results, or `{source: "gallery", name}` for a LoRA that is not on this drive. It answers `{request, jobId}`. A release in early access, a file not in the results, or a second Replace of the same file is refused; so is a start while another kind of job runs (HTTP 409, `Another job is running. Try again when it's done.`).
+- `POST downloads` takes `{source: "updates", jobId, modelId, versionId, modelPath, replace}` for a release in a check job's results, or `{source: "gallery", name}` for a LoRA that is not on this drive. It answers `{request, jobId}`. A release in early access, a file not in the results, or a second Replace of the same file is refused. A request made while another kind of job runs is not refused: it waits (its record in `GET downloads` carries `waitingFor`, the job's type) and starts when that job ends. Only a rename that was cut off and still needs recovering answers HTTP 409.
 - `POST downloads/{request_id}/stop` cancels a waiting request or stops the running one. `404` for an unknown id.
-- `POST delete-model` takes `{name}`, a LoRA's `id` from the index, and sends its weights and sidecars to the Recycle Bin. It answers `{removed, warnings}`. It is refused (409) without `send2trash`, while another kind of job runs, or while that file is waiting to be replaced, and answers 404 when the LoRA is gone.
+- `POST delete-model` takes `{name, kind}`: `name` is a model's `id` from the index, and `kind` is one of `loras` (the default), `embeddings`, `checkpoints` or `diffusion_models`; any other `kind` answers 400. It sends the weights and sidecars to the Recycle Bin and answers `{removed, warnings}`. It is refused (409) without `send2trash`, while another kind of job runs, or while that file is waiting to be replaced, and answers 404 when the LoRA is gone.
 
 ---
 

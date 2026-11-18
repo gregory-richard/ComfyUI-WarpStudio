@@ -214,7 +214,8 @@ Downloads run on the ComfyUI server, one at a time, so they carry on if you clos
 the tab. A click while another job runs says **Waiting for the check** (or the dry run,
 the rename, the metadata fetch, the naming model download) and starts by itself
 when that job ends; **Cancel** takes it out. Waiting downloads are kept in the
-server's memory, so a ComfyUI restart drops them, and the running one. A running one shows its percentage and **Stop**; the job bar shows the
+server's memory, so restarting ComfyUI drops them and the running one. A running
+one shows its percentage and **Stop**; the job bar shows the
 progress and ends with a line like "Done — 2 downloaded". Each file is checked
 against Civitai's SHA-256 before it is renamed into place, and nothing already
 there is overwritten. A new file gets the name the renamer would give it, in its

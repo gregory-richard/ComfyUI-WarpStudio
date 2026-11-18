@@ -94,8 +94,8 @@ function sectionHtml(section, esc, uid) {
   const key = esc(section.key);
   if (section.kind === "toggle") {
     return (
-      `<label class="cu-filter-option"><input type="checkbox" data-key="${key}"${section.checked ? " checked" : ""}>` +
-      `<span>${esc(section.label)}</span></label>`
+      `<div class="cu-tb-section"><label class="cu-filter-option"><input type="checkbox" data-key="${key}"${section.checked ? " checked" : ""}>` +
+      `<span>${esc(section.label)}</span></label></div>`
     );
   }
   const type = section.kind === "choice" ? "radio" : "checkbox";

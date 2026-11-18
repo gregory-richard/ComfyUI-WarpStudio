@@ -560,6 +560,7 @@ export function renderGalleryView(el, options) {
   const justDone = new Set();
   const asking = new Map(); // key -> "confirming" | "deleting"
   const askTimers = new Map();
+  const doneTimers = new Set();
   const notes = new Map(); // key -> why a delete failed
 
   function paintCard(hit) {
@@ -569,10 +570,12 @@ export function renderGalleryView(el, options) {
     const before = painted.get(key);
     if (state === "done" && (before === "waiting" || before === "downloading")) {
       justDone.add(key);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        doneTimers.delete(timer);
         justDone.delete(key);
         paintDownloads();
       }, DONE_FOR);
+      doneTimers.add(timer);
     }
     painted.set(key, state);
     const ask = asking.get(key);
@@ -971,6 +974,10 @@ export function renderGalleryView(el, options) {
   function stop() {
     clearInterval(watch);
     clearTimeout(markTimer);
+    for (const timer of doneTimers) clearTimeout(timer);
+    doneTimers.clear();
+    for (const timer of askTimers.values()) clearTimeout(timer);
+    askTimers.clear();
     window.removeEventListener(PROMPT_CHANGED, onPromptChanged);
     closeMenu();
   }

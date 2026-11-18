@@ -163,6 +163,7 @@ const state = {
   // Errors stay on screen under the job bar; routine text is the job bar's label while a job runs.
   errorText: "",
   jobText: "",
+  noticeText: "",
   resultMode: "gallery",
   modeCounts: { updates: 0, issues: 0 },
   stopRequested: false,
@@ -302,6 +303,12 @@ app.registerExtension({
 
 async function renderTab(el) {
   el.innerHTML = "";
+  if (state.noticeTimer) {
+    clearTimeout(state.noticeTimer);
+    state.noticeTimer = null;
+    if (state.jobText === state.noticeText) state.jobText = "";
+    state.noticeText = "";
+  }
   const root = document.createElement("div");
   root.className = "cu-root";
   root.innerHTML = `
@@ -752,10 +759,9 @@ function showCachedNotice() {
   bar.hidden = false;
   if (state.progressWrapEl) state.progressWrapEl.hidden = true;
   const text = `Results from ${timeAgo(state.cachedAt)}`;
-  if (state.jobTextEl) {
-    state.jobTextEl.textContent = text;
-    state.jobTextEl.title = text;
-  }
+  state.noticeText = text;
+  state.jobText = text;
+  paintStatus();
   const act = bar.querySelector("#cu-notice-act");
   if (act) act.hidden = false;
   state.noticeTimer = setTimeout(hideCachedNotice, 5000);
@@ -769,7 +775,12 @@ function hideCachedNotice() {
   const act = state.jobBarEl?.querySelector("#cu-notice-act");
   if (act) act.hidden = true;
   if (state.progressWrapEl) state.progressWrapEl.hidden = false;
-  if (state.jobTextEl) state.jobTextEl.textContent = "";
+  // Only the notice's own text goes; a status set since then stays.
+  if (state.jobText === state.noticeText) {
+    state.jobText = "";
+    paintStatus();
+  }
+  state.noticeText = "";
   if (state.jobBarEl && !state.currentJobId) state.jobBarEl.hidden = true;
 }
 
@@ -3043,7 +3054,7 @@ function injectStyles() {
       font-size: 12px;
       line-height: 1.45;
       background: var(--cu-ink);
-      container-type: inline-size;
+      container: cu-root / inline-size;
     }
 
     .cu-root ::selection {
@@ -4112,6 +4123,7 @@ function injectStyles() {
        dust ring = metadata-only, filled gray = hidden. */
 
     .cu-versions {
+      container: cu-vers / inline-size;
       position: relative;
       display: flex;
       flex-direction: column;
@@ -4137,20 +4149,23 @@ function injectStyles() {
       gap: 6px;
     }
 
-    /* A new version's row is one line: label, date, base, the name, then the download slot and Hide. */
+    /* A new version's row is one line: label, date, base, the name, then the download slot and Hide.
+       --lead holds the columns before the name. The actions get what is left after the name's
+       90px; below the width where that is too little, they move under the name, right-aligned. */
     .cu-versions .cu-ver-row.cu-ver-row-acts {
-      grid-template-columns: 64px 60px minmax(0, 72px) minmax(0, 1fr) fit-content(46%);
+      --lead: 64px 60px minmax(0, 72px);
+      grid-template-columns: var(--lead) minmax(0, 1fr) fit-content(max(0px, calc(100cqw - 310px)));
     }
 
     /* The sidebar is not the viewport: adapt columns to the panel width. */
 
-    @container (max-width: 430px) {
+    @container cu-root (max-width: 430px) {
       .cu-versions .cu-ver-row {
         grid-template-columns: 64px 60px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        grid-template-columns: 64px 60px minmax(0, 1fr) fit-content(46%);
+        --lead: 64px 60px;
       }
 
       .cu-versions .cu-ver-base {
@@ -4158,17 +4173,31 @@ function injectStyles() {
       }
     }
 
-    @container (max-width: 330px) {
+    @container cu-root (max-width: 330px) {
       .cu-versions .cu-ver-row {
         grid-template-columns: 64px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        grid-template-columns: 64px minmax(0, 1fr) fit-content(46%);
+        --lead: 64px;
       }
 
       .cu-versions .cu-ver-date {
         display: none;
+      }
+    }
+
+    @container cu-vers (max-width: 459px) {
+      .cu-versions .cu-ver-row.cu-ver-row-acts {
+        grid-template-columns: var(--lead) minmax(0, 1fr);
+        row-gap: 3px;
+      }
+
+      .cu-versions .cu-ver-row-acts .cu-ver-acts {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        justify-self: end;
+        max-width: 100%;
       }
     }
 

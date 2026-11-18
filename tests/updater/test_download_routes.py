@@ -749,6 +749,68 @@ class DownloadHelperTests(_Dirs):
         self.assertEqual(("waiting", "check-updates"), (first.state, first.waiting_for))
         self.assertEqual("waiting", second.state)
 
+    def test_a_click_on_a_request_already_taken_by_the_job_joins_it(self) -> None:
+        queue = DownloadQueue()
+        queue.submit(_request("202"))
+        taken = queue.take_next()  # the download job took it: no longer waiting
+        calls: list = []
+
+        class _Manager:
+            def __init__(self, active):
+                self.active = active
+
+            def start(self, job_type, runner, **kwargs):
+                calls.append("start")
+
+            def get_active(self):
+                return self.active
+
+            def reserve(self, job_type):
+                calls.append("reserve")
+
+            def release_reservation(self):
+                calls.append("release")
+
+        running = JobRecord(id="drain", type=MODEL_DOWNLOAD_JOB)
+        held, job_id = asyncio.run(
+            submit_download(queue, _Manager(running), _request("202"), None)
+        )
+        self.assertIs(taken, held)
+        self.assertEqual("drain", job_id)
+        held, job_id = asyncio.run(submit_download(queue, _Manager(None), _request("202"), None))
+        self.assertIs(taken, held)
+        self.assertIsNone(job_id)
+        self.assertEqual([], calls)  # nothing started, reserved or released
+
+    def test_a_refused_start_returns_when_the_job_took_the_request_meanwhile(self) -> None:
+        queue = DownloadQueue()
+        calls: list = []
+        taken = threading.Event()
+
+        class _Manager:
+            def start(self, job_type, runner, **kwargs):
+                # The listener's job takes the request between the refusal and the read.
+                queue.take_next()
+                taken.set()
+                return None
+
+            def get_active(self):
+                return JobRecord(id="drain", type=MODEL_DOWNLOAD_JOB)
+
+            def reserve(self, job_type):
+                calls.append("reserve")
+
+            def release_reservation(self):
+                calls.append("release")
+
+        held, job_id = asyncio.run(
+            submit_download(queue, _Manager(), _request("202"), None, attempts=3, delay=0.001)
+        )
+        self.assertTrue(taken.wait(5))
+        self.assertEqual("downloading", held.state)
+        self.assertEqual("drain", job_id)
+        self.assertEqual([], calls)  # it neither waited nor was abandoned
+
     def test_recheck_reports_a_moved_old_version(self) -> None:
         moved = _request("202")
         moved.replace_path = str(self.folder / "gone.safetensors")
@@ -1243,6 +1305,23 @@ class DownloadRouteTests(_Dirs):
                     ),
                     self.delete("glow.safetensors", kind=kind),
                 )
+        self.assertTrue((self.folder / "glow.safetensors").exists())
+
+    def test_delete_answers_without_raising_for_a_body_that_is_not_an_object(self) -> None:
+        (self.folder / "glow.safetensors").write_bytes(b"x")
+        for payload in (["glow.safetensors"], "glow.safetensors", 5):
+            with self.subTest(payload=payload):
+                with mock.patch("comfy_updater.routes.folder_roots", return_value=[self.folder]):
+                    status, _body = self.call("POST", "/warp-studio/updater/delete-model", payload)
+                self.assertIn(status, (400, 404))
+        for kind in (["loras"], {"loras": 1}, None):
+            with self.subTest(kind=kind):
+                status, _body = self.call(
+                    "POST",
+                    "/warp-studio/updater/delete-model",
+                    {"name": "glow.safetensors", "kind": kind},
+                )
+                self.assertEqual(400, status)
         self.assertTrue((self.folder / "glow.safetensors").exists())
 
     def test_the_delete_route_sends_a_lora_to_the_recycle_bin(self) -> None:
