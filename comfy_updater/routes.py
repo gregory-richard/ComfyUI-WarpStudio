@@ -1131,16 +1131,27 @@ async def submit_download(
     held, needs_job = queue.submit(request)
     if not needs_job:
         active = job_manager.get_active()
+        if held.state != "waiting":
+            # The finish listener's job already took it while this one was closing.
+            return held, active.id if _is_model_download(active) else None
         if active is not None and not _is_model_download(active):
             job_manager.reserve(MODEL_DOWNLOAD_JOB)
             queue.wait_for(active.type)
             _ensure_finish_listener(queue, job_manager, runner)
+            # That job may have ended before the listener was there to hear it.
+            job = _start_waiting(queue, job_manager, runner)
+            if job is not None:
+                return held, job.id
+            active = job_manager.get_active()
         return held, active.id if _is_model_download(active) else None
     for attempt in range(max(1, attempts)):
         job = job_manager.start(MODEL_DOWNLOAD_JOB, runner)
         if job is not None:
             return held, job.id
         active = job_manager.get_active()
+        if held.state != "waiting":
+            # The finish listener's job already took it while this one was closing.
+            return held, active.id if _is_model_download(active) else None
         if active is not None and not _is_model_download(active):
             job_manager.reserve(MODEL_DOWNLOAD_JOB)
             queue.wait_for(active.type)
@@ -1184,8 +1195,8 @@ def _ensure_finish_listener(queue, job_manager, runner) -> None:
         return
 
     def listener(record) -> None:
-        if getattr(record, "type", None) == MODEL_DOWNLOAD_JOB:
-            return
+        # A download job's end too: requests that came in as it closed still wait,
+        # and with none left a stale reservation is let go.
         try:
             _start_waiting(queue, job_manager, runner)
         except Exception as exc:  # noqa: BLE001 - a waiting request must never be stranded

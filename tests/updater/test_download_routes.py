@@ -567,6 +567,85 @@ class DownloadHelperTests(_Dirs):
         self.assertEqual(["version:202"], ran)
         self.assertEqual("done", held.state)
 
+    def test_a_stale_reservation_does_not_outlive_the_download_job(self) -> None:
+        queue = DownloadQueue()
+        check = threading.Event()
+        download = threading.Event()
+
+        class _Manager(_CountingJobManager):
+            hook = None
+
+            def get_active(self):
+                hook, self.hook = self.hook, None
+                return hook() if hook else super().get_active()
+
+        manager = _Manager()
+
+        def work(request, report, should_stop):
+            download.wait(5)
+
+        def runner(progress, emit, control):
+            return run_queue(queue, work, progress=progress, control=control)
+
+        try:
+            check_job = manager.start("check-updates", _blocking_runner(check))
+            asyncio.run(submit_download(queue, manager, _request("202"), runner))
+
+            def stale_read():
+                # The check ends and its listener starts the download job before
+                # the handler goes on with what it read: the check as still active.
+                check.set()
+                end = time.monotonic() + 5
+                while len(manager.started) < 2 and time.monotonic() < end:
+                    time.sleep(0.005)
+                return check_job
+
+            manager.hook = stale_read
+            late, _ = asyncio.run(submit_download(queue, manager, _request("203"), runner))
+            download.set()
+            _join_job_threads()
+            _join_job_threads()
+        finally:
+            check.set()
+            download.set()
+            _join_job_threads()
+        self.assertEqual("done", late.state)
+        self.assertIsNotNone(manager.start("scan", lambda p, e, c: ({}, [])))
+        _join_job_threads()
+
+    def test_a_request_is_not_stranded_when_the_other_job_ended_before_the_listener(self) -> None:
+        queue = DownloadQueue()
+        manager = _CountingJobManager()
+        ran: list = []
+
+        def work(request, report, should_stop):
+            ran.append(request.key)
+
+        def runner(progress, emit, control):
+            return run_queue(queue, work, progress=progress, control=control)
+
+        queue.submit(_request("201"))  # the queue is busy, but no listener and no job exist yet
+        stale = JobRecord(id="gone", type="check-updates", status="running")
+
+        class _Stale(_CountingJobManager):
+            armed = True
+
+            def get_active(self):
+                if self.armed:
+                    self.armed = False
+                    return stale
+                return super().get_active()
+
+        manager = _Stale()
+        try:
+            held, job_id = asyncio.run(submit_download(queue, manager, _request("202"), runner))
+            _join_job_threads()
+        finally:
+            _join_job_threads()
+        self.assertIsNotNone(job_id)
+        self.assertEqual("done", held.state)
+        self.assertIn("version:202", ran)
+
     def test_a_listener_that_cannot_start_the_job_fails_the_waiting_requests(self) -> None:
         queue = DownloadQueue()
 
