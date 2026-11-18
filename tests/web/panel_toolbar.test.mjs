@@ -48,6 +48,29 @@ test("info false leaves out the info button", () => {
   assert.ok(toolbarHtml(base, escapeHtml).includes('data-tb="info"'));
 });
 
+test("Filter leads in every tab; 🔍 and ⓘ sit at the right end", () => {
+  const at = (html, name) => html.indexOf(`data-tb="${name}"`);
+  for (const props of [
+    base,
+    { ...base, search: false },
+    { ...base, search: false, info: false, sortLabel: null },
+  ]) {
+    const html = toolbarHtml(props, escapeHtml);
+    const row = html.slice(0, html.indexOf("</div>"));
+    assert.ok(
+      row.indexOf("<button") ===
+        row.indexOf('<button type="button" class="cu-tb-btn" data-tb="filter"')
+    );
+  }
+  const all = toolbarHtml(base, escapeHtml);
+  assert.ok(at(all, "filter") < at(all, "sort"));
+  assert.ok(at(all, "sort") < all.indexOf('class="cu-tb-end"'));
+  assert.ok(all.indexOf('class="cu-tb-end"') < at(all, "search"));
+  assert.ok(at(all, "search") < at(all, "info"));
+  const bare = toolbarHtml({ ...base, search: false, info: false }, escapeHtml);
+  assert.ok(!bare.includes("cu-tb-end"));
+});
+
 test("toolbarHtml escapes every user string", () => {
   const html = toolbarHtml({ ...base, query: "<b>", sortLabel: "<b>" }, escapeHtml);
   assert.ok(html.includes("&lt;b&gt;"));

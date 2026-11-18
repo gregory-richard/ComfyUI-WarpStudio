@@ -370,11 +370,11 @@ async function renderTab(el) {
         <div id="cu-rename-pane"></div>
       </div>
       <div id="cu-updates-pane">
+        <div id="cu-tb-updates" data-tb-tab="updates"></div>
         <div class="cu-action-bar">
-          <button id="cu-check" class="cu-btn cu-btn-primary cu-btn-lead cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
+          <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
           <button id="cu-scan" class="cu-btn cu-btn-ghost cu-tooltip" data-tooltip="Download missing .civitai.info sidecars and preview images. Files Civitai can't serve are looked up on the sources set under Preview Fallback in the settings. Files that already have metadata and a preview are skipped, and nothing is compared for updates.">Fetch Missing Metadata</button>
         </div>
-        <div id="cu-tb-updates" data-tb-tab="updates"></div>
         <div id="cu-sidecar-warnings" class="cu-sidecar-warnings"></div>
         <div id="cu-scan-report" class="cu-scan-report"></div>
         <div id="cu-results" class="cu-results"></div>
@@ -3204,13 +3204,6 @@ function injectStyles() {
       box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
     }
 
-    /* Lead action \u2014 the update check is the main thing to do in this panel. */
-    .cu-btn-lead {
-      height: 34px;
-      font-size: 12.5px;
-      letter-spacing: 0.02em;
-    }
-
     /* Quiet utility action, deliberately subordinate to the lead button. */
     .cu-btn-ghost {
       height: var(--cu-h-ctl);
@@ -3329,14 +3322,18 @@ function injectStyles() {
       color: var(--cu-ash);
     }
 
+    /* Both buttons the size of the toolbar's controls: Check for Updates keeps
+       its colour, not a bigger size. */
     .cu-action-bar .cu-btn {
       display: block;
       min-width: 0;
+      height: var(--cu-h-ctl);
       padding: 0 8px;
       overflow: hidden;
+      font-size: 11px;
       text-align: center;
       text-overflow: ellipsis;
-      line-height: calc(var(--cu-h-btn) - 2px);
+      line-height: calc(var(--cu-h-ctl) - 2px);
     }
 
     .cu-action-bar {
@@ -3728,6 +3725,13 @@ function injectStyles() {
       display: flex;
       align-items: center;
       gap: 6px;
+    }
+
+    .cu-tb-end {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
     }
 
     .cu-tb-btn {

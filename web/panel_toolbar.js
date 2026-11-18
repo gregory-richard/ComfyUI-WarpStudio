@@ -30,16 +30,19 @@ export function toolbarHtml(
     : "";
   const filter = filtered > 0 ? `Filter · ${filtered}` : "Filter";
   const hasSort = sortLabel != null;
+  const about = info
+    ? `<button type="button" class="cu-tb-btn cu-tb-info" data-tb="info" title="About this tab" aria-label="About this tab" aria-haspopup="true" aria-expanded="false">ⓘ</button>`
+    : "";
+  // Filter and Sort lead in every tab, so Filter never moves when the tab
+  // changes; 🔍 and ⓘ, which only some tabs have, sit at the right end.
   return (
     `<div class="cu-tb">` +
-    `<div class="cu-tb-row">${find}` +
+    `<div class="cu-tb-row">` +
     `<button type="button" class="cu-tb-btn" data-tb="filter" aria-haspopup="true" aria-expanded="false">${esc(filter)} ▾</button>` +
     (hasSort
       ? `<button type="button" class="cu-tb-btn" data-tb="sort" aria-haspopup="true" aria-expanded="false">${esc(`Sort · ${sortLabel}`)} ▾</button>`
       : "") +
-    (info
-      ? `<button type="button" class="cu-tb-btn cu-tb-info" data-tb="info" title="About this tab" aria-label="About this tab" aria-haspopup="true" aria-expanded="false">ⓘ</button>`
-      : "") +
+    (find || about ? `<span class="cu-tb-end">${find}${about}</span>` : "") +
     `</div>` +
     (search
       ? `<input type="search" class="cu-tb-field" data-tb="field" value="${esc(text)}" placeholder="Search" aria-label="Search"${open ? "" : " hidden"}>`
