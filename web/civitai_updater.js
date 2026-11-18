@@ -24,6 +24,7 @@ const TAB_ICON_URL = new URL("./icon-monochrome.svg", import.meta.url).href;
 const MODEL_TYPES = ["checkpoint", "lora", "vae", "unet", "embedding"];
 const PAGE_SIZES = [25, 50, 100];
 const POLL_MS = 800;
+const QUIET_RELOAD_MS = 3000;
 const ETA_SMOOTHING = 0.25;
 
 const SETTINGS = {
@@ -117,6 +118,9 @@ const state = {
   startsMidSecondary: false,
   lastRenderSignature: "",
   lastPageKey: "",
+  lastQuietReloadAt: 0,
+  downloadWatch: null,
+  renderedEntries: null,
   freshPaths: new Set(),
   facets: { modelTypes: [], baseModels: [] },
   scopeTypes: [...MODEL_TYPES],
@@ -886,9 +890,15 @@ function pollJob(jobId) {
             if (path && item.isProvisional) state.freshPaths.add(String(path).toLowerCase());
           }
         }
+        // A quiet, in-place reload, and only when something changed. A re-checked
+        // card keeps the count, so an unchanged count still refreshes now and then.
         const onPage1 = state.pageOffset === 0;
         const running = status === "running" || status === "queued" || status === "paused";
-        if ((statusChanged || countChanged || (running && onPage1)) && isTabVisible()) await loadResultPage(false);
+        const stale = Date.now() - (state.lastQuietReloadAt || 0) >= QUIET_RELOAD_MS;
+        if ((statusChanged || countChanged || (running && onPage1 && stale)) && isTabVisible()) {
+          state.lastQuietReloadAt = Date.now();
+          await loadResultPage(false, { quiet: true });
+        }
       }
 
       if (state.currentJobType === "scan" && job.summary && Object.keys(job.summary).length > 0) {
@@ -998,7 +1008,7 @@ function pollJob(jobId) {
   }, POLL_MS);
 }
 
-async function loadResultPage(force) {
+async function loadResultPage(force, { quiet = false } = {}) {
   const requestSeq = ++state.resultRequestSeq;
   // The Rename and Gallery views have no result pages; switching back loads
   // them. The Updates and Issues counts (and their filter options) still load.
@@ -1018,7 +1028,8 @@ async function loadResultPage(force) {
     renderResults();
     return;
   }
-  setLoading("results", true);
+  // A refresh during a check is quiet: the thin bar stays off, so nothing twitches.
+  if (!quiet) setLoading("results", true);
   try {
     const query = new URLSearchParams({
       offset: String(state.pageOffset),
@@ -1055,12 +1066,12 @@ async function loadResultPage(force) {
     // so fetch it again under the one the menus now show.
     if (JSON.stringify(filterParams()) !== JSON.stringify(filters)) {
       state.pageOffset = 0;
-      await loadResultPage(true);
+      await loadResultPage(true, { quiet });
       return;
     }
     if (state.resultTotal > 0 && state.resultOffset >= state.resultTotal) {
       state.pageOffset = Math.max(0, Math.floor((state.resultTotal - 1) / state.pageSize) * state.pageSize);
-      await loadResultPage(true);
+      await loadResultPage(true, { quiet });
       return;
     }
     renderResults();
@@ -1071,7 +1082,7 @@ async function loadResultPage(force) {
     }
     setStatus(`Failed to fetch result page: ${error.message}`);
   } finally {
-    setLoading("results", false);
+    if (!quiet) setLoading("results", false);
   }
 }
 
@@ -1373,13 +1384,20 @@ function resultsSignature() {
     [...state.collapsed].sort(),
     (state.groups || []).map((g) => [g.key, g.models, g.releases,
       (g.subgroups || []).map((sub) => [sub.key, sub.models, sub.releases])]),
-    state.resultItems.map((item) => [
-      item.modelId, item.groupPathKey, item.isProvisional ? 1 : 0,
-      (item.newVersions || []).length, (item.hiddenNewVersions || []).length,
-      (item.localVersions || []).length, item.previewUrl, item.issueCount || 0,
-      (item.newVersions || []).map((v) => v.paid || "").join(","),
-    ]),
+    state.resultItems.map(cardSignature),
   ]);
+}
+
+// Everything one card is drawn from. A re-checked card keeps its count and
+// changes its content, so the signature reads the whole item.
+function cardSignature(item) {
+  return JSON.stringify(item);
+}
+
+// A card's identity across reloads. A model Civitai never matched has no id: its first file stands in.
+function cardKey(item) {
+  const firstPath = item.modelId ? "" : String((item.localVersions || [])[0]?.modelPath || "");
+  return `c:${item.modelId ?? ""}|${item.groupPathKey || ""}|${firstPath}`;
 }
 
 function resultsPageKey() {
@@ -1409,6 +1427,7 @@ function renderResults() {
   }
   if (state.startupLoading && !state.resultItems.length) {
     state.lastRenderSignature = null;
+    state.renderedEntries = null;
     state.resultsEl.innerHTML = `<div class="cu-loading-note"><span class="cu-spinner" aria-hidden="true"></span>Loading results…</div>`;
     return;
   }
@@ -1427,8 +1446,9 @@ function renderResults() {
   state.resultsEl.classList.toggle("cu-quiet", samePage);
 
   syncLocalPreviewCache();
-  state.resultsEl.innerHTML = "";
   if (!state.checkJobId) {
+    state.renderedEntries = null;
+    state.resultsEl.innerHTML = "";
     appendEmpty("Run Check for Updates to see results.");
     renderPagination();
     return;
@@ -1437,6 +1457,8 @@ function renderResults() {
     const noTypeSelection = Array.isArray(state.filterTypes) && state.facets.modelTypes.length && state.filterTypes.length === 0;
     const noBaseSelection = Array.isArray(state.filterBases) && state.facets.baseModels.length && state.filterBases.length === 0;
     if (noTypeSelection || noBaseSelection) {
+      state.renderedEntries = null;
+      state.resultsEl.innerHTML = "";
       appendEmpty("No filter options selected.");
       renderPagination();
       return;
@@ -1445,6 +1467,8 @@ function renderResults() {
     // still the only way to expand them again.
     if (!hasCollapsedBand()) {
       const none = state.resultMode === "issues" ? "No issues: every model was matched and checked." : "No updates found.";
+      state.renderedEntries = null;
+      state.resultsEl.innerHTML = "";
       appendEmpty(state.resultTotal === 0 ? none : "No items on this page.");
       renderPagination();
       return;
@@ -1462,10 +1486,14 @@ function renderResults() {
     buckets.get(pathKey).push(item);
   }
 
+  // The list as entries: a key, a signature and a way to build the element.
+  // Only entries that are new or changed are built (see applyResultEntries).
+  const entries = [];
   let cardIndex = 0;
   const appendCard = (item) => {
     cardIndex += 1;
-    state.resultsEl.appendChild(buildResultCard(item, cardIndex));
+    const index = cardIndex;
+    entries.push({ key: cardKey(item), sig: cardSignature(item), build: () => buildResultCard(item, index) });
   };
 
   if (state.groupBy === "none") {
@@ -1482,7 +1510,11 @@ function renderResults() {
       if (!hasCards && !collapsed && !hasCollapsedSub) continue;
 
       const continued = firstBand && hasCards && state.startsMidPrimary;
-      state.resultsEl.appendChild(renderGroupHead(group, collapsed, continued));
+      entries.push({
+        key: `g:${group.key}`,
+        sig: JSON.stringify([group.label, group.models, group.releases, collapsed, continued]),
+        build: () => renderGroupHead(group, collapsed, continued),
+      });
       firstBand = false;
       if (collapsed) continue;
 
@@ -1497,7 +1529,11 @@ function renderResults() {
         const list = (buckets && buckets.get(sub.key)) || [];
         if (!list.length && !subCollapsed) continue;
         const subContinued = firstSub && list.length > 0 && state.startsMidSecondary;
-        state.resultsEl.appendChild(renderSubgroupHead(sub, subCollapsed, subContinued));
+        entries.push({
+          key: `s:${sub.key}`,
+          sig: JSON.stringify([sub.label, sub.models, sub.releases, subCollapsed, subContinued]),
+          build: () => renderSubgroupHead(sub, subCollapsed, subContinued),
+        });
         firstSub = false;
         if (subCollapsed) continue;
         for (const item of list) appendCard(item);
@@ -1505,8 +1541,59 @@ function renderResults() {
     }
   }
 
-  renderMatureNotice();
+  const notice = matureNoticeText();
+  if (notice) {
+    entries.push({ key: "note", sig: notice, build: () => renderMatureNotice(notice) });
+  }
+  applyResultEntries(entries, samePage);
   renderPagination();
+}
+
+/* Puts the entries on the page. On the same page and arrangement, an entry
+   whose signature is unchanged keeps its element (no flicker, no entry
+   animation, no picture reloaded), a changed one is replaced where it stands,
+   and new and removed ones come and go; the order then follows the list.
+   Otherwise the list is rebuilt. The scroll position is not touched. */
+function applyResultEntries(entries, inPlace) {
+  const root = state.resultsEl;
+  const old = state.renderedEntries;
+  const keyed = new Map();
+  for (const entry of entries) {
+    // Two entries must never share a key, or one would take the other's element.
+    let key = entry.key;
+    for (let n = 2; keyed.has(key); n += 1) key = `${entry.key}#${n}`;
+    keyed.set(key, entry);
+  }
+  const next = new Map();
+  if (!inPlace || !old || !root.childElementCount) {
+    root.innerHTML = "";
+    for (const [key, entry] of keyed) {
+      const element = entry.build();
+      root.appendChild(element);
+      next.set(key, { sig: entry.sig, element });
+    }
+    state.renderedEntries = next;
+    return;
+  }
+  for (const [key, entry] of keyed) {
+    const had = old.get(key);
+    if (had && had.sig === entry.sig) {
+      next.set(key, had);
+      continue;
+    }
+    const element = entry.build();
+    if (had) had.element.replaceWith(element);
+    next.set(key, { sig: entry.sig, element });
+  }
+  for (const [key, had] of old) {
+    if (!keyed.has(key)) had.element.remove();
+  }
+  let cursor = root.firstElementChild;
+  for (const { element } of next.values()) {
+    if (element === cursor) cursor = cursor.nextElementSibling;
+    else root.insertBefore(element, cursor);
+  }
+  state.renderedEntries = next;
 }
 
 function hasCollapsedBand() {
@@ -1648,7 +1735,42 @@ async function loadDownloads() {
   const data = await getJson("/warp-studio/updater/downloads");
   state.downloads = latestRecords(data.requests);
   state.canTrash = Boolean(data.canTrash);
+  watchDownloads();
   return data.jobId || null;
+}
+
+/* While a request waits behind another job or downloads, the records are read
+   every second: a waiting card then shows what it waits for, and the job bar
+   binds to the download job when it starts. A bound download job's own poll
+   already does this, so the watch skips those ticks. */
+function watchDownloads() {
+  const busy = [...state.downloads.values()].some((r) => r.state === "waiting" || r.state === "downloading");
+  if (!busy) {
+    if (state.downloadWatch) clearInterval(state.downloadWatch);
+    state.downloadWatch = null;
+    return;
+  }
+  if (state.downloadWatch) return;
+  let inFlight = false;
+  state.downloadWatch = setInterval(async () => {
+    if (inFlight) return;
+    if (state.currentJobType === MODEL_DOWNLOAD_JOB && state.pollTimer) return;
+    inFlight = true;
+    try {
+      const wasDone = new Set([...state.downloads.values()].filter((r) => r.state === "done").map((r) => r.id));
+      const jobId = await loadDownloads();
+      paintDownloads();
+      if (jobId && !state.currentJobId) {
+        attachToRunningJob({ jobId, type: MODEL_DOWNLOAD_JOB, status: "running" });
+      } else if ([...state.downloads.values()].some((r) => r.state === "done" && !wasDone.has(r.id))) {
+        await refreshAfterAction();
+      }
+    } catch (error) {
+      // A missed tick is not an error; the next one reads again.
+    } finally {
+      inFlight = false;
+    }
+  }, 1000);
 }
 
 // Paint each card's download slot in place: only what changed is written, so nothing jumps.
@@ -1680,6 +1802,8 @@ async function startDownload(payload, key) {
     const data = await postJson("/warp-studio/updater/downloads", payload);
     if (data.request) state.downloads.set(data.request.key || key, data.request);
     paintDownloads();
+    // Held behind another job, the request has no job yet: the watch shows it and binds when it starts.
+    watchDownloads();
     if (data.jobId && data.jobId !== state.currentJobId) {
       bindJob(data.jobId, MODEL_DOWNLOAD_JOB, "Downloading\u2026");
     }
@@ -1778,13 +1902,17 @@ function renderSubgroupHead(sub, collapsed, continued) {
   return wrap;
 }
 
-function renderMatureNotice() {
-  if (!state.resultsEl || state.matureMode !== "hide" || !state.matureHidden) return;
+function matureNoticeText() {
+  if (state.matureMode !== "hide" || !state.matureHidden) return "";
+  const word = state.matureHidden === 1 ? "model" : "models";
+  return `${state.matureHidden} mature ${word} hidden — change this in Settings → Warp Studio → Civitai General.`;
+}
+
+function renderMatureNotice(text) {
   const note = document.createElement("div");
   note.className = "cu-mature-note";
-  const word = state.matureHidden === 1 ? "model" : "models";
-  note.textContent = `${state.matureHidden} mature ${word} hidden \u2014 change this in Settings \u2192 Warp Studio \u2192 Civitai General.`;
-  state.resultsEl.appendChild(note);
+  note.textContent = text;
+  return note;
 }
 
 function renderArrange() {
@@ -1960,7 +2088,7 @@ function renderRemoteVersionRow(item, version, hidden) {
   const slot = versionActionsHtml({ paid, canReplace }, record, escapeHtml);
   const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
   return `
-    <div class="cu-ver-row${hiddenClass}">
+    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>
       <span class="cu-ver-date">${escapeHtml(date)}</span>
       <span class="cu-ver-base">${escapeHtml(version.baseModel || "—")}</span>
@@ -3749,11 +3877,20 @@ function injectStyles() {
       gap: 6px;
     }
 
+    /* A new version's row is one line: label, date, base, the name, then the download slot and Hide. */
+    .cu-versions .cu-ver-row.cu-ver-row-acts {
+      grid-template-columns: 64px 60px minmax(0, 72px) minmax(0, 1fr) auto;
+    }
+
     /* The sidebar is not the viewport: adapt columns to the panel width. */
 
     @container (max-width: 430px) {
       .cu-versions .cu-ver-row {
         grid-template-columns: 64px 60px minmax(0, 1fr);
+      }
+
+      .cu-versions .cu-ver-row.cu-ver-row-acts {
+        grid-template-columns: 64px 60px minmax(0, 1fr) auto;
       }
 
       .cu-versions .cu-ver-base {
@@ -3764,6 +3901,10 @@ function injectStyles() {
     @container (max-width: 330px) {
       .cu-versions .cu-ver-row {
         grid-template-columns: 64px minmax(0, 1fr);
+      }
+
+      .cu-versions .cu-ver-row.cu-ver-row-acts {
+        grid-template-columns: 64px minmax(0, 1fr) auto;
       }
 
       .cu-versions .cu-ver-date {
@@ -3967,16 +4108,15 @@ function injectStyles() {
       transition: color 0.15s ease, border-color 0.15s ease;
     }
 
-    /* Download/Replace and Hide sit on their own line so the version name keeps its room. */
+    /* Download/Replace and Hide sit at the right end of the row; the name gives way to them. */
     .cu-ver-acts {
-      grid-column: 1 / -1;
       display: flex;
       align-items: center;
       justify-content: flex-end;
       gap: 6px;
       height: 20px;
       min-width: 0;
-      overflow: hidden;
+      flex: 0 0 auto;
     }
 
     .cu-dl {

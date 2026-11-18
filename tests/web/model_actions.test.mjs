@@ -219,3 +219,15 @@ test("galleryActionHtml names the kind of file in Delete's tooltip", () => {
   assert.ok(html("loras").includes("Send this LoRA and its sidecars"));
   assert.ok(html(undefined).includes("Send this LoRA and its sidecars"));
 });
+
+test("a waiting record names the job it waits for", () => {
+  const waiting = (waitingFor) => rec({ state: "waiting", waitingFor });
+  assert.equal(recordMessage(waiting("check-updates")), "Waiting for the check");
+  assert.equal(galleryStateText(waiting("check-updates"), {}), "Waiting for the check");
+  assert.equal(recordMessage(waiting("rename-apply")), "Waiting for the rename");
+  assert.equal(recordMessage(waiting("something-new")), "Waiting for another job");
+  assert.equal(galleryStateText(waiting("something-new"), {}), "Waiting for another job");
+  // Without a waitingFor, today's text.
+  assert.equal(recordMessage(rec({ state: "waiting" })), "");
+  assert.equal(galleryStateText(rec({ state: "waiting" }), {}), "Waiting");
+});
