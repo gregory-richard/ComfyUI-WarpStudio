@@ -2459,12 +2459,13 @@ app.registerExtension({
     // the box that was last being worked in - the list, until it is not.
     node._warppipeAddLora = (stem) => {
       const el = tagBox()?.el;
-      if (!el) return;
+      if (!el) return false;
       const value = el.value || "";
       const caret = el.selectionStart ?? value.length;
       const plan = tagInsertion(value, caret, caret, `<lora:${stem}:1.00>`);
       edit(el, plan.from, plan.to, plan.text, plan.caret);
       commit();
+      return true;
     };
     // Re-read everything this node has memoised, then repaint. Called by the
     // refresh hook below, where the library on the server has just changed.

@@ -6,26 +6,25 @@ export const PROMPT_NODE = "Warp Lora Prompt";
 
 const TEXT_WIDGET = "text";
 
-let lastUsed = null;
+let lastUsedNode = null;
 
+// The node object itself, not its id: ids are small integers that repeat from
+// one workflow to the next, and a remembered 3 must not become another graph's 3.
 export function noteUsed(node) {
-  if (node && node.id != null) lastUsed = node.id;
+  if (node) lastUsedNode = node;
 }
 
-export function lastUsedId() {
-  return lastUsed;
+export function lastUsed() {
+  return lastUsedNode;
 }
 
 /** Selection first, then the last one used, then the only one there is. */
-export function pickTarget(promptNodes, selectedIds, lastUsedNodeId) {
+export function pickTarget(promptNodes, selectedIds, lastUsedNode) {
   const nodes = promptNodes || [];
   const selected = new Set(selectedIds || []);
   const picked = nodes.find((n) => selected.has(n.id));
   if (picked) return picked;
-  if (lastUsedNodeId != null) {
-    const again = nodes.find((n) => n.id === lastUsedNodeId);
-    if (again) return again;
-  }
+  if (lastUsedNode && nodes.includes(lastUsedNode)) return lastUsedNode;
   return nodes.length === 1 ? nodes[0] : null;
 }
 
@@ -36,7 +35,7 @@ export function currentTarget(app) {
   const all = graph?._nodes ?? graph?.nodes ?? [];
   const nodes = Array.from(all).filter(isPrompt);
   const selection = Object.values(app?.canvas?.selected_nodes || {}).map((n) => n?.id);
-  return pickTarget(nodes, selection, lastUsedId());
+  return pickTarget(nodes, selection, lastUsed());
 }
 
 export function insertIntoNode(node, stem) {
@@ -44,9 +43,9 @@ export function insertIntoNode(node, stem) {
   // The prompt owns it: this lands on a line of its own, like typing would.
   // The fallback below is for a browser opened without the prompt UI.
   if (typeof node._warppipeAddLora === "function") {
-    node._warppipeAddLora(stem);
-    node.setDirtyCanvas?.(true, true);
-    return true;
+    const added = node._warppipeAddLora(stem) === true;
+    if (added) node.setDirtyCanvas?.(true, true);
+    return added;
   }
   const widget = (node.widgets || []).find((w) => w.name === TEXT_WIDGET);
   if (!widget) return false;
