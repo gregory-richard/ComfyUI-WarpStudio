@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -802,6 +804,97 @@ class CardVersionOrderTests(unittest.TestCase):
         new = [{"versionDate": "2024-05-01T00:00:00Z"}]
 
         self.assertEqual([["new", 0], ["saved", 0]], card_version_order(saved, new, []))
+
+
+class FinishListenerTests(unittest.TestCase):
+    def _run(self, runner, cancel: bool = False):
+        manager = JobManager()
+        seen: list = []
+        done = threading.Event()
+
+        def listener(record):
+            seen.append((record.type, record.status))
+            done.set()
+
+        manager.add_finish_listener(listener)
+        started = threading.Event()
+
+        def wrapped(progress, emit, control):
+            started.set()
+            return runner(control)
+
+        job = manager.start("scan", wrapped)
+        if cancel:
+            self.assertTrue(started.wait(5))
+            manager.cancel(job.id)
+        self.assertTrue(done.wait(5))
+        return seen, manager.get(job.id)
+
+    def test_finish_listeners_run_once_per_job(self) -> None:
+        def ok(control):
+            return {}, []
+
+        def bad(control):
+            raise RuntimeError("boom")
+
+        def slow(control):
+            end = time.monotonic() + 5
+            while not control.is_cancelled() and time.monotonic() < end:
+                time.sleep(0.01)
+            return {}, []
+
+        for label, runner, cancel, status in (
+            ("completed", ok, False, "completed"),
+            ("failed", bad, False, "failed"),
+            ("cancelled", slow, True, "cancelled"),
+        ):
+            with self.subTest(label):
+                seen, record = self._run(runner, cancel)
+                self.assertEqual([("scan", status)], seen)
+                self.assertEqual(status, record.status)
+
+    def test_a_failing_listener_does_not_stop_the_others(self) -> None:
+        manager = JobManager()
+        calls: list = []
+        done = threading.Event()
+
+        def failing(record):
+            raise RuntimeError("x")
+
+        def working(record):
+            calls.append(record.id)
+            done.set()
+
+        manager.add_finish_listener(failing)
+        manager.add_finish_listener(working)
+        job = manager.start("scan", lambda progress, emit, control: ({}, []))
+        self.assertTrue(done.wait(5))
+        self.assertEqual([job.id], calls)
+
+
+def _wait_idle(manager) -> None:
+    end = time.monotonic() + 5
+    while manager.get_active() is not None and time.monotonic() < end:
+        time.sleep(0.005)
+
+
+class ReservationTests(unittest.TestCase):
+    def test_a_reservation_refuses_other_jobs_until_the_reserved_one_starts(self) -> None:
+        manager = JobManager()
+        manager.reserve("model-download")
+        self.assertIsNone(manager.start("check-updates", lambda p, e, c: ({}, [])))
+        self.assertIsNotNone(manager.start("model-download", lambda p, e, c: ({}, [])))
+        _wait_idle(manager)
+        # The reservation ended with the reserved start.
+        self.assertIsNotNone(manager.start("check-updates", lambda p, e, c: ({}, [])))
+        _wait_idle(manager)
+
+    def test_release_reservation_lets_any_job_start(self) -> None:
+        manager = JobManager()
+        manager.reserve("model-download")
+        manager.release_reservation()
+        self.assertIsNotNone(manager.start("scan", lambda p, e, c: ({}, [])))
+        _wait_idle(manager)
 
 
 if __name__ == "__main__":

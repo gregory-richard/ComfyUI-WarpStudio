@@ -67,6 +67,31 @@ class JobManager:
         self._lock = threading.Lock()
         self.archive_store = archive_store
         self.config_store = config_store
+        self._finish_listeners: list = []
+        self._reserved: str | None = None
+
+    def reserve(self, job_type: str) -> None:
+        """Let only ``job_type`` start next: any other job's start is refused until it does.
+
+        This makes the hand-over to a job that waits for the slot certain: a job
+        clicked in the gap between one job's end and its listener can't take it.
+        """
+        with self._lock:
+            self._reserved = job_type
+
+    def release_reservation(self) -> None:
+        with self._lock:
+            self._reserved = None
+
+    def add_finish_listener(self, listener) -> None:
+        """Call ``listener(record)`` once after every job ends, on the job thread.
+
+        It runs after the final status is set (completed, failed or cancelled),
+        so the slot is free by then. A listener that raises is logged and does
+        not stop the others.
+        """
+        with self._lock:
+            self._finish_listeners.append(listener)
 
     def start(
         self, job_type: str, runner, seed_items: list[dict] | None = None, on_complete=None
@@ -94,6 +119,10 @@ class JobManager:
             for job in self._jobs.values():
                 if job.status in ("running", "queued", "paused"):
                     return None
+            if self._reserved is not None:
+                if job_type != self._reserved:
+                    return None
+                self._reserved = None
             self._jobs[job_id] = record
             self._prune_finished_locked()
 
@@ -369,6 +398,21 @@ class JobManager:
             return job
 
     def _run_job(self, job: JobRecord, runner, control: "JobControl", on_complete=None) -> None:
+        try:
+            self._execute_job(job, runner, control, on_complete)
+        finally:
+            self._notify_finished(job)
+
+    def _notify_finished(self, job: JobRecord) -> None:
+        with self._lock:
+            listeners = list(self._finish_listeners)
+        for listener in listeners:
+            try:
+                listener(job)
+            except Exception as exc:  # noqa: BLE001
+                print(f"Civitai updater: a finish listener failed after the {job.type} job ({exc}).")
+
+    def _execute_job(self, job: JobRecord, runner, control: "JobControl", on_complete=None) -> None:
         with self._lock:
             job.status = "running"
             job.startedAt = _utc_now()

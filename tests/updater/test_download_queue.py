@@ -244,6 +244,7 @@ class DownloadQueueTests(unittest.TestCase):
                 "name",
                 "replace",
                 "state",
+                "waitingFor",
                 "written",
                 "total",
                 "fileName",
@@ -271,6 +272,34 @@ class DownloadQueueTests(unittest.TestCase):
         _, needs_job = queue.submit(_request("b"))
         self.assertTrue(needs_job)
         self.assertEqual(queue.waiting(), 1)
+
+
+class WaitingTests(unittest.TestCase):
+    def test_wait_for_marks_waiting_requests(self) -> None:
+        queue = DownloadQueue()
+        first, _ = queue.submit(_request("202"))
+        second, _ = queue.submit(_request("203"))
+        queue.wait_for("check-updates")
+        self.assertEqual("check-updates", queue.snapshot()[0]["waitingFor"])
+        self.assertEqual("check-updates", second.as_dict()["waitingFor"])
+        taken = queue.take_next()
+        self.assertIs(first, taken)
+        self.assertEqual("", taken.as_dict()["waitingFor"])
+        self.assertEqual("check-updates", second.waiting_for)
+
+    def test_the_listener_is_claimed_once(self) -> None:
+        queue = DownloadQueue()
+        self.assertTrue(queue.claim_listener())
+        self.assertFalse(queue.claim_listener())
+
+    def test_stopping_the_last_waiting_request_frees_the_queue_for_a_new_job(self) -> None:
+        queue = DownloadQueue()
+        request, _ = queue.submit(_request("202"))
+        queue.wait_for("scan")
+        queue.stop(request.id)
+        self.assertEqual("", request.waiting_for)
+        _next, needs_job = queue.submit(_request("203"))
+        self.assertTrue(needs_job)
 
 
 if __name__ == "__main__":
