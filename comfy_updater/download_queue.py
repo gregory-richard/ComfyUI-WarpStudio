@@ -172,6 +172,17 @@ class DownloadQueue:
             self._busy = False
             self._prune_locked()
 
+    def abandon_waiting(self, error: str) -> None:
+        """Fail every waiting request: no runner will come for them."""
+        with self._lock:
+            for held in self._requests:
+                if held.state == "waiting":
+                    held.state = "error"
+                    held.waiting_for = ""
+                    held.error = error
+            self._busy = False
+            self._prune_locked()
+
     def holds(self, path: str) -> bool:
         if not path:
             return False

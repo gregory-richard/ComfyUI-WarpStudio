@@ -806,10 +806,6 @@ class CardVersionOrderTests(unittest.TestCase):
         self.assertEqual([["new", 0], ["saved", 0]], card_version_order(saved, new, []))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FinishListenerTests(unittest.TestCase):
     def _run(self, runner, cancel: bool = False):
         manager = JobManager()
@@ -874,3 +870,32 @@ class FinishListenerTests(unittest.TestCase):
         job = manager.start("scan", lambda progress, emit, control: ({}, []))
         self.assertTrue(done.wait(5))
         self.assertEqual([job.id], calls)
+
+
+def _wait_idle(manager) -> None:
+    end = time.monotonic() + 5
+    while manager.get_active() is not None and time.monotonic() < end:
+        time.sleep(0.005)
+
+
+class ReservationTests(unittest.TestCase):
+    def test_a_reservation_refuses_other_jobs_until_the_reserved_one_starts(self) -> None:
+        manager = JobManager()
+        manager.reserve("model-download")
+        self.assertIsNone(manager.start("check-updates", lambda p, e, c: ({}, [])))
+        self.assertIsNotNone(manager.start("model-download", lambda p, e, c: ({}, [])))
+        _wait_idle(manager)
+        # The reservation ended with the reserved start.
+        self.assertIsNotNone(manager.start("check-updates", lambda p, e, c: ({}, [])))
+        _wait_idle(manager)
+
+    def test_release_reservation_lets_any_job_start(self) -> None:
+        manager = JobManager()
+        manager.reserve("model-download")
+        manager.release_reservation()
+        self.assertIsNotNone(manager.start("scan", lambda p, e, c: ({}, [])))
+        _wait_idle(manager)
+
+
+if __name__ == "__main__":
+    unittest.main()

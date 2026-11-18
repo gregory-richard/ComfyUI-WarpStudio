@@ -964,6 +964,7 @@ def _register_rename_routes(
 DOWNLOAD_BUSY_ERROR = "Another job is running. Try again when it's done."
 MODEL_DOWNLOAD_PAUSE_ERROR = "Downloads cannot be paused. Stop cancels them."
 REPLACE_MOVED_ERROR = "The old version is no longer where it was. Check for updates again."
+DOWNLOAD_HANDOVER_ERROR = "The download could not start after the other job. Try again."
 REPLACE_HELD_ERROR = "That version is already being replaced."
 DOWNLOAD_SOURCE_ERROR = 'source must be "updates" or "gallery"'
 _DOWNLOAD_SOURCES = ("updates", "gallery")
@@ -996,10 +997,11 @@ def _normalize_download_payload(payload: dict) -> dict:
 def download_problem(active_job, *, journal_pending: bool) -> Optional[tuple]:
     """Why no download may be queued now, as (HTTP status, message), or None.
 
-    A job of another kind doesn't refuse: the download waits for it. Only an
-    interrupted rename, still in the journal, does.
+    A job of another kind doesn't refuse: the download waits for it. A rename
+    apply holds the journal while it runs, so the journal only refuses when no
+    apply is running: an interrupted rename that still needs recovering.
     """
-    if journal_pending:
+    if journal_pending and getattr(active_job, "type", None) != RENAME_APPLY_JOB:
         return 409, JOURNAL_PENDING_ERROR
     return None
 
@@ -1130,6 +1132,7 @@ async def submit_download(
     if not needs_job:
         active = job_manager.get_active()
         if active is not None and not _is_model_download(active):
+            job_manager.reserve(MODEL_DOWNLOAD_JOB)
             queue.wait_for(active.type)
             _ensure_finish_listener(queue, job_manager, runner)
         return held, active.id if _is_model_download(active) else None
@@ -1139,6 +1142,7 @@ async def submit_download(
             return held, job.id
         active = job_manager.get_active()
         if active is not None and not _is_model_download(active):
+            job_manager.reserve(MODEL_DOWNLOAD_JOB)
             queue.wait_for(active.type)
             _ensure_finish_listener(queue, job_manager, runner)
             # That job may have ended before the listener was there to hear it.
@@ -1147,6 +1151,7 @@ async def submit_download(
         if attempt + 1 < attempts:
             await asyncio.sleep(delay)
     queue.abandon(held, DOWNLOAD_BUSY_ERROR)
+    job_manager.release_reservation()
     return held, None
 
 
@@ -1156,8 +1161,15 @@ def _start_waiting(queue, job_manager, runner):
     A different kind of job holding the slot becomes what the requests wait for.
     """
     if queue.waiting() == 0:
+        job_manager.release_reservation()
         return None
-    job = job_manager.start(MODEL_DOWNLOAD_JOB, runner)
+    try:
+        job = job_manager.start(MODEL_DOWNLOAD_JOB, runner)
+    except Exception as exc:  # noqa: BLE001 - a waiting request must never be stranded
+        print(f"Civitai updater: could not start the download job ({exc}).")
+        queue.abandon_waiting(DOWNLOAD_HANDOVER_ERROR)
+        job_manager.release_reservation()
+        return None
     if job is not None:
         return job
     active = job_manager.get_active()
@@ -1172,8 +1184,14 @@ def _ensure_finish_listener(queue, job_manager, runner) -> None:
         return
 
     def listener(record) -> None:
-        if getattr(record, "type", None) != MODEL_DOWNLOAD_JOB:
+        if getattr(record, "type", None) == MODEL_DOWNLOAD_JOB:
+            return
+        try:
             _start_waiting(queue, job_manager, runner)
+        except Exception as exc:  # noqa: BLE001 - a waiting request must never be stranded
+            print(f"Civitai updater: the download hand-over failed ({exc}).")
+            queue.abandon_waiting(DOWNLOAD_HANDOVER_ERROR)
+            job_manager.release_reservation()
 
     job_manager.add_finish_listener(listener)
 
@@ -1281,6 +1299,9 @@ def _register_model_action_routes(
         held = queue.stop(request.match_info.get("request_id", ""))
         if held is None:
             return web.json_response({"error": "download not found"}, status=404)
+        if queue.waiting() == 0 and not _is_model_download(job_manager.get_active()):
+            # Nothing waits for the reserved slot any more.
+            job_manager.release_reservation()
         return web.json_response({"request": held.as_dict()})
 
     @routes.post("/warp-studio/updater/delete-model")

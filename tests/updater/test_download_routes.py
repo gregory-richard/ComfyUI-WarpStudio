@@ -26,6 +26,7 @@ from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore
 from comfy_updater.routes import (
     _PAUSE_ERRORS,
     DOWNLOAD_BUSY_ERROR,
+    DOWNLOAD_HANDOVER_ERROR,
     DOWNLOAD_PAUSE_ERROR,
     JOURNAL_PENDING_ERROR,
     MODEL_DOWNLOAD_PAUSE_ERROR,
@@ -160,6 +161,11 @@ class DownloadHelperTests(_Dirs):
         finally:
             release.set()
             _join_job_threads()
+        apply_job = JobRecord(id="a", type="rename-apply", status="running")
+        # A running apply holds the journal itself: the download waits for the job.
+        self.assertIsNone(download_problem(apply_job, journal_pending=True))
+        scan = JobRecord(id="s", type="scan", status="running")
+        self.assertEqual((409, JOURNAL_PENDING_ERROR), download_problem(scan, journal_pending=True))
         self.assertEqual((409, JOURNAL_PENDING_ERROR), download_problem(None, journal_pending=True))
         self.assertIsNone(download_problem(None, journal_pending=False))
 
@@ -527,6 +533,73 @@ class DownloadHelperTests(_Dirs):
             download.set()
             _join_job_threads()
 
+    def test_a_job_started_in_the_gap_does_not_take_the_slot_from_a_waiting_download(self) -> None:
+        queue = DownloadQueue()
+        manager = _CountingJobManager()
+        check = threading.Event()
+        gap_job: list = []
+        ran: list = []
+
+        def gap_listener(record):
+            # Runs before the download's listener, after the check's final status.
+            if gap_job:
+                return
+            gap_job.append(manager.start("scan", lambda p, e, c: ({}, [])))
+
+        manager.add_finish_listener(gap_listener)
+
+        def work(request, report, should_stop):
+            ran.append(request.key)
+
+        def runner(progress, emit, control):
+            return run_queue(queue, work, progress=progress, control=control)
+
+        try:
+            manager.start("check-updates", _blocking_runner(check))
+            held, _ = asyncio.run(submit_download(queue, manager, _request("202"), runner))
+            check.set()
+            _join_job_threads()
+            _join_job_threads()
+        finally:
+            check.set()
+            _join_job_threads()
+        self.assertEqual([None], gap_job)  # refused: the slot was reserved
+        self.assertEqual(["version:202"], ran)
+        self.assertEqual("done", held.state)
+
+    def test_a_listener_that_cannot_start_the_job_fails_the_waiting_requests(self) -> None:
+        queue = DownloadQueue()
+
+        class _Manager(_CountingJobManager):
+            fail = False
+            released = 0
+
+            def start(self, job_type, runner, **kwargs):
+                if self.fail and job_type == MODEL_DOWNLOAD_JOB:
+                    raise RuntimeError("no thread")
+                return super().start(job_type, runner, **kwargs)
+
+            def release_reservation(self):
+                self.released += 1
+                super().release_reservation()
+
+        manager = _Manager()
+        check = threading.Event()
+        try:
+            manager.start("check-updates", _blocking_runner(check))
+            held, _ = asyncio.run(submit_download(queue, manager, _request("202"), None))
+            manager.fail = True
+            check.set()
+            _join_job_threads()
+        finally:
+            check.set()
+            _join_job_threads()
+        self.assertEqual("error", held.state)
+        self.assertEqual(DOWNLOAD_HANDOVER_ERROR, held.error)
+        self.assertGreaterEqual(manager.released, 1)
+        self.assertIsNotNone(manager.start("scan", lambda p, e, c: ({}, [])))  # not reserved
+        _join_job_threads()
+
     def test_a_click_that_outlasts_a_closing_download_job_is_abandoned(self) -> None:
         queue = DownloadQueue()
 
@@ -536,6 +609,9 @@ class DownloadHelperTests(_Dirs):
 
             def get_active(self):
                 return JobRecord(id="closing", type=MODEL_DOWNLOAD_JOB)
+
+            def release_reservation(self):
+                pass
 
         request, job_id = asyncio.run(
             submit_download(queue, _Manager(), _request("202"), None, attempts=3, delay=0.001)
@@ -559,6 +635,12 @@ class DownloadHelperTests(_Dirs):
                 return self.active
 
             def add_finish_listener(self, listener):
+                pass
+
+            def reserve(self, job_type):
+                pass
+
+            def release_reservation(self):
                 pass
 
         manager = _Manager()
@@ -961,6 +1043,39 @@ class DownloadRouteTests(_Dirs):
         self.assertEqual("failed", self.jobs.get(job.id).status)
         self.assertEqual("done", self.queue.snapshot()[0]["state"])
 
+    def test_a_download_waits_for_a_running_apply_that_holds_the_journal(self) -> None:
+        def apply_like(progress, emit, control):
+            self.journal.begin([{"kind": "rename", "from": "a", "to": "b", "entry": "a"}])
+            self.release.wait(5)
+            self.journal.clear()
+            return {}, []
+
+        self.jobs.start("rename-apply", apply_like)
+        end = time.monotonic() + 5
+        while self.journal.pending() is None and time.monotonic() < end:
+            time.sleep(0.005)
+        self.assertIsNotNone(self.journal.pending())
+        status, body = self.post_download()
+        self.assertEqual(200, status, body)
+        request = body["request"]
+        self.assertEqual(("waiting", "rename-apply"), (request["state"], request["waitingFor"]))
+        self.release.set()
+        _join_job_threads()
+        _join_job_threads()
+        (record,) = self.queue.snapshot()
+        self.assertEqual("done", record["state"])
+
+    def test_stopping_the_last_waiting_download_releases_the_slot_reservation(self) -> None:
+        self.jobs.start("check-updates", _blocking_runner(self.release))
+        _status, body = self.post_download()
+        self.assertIsNone(self.jobs.start("scan", lambda p, e, c: ({}, [])))  # reserved
+        self.stop(body["request"]["id"])
+        self.release.set()
+        _join_job_threads()
+        started = self.jobs.start("scan", lambda p, e, c: ({}, []))
+        self.assertIsNotNone(started)
+        _join_job_threads()
+
     def test_journal_pending_still_refuses(self) -> None:
         self.journal.begin([{"kind": "rename", "from": "a", "to": "b", "entry": "a"}])
         self.assertEqual((409, {"error": JOURNAL_PENDING_ERROR}), self.post_download())
@@ -990,11 +1105,6 @@ class DownloadRouteTests(_Dirs):
                 (404, {"error": "Its info file is gone, or its weights are already there."}),
                 self.post_download(source="gallery", name="glow.safetensors"),
             )
-        try:
-            self.jobs.start("check-updates", _blocking_runner(self.release))
-        finally:
-            self.release.set()
-            _join_job_threads()
         self.journal.begin([{"kind": "rename", "from": "a", "to": "b", "entry": "a"}])
         self.assertEqual((409, {"error": JOURNAL_PENDING_ERROR}), self.post_download())
         self.assertEqual([], self.queue.snapshot())

@@ -274,10 +274,6 @@ class DownloadQueueTests(unittest.TestCase):
         self.assertEqual(queue.waiting(), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WaitingTests(unittest.TestCase):
     def test_wait_for_marks_waiting_requests(self) -> None:
         queue = DownloadQueue()
@@ -304,3 +300,7 @@ class WaitingTests(unittest.TestCase):
         self.assertEqual("", request.waiting_for)
         _next, needs_job = queue.submit(_request("203"))
         self.assertTrue(needs_job)
+
+
+if __name__ == "__main__":
+    unittest.main()
