@@ -1297,6 +1297,70 @@ def test_index_carries_what_the_browser_needs(warp_pipe, lora_folder):
     assert detail["has_preview"] is False
 
 
+def _missing_folder(monkeypatch, tmp_path):
+    """A loras folder with one info file and no weights, behind a fake folder_paths."""
+    root = tmp_path / "loras"
+    (root / "pony").mkdir(parents=True)
+    info = root / "pony" / "maker - glow - v1 (pony).civitai.info"
+    info.write_text(
+        json.dumps(
+            {
+                "modelId": 101,
+                "id": 201,
+                "model": {"name": "Glow"},
+                "files": [{"name": "glow.safetensors", "primary": True}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    module = types.ModuleType("folder_paths")
+    module.get_folder_paths = lambda kind: [str(root)]
+    module.get_filename_list = lambda kind: []
+    module.get_full_path = lambda kind, name: None
+    monkeypatch.setitem(sys.modules, "folder_paths", module)
+    return root, info
+
+
+def test_missing_index_lists_info_files_without_weights(warp_pipe, tmp_path, monkeypatch):
+    _missing_folder(monkeypatch, tmp_path)
+
+    entries = warp_pipe.missing_lora_index()
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["missing"] is True
+    assert entry["id"] == os.path.join("pony", "maker - glow - v1 (pony).safetensors")
+    assert entry["creator"] == "maker"
+    assert entry["name"] == "glow"
+    assert entry["title"] == "Glow"
+    assert entry["kind"] == "loras"
+    assert all("missing" not in each for each in warp_pipe.lora_index())
+
+
+def test_missing_entries_link_their_thumbnail_by_kind(warp_pipe, tmp_path, monkeypatch):
+    _root, info = _missing_folder(monkeypatch, tmp_path)
+    assert warp_pipe.missing_lora_index()[0]["thumbnail"] is None
+
+    (info.parent / "maker - glow - v1 (pony).preview.png").write_bytes(b"p")
+    entry = warp_pipe.missing_lora_index()[0]
+
+    assert entry["thumbnail"].startswith("/warp-studio/lora/thumbnail?name=")
+    assert entry["thumbnail"].endswith("&kind=missing")
+
+
+def test_thumbnail_source_for_each_kind(warp_pipe, tmp_path, monkeypatch):
+    _root, info = _missing_folder(monkeypatch, tmp_path)
+    preview = info.parent / "maker - glow - v1 (pony).preview.png"
+    preview.write_bytes(b"p")
+    name = os.path.join("pony", "maker - glow - v1 (pony).safetensors")
+
+    assert os.path.normcase(warp_pipe.thumbnail_source(name, "missing")) == os.path.normcase(
+        str(preview)
+    )
+    assert warp_pipe.thumbnail_source("../x.safetensors", "missing") is None
+    assert warp_pipe.thumbnail_source(name, "other") is None
+
+
 def test_thumbnail_is_cached_and_much_smaller(warp_pipe, tmp_path, monkeypatch):
     pytest.importorskip("PIL")
     from PIL import Image

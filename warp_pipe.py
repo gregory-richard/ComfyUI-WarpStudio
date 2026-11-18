@@ -1,3 +1,4 @@
+import asyncio
 import difflib
 import hashlib
 import json
@@ -10,6 +11,11 @@ import urllib.parse
 import uuid
 from collections import deque
 from typing import Any, ClassVar, Optional
+
+try:
+    from .comfy_updater import model_files
+except ImportError:
+    from comfy_updater import model_files
 
 logger = logging.getLogger("WarpPipe")
 
@@ -2264,52 +2270,92 @@ def lora_index() -> list[dict[str, Any]]:
     return model_index("loras")
 
 
+def _index_entry(
+    name: str,
+    path: Optional[str],
+    payload: Optional[dict[str, Any]],
+    folder_key: str,
+    thumb_kind: str,
+) -> dict[str, Any]:
+    """One library entry. ``path`` is where the weights are, or would be."""
+    parsed = parse_lora_filename(name)
+    has_preview = lora_preview_path(path) is not None
+    return {
+        # The exact string a tag must contain.
+        "id": name,
+        "folder": parsed["folder"],
+        "creator": parsed["creator"],
+        "name": parsed["name"],
+        "version": parsed["version"],
+        # What the filename claims, and what Civitai recorded.
+        "tagged_base": parsed["tagged_base"],
+        "base_model": normalise_base_model(_sidecar_base_model(payload)),
+        # True when the filename actually followed a
+        # "creator - name - version" shape. Anything else keeps its
+        # whole stem as the name, and callers should not pretend
+        # otherwise.
+        "structured": parsed["creator"] is not None,
+        # What Civitai calls it, when we know. Portable in a way a
+        # filename convention is not.
+        "title": _sidecar_title(payload),
+        "url": _civitai_url(payload),
+        # Read from the payload already in hand. Calling
+        # civitai_trigger_words here re-opened and re-parsed the same
+        # sidecar, doubling the file reads for the whole library.
+        "triggers": trigger_words_in(payload),
+        "has_preview": has_preview,
+        # The server owns URL construction; the client just uses it.
+        "kind": folder_key,
+        "thumbnail": (
+            "/warp-studio/lora/thumbnail?name="
+            + urllib.parse.quote(name)
+            + "&kind="
+            + urllib.parse.quote(thumb_kind)
+            if has_preview
+            else None
+        ),
+    }
+
+
 def model_index(folder_key: str = "loras") -> list[dict[str, Any]]:
     """Everything the browser needs to list a library, without any image data."""
     entries: list[dict[str, Any]] = []
     for name in available_models(folder_key):
         path = _resolve_model_path(folder_key, name)
         payload = read_civitai_sidecar(path) if path else None
-        parsed = parse_lora_filename(name)
-        has_preview = lora_preview_path(path) is not None
-        entries.append(
-            {
-                # The exact string a tag must contain.
-                "id": name,
-                "folder": parsed["folder"],
-                "creator": parsed["creator"],
-                "name": parsed["name"],
-                "version": parsed["version"],
-                # What the filename claims, and what Civitai recorded.
-                "tagged_base": parsed["tagged_base"],
-                "base_model": normalise_base_model(_sidecar_base_model(payload)),
-                # True when the filename actually followed a
-                # "creator - name - version" shape. Anything else keeps its
-                # whole stem as the name, and callers should not pretend
-                # otherwise.
-                "structured": parsed["creator"] is not None,
-                # What Civitai calls it, when we know. Portable in a way a
-                # filename convention is not.
-                "title": _sidecar_title(payload),
-                "url": _civitai_url(payload),
-                # Read from the payload already in hand. Calling
-                # civitai_trigger_words here re-opened and re-parsed the same
-                # sidecar, doubling the file reads for the whole library.
-                "triggers": trigger_words_in(payload),
-                "has_preview": has_preview,
-                # The server owns URL construction; the client just uses it.
-                "kind": folder_key,
-                "thumbnail": (
-                    "/warp-studio/lora/thumbnail?name="
-                    + urllib.parse.quote(name)
-                    + "&kind="
-                    + urllib.parse.quote(folder_key)
-                    if has_preview
-                    else None
-                ),
-            }
-        )
+        entries.append(_index_entry(name, path, payload, folder_key, folder_key))
     return entries
+
+
+def missing_lora_index() -> list[dict[str, Any]]:
+    """LoRAs whose info file is here but whose weights are not, in the LoRA index shape."""
+    entries: list[dict[str, Any]] = []
+    for found in model_files.missing_loras(
+        model_files.lora_roots(), set(available_models("loras"))
+    ):
+        entry = _index_entry(
+            found["id"],
+            str(found["root"] / found["id"]),
+            found["info"],
+            "loras",
+            "missing",
+        )
+        entry["missing"] = True
+        entries.append(entry)
+    return entries
+
+
+def thumbnail_source(name: str, kind: str) -> Optional[str]:
+    """The preview image a thumbnail request names, or None."""
+    if kind in {"loras", "embeddings"}:
+        return lora_preview_path(_resolve_model_path(kind, name))
+    if kind == "missing":
+        found = model_files.missing_info(model_files.lora_roots(), name)
+        if not found:
+            return None
+        base = str(found[0])[: -len(CIVITAI_INFO_SUFFIX)]
+        return lora_preview_path(base + ".safetensors")
+    return None
 
 
 def _register_routes() -> None:
@@ -2329,6 +2375,10 @@ def _register_routes() -> None:
     async def _loras(request):
         return web.json_response({"loras": lora_index()})
 
+    @routes.get("/warp-studio/loras/missing")
+    async def _missing_loras(request):
+        return web.json_response({"loras": await asyncio.to_thread(missing_lora_index)})
+
     @routes.get("/warp-studio/embeddings")
     async def _embeddings(request):
         return web.json_response({"embeddings": embedding_index()})
@@ -2346,12 +2396,11 @@ def _register_routes() -> None:
     async def _thumbnail(request):
         name = request.query.get("name", "")
         kind = request.query.get("kind", "loras")
-        if kind not in {"loras", "embeddings"}:
+        if kind not in {"loras", "embeddings", "missing"}:
             return web.Response(status=400, text="unknown kind")
-        # Resolving through folder_paths is what keeps this to configured
-        # model folders; an arbitrary path can never be requested.
-        path = _resolve_model_path(kind, name)
-        preview = lora_preview_path(path)
+        # Resolving through folder_paths (or the configured loras roots) is what
+        # keeps this to model folders; an arbitrary path can never be requested.
+        preview = thumbnail_source(name, kind)
         if not preview:
             return web.Response(status=404, text="no preview")
 
