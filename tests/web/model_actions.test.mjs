@@ -211,3 +211,11 @@ test("galleryStateText shows Waiting, the percentage and the error, and Download
   assert.equal(galleryStateText(dlrec({ state: "error", error: "Nope." }), {}), "Nope.");
   assert.equal(galleryStateText(dlrec({ state: "waiting" }), { justDone: true }), "Waiting");
 });
+
+test("galleryActionHtml names the kind of file in Delete's tooltip", () => {
+  const html = (kind) => galleryActionHtml({ missing: false, kind }, undefined, ui(), escapeHtml);
+  assert.ok(html("checkpoints").includes("Send this checkpoint and its sidecars"));
+  assert.ok(html("embeddings").includes("Send this embedding and its sidecars"));
+  assert.ok(html("loras").includes("Send this LoRA and its sidecars"));
+  assert.ok(html(undefined).includes("Send this LoRA and its sidecars"));
+});

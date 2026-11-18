@@ -10,6 +10,8 @@ let pending = null;
 let cached = null;
 let missingPending = null;
 let missingCached = null;
+let modelsPending = null;
+let modelsCached = null;
 
 // Throws on failure rather than returning nothing: the browser wants to say why
 // it is empty, and the prompt - which does not care - catches at its own call.
@@ -22,6 +24,27 @@ async function ask(url, key) {
 /** Every LoRA. */
 export async function loras() {
   return (await everything()).filter((entry) => entry.kind !== "embeddings");
+}
+
+/** Every embedding, out of the shared list. */
+export async function embeddings() {
+  return (await everything()).filter((entry) => entry.kind === "embeddings");
+}
+
+/** Every checkpoint and diffusion model, with one shared request. */
+export function models() {
+  if (modelsCached) return Promise.resolve(modelsCached);
+  if (modelsPending) return modelsPending;
+  const mine = ask("/warp-studio/models", "models")
+    .then((list) => {
+      if (modelsPending === mine) modelsCached = list;
+      return list;
+    })
+    .finally(() => {
+      if (modelsPending === mine) modelsPending = null;
+    });
+  modelsPending = mine;
+  return mine;
 }
 
 /** Every LoRA and embedding, in one list. Each carries its own `kind`. */
@@ -70,4 +93,6 @@ export function forget() {
   pending = null;
   missingCached = null;
   missingPending = null;
+  modelsCached = null;
+  modelsPending = null;
 }

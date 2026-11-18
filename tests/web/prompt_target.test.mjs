@@ -10,6 +10,7 @@ import {
   noteLoaderUsed,
   cycleInNode,
   markIn,
+  sameModelName,
   setLoaderModel,
   pickTarget,
   promptNodesOf,
@@ -250,4 +251,12 @@ test("setLoaderModel reads the canvas from the node's graph when none is passed"
   node.widgets[0].callback = (_name, c) => (got = c);
   setLoaderModel(node, "a.safetensors");
   assert.equal(got, canvas);
+});
+
+test("setLoaderModel finds a name the loader lists with backslashes", () => {
+  const node = loader(1, "UNETLoader", "unet_name", ["sub\\Maker - Net.safetensors"]);
+  assert.equal(setLoaderModel(node, "sub/maker - net.safetensors"), true);
+  assert.equal(node.widgets[0].value, "sub\\Maker - Net.safetensors");
+  assert.equal(sameModelName(loadedModel(node), "sub/Maker - Net.safetensors"), true);
+  assert.equal(sameModelName("a/b", "a/c"), false);
 });

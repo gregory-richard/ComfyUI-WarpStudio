@@ -165,6 +165,15 @@ export function currentLoader(app, kind) {
   return pickTarget(loaderNodesOf(app, kind), selectionOf(app), lastLoaderNode);
 }
 
+/** The server writes "a/b.safetensors"; a Windows ComfyUI lists "a\b.safetensors". */
+export function sameModelName(a, b) {
+  const slashed = (text) =>
+    String(text ?? "")
+      .replaceAll("\\", "/")
+      .toLowerCase();
+  return slashed(a) === slashed(b);
+}
+
 /** Put a model name in a loader's widget the way picking it from the list does.
  *  False when the node has no such widget or the name is not one of its options. */
 export function setLoaderModel(node, name, canvas = node?.graph?.canvas) {
@@ -173,10 +182,15 @@ export function setLoaderModel(node, name, canvas = node?.graph?.canvas) {
   if (!widget) return false;
   const values = widget.options?.values;
   const list = typeof values === "function" ? values() : values;
-  if (!Array.isArray(list) || !list.includes(name)) return false;
-  widget.value = name;
+  const option = Array.isArray(list)
+    ? list.includes(name)
+      ? name
+      : list.find((item) => sameModelName(item, name))
+    : undefined;
+  if (option === undefined) return false;
+  widget.value = option;
   try {
-    widget.callback?.(name, canvas, node);
+    widget.callback?.(option, canvas, node);
   } finally {
     node.setDirtyCanvas?.(true, true);
   }
