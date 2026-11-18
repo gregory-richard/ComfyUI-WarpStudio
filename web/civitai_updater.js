@@ -1963,6 +1963,8 @@ function renderRemoteVersionRow(item, version, hidden) {
       <span class="cu-ver-main">
         ${link}
         ${accessBadge}
+      </span>
+      <span class="cu-ver-acts">
         ${dlSlot}
         ${action}
       </span>
@@ -2198,6 +2200,10 @@ function updateProgress(current, total, visible) {
   } else if (state.currentJobStatus === "paused") {
     state.progressEtaEl.textContent = "paused";
   } else {
+    if (state.currentJobType === MODEL_DOWNLOAD_JOB) {
+      state.progressEtaEl.textContent = "";
+      return;
+    }
     const remaining = etaSecondsRemaining(safeCurrent, safeTotal);
     state.progressEtaEl.textContent = remaining === null ? "estimating\u2026" : formatEta(remaining);
   }
@@ -3957,6 +3963,18 @@ function injectStyles() {
       transition: color 0.15s ease, border-color 0.15s ease;
     }
 
+    /* Download/Replace and Hide sit on their own line so the version name keeps its room. */
+    .cu-ver-acts {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      height: 20px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
     .cu-dl {
       display: inline-flex;
       align-items: center;
@@ -4327,12 +4345,11 @@ function injectStyles() {
 
     .cu-g-row {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr);
       gap: 6px;
     }
 
     .cu-g .cu-g-missing {
-      width: auto;
       gap: 7px;
       cursor: pointer;
       white-space: nowrap;
