@@ -346,6 +346,7 @@ async function renderTab(el) {
         </div>
         <div class="cu-job-row">
           <span id="cu-job-text" class="cu-job-text"></span>
+          <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm" hidden>Check again</button>
           <div id="cu-job-controls" class="cu-job-controls" style="display:none">
             <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
             <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
@@ -432,7 +433,10 @@ async function renderTab(el) {
     escapeHtml,
     filter: sharedFilter,
     onFacets: onGalleryFacets,
-    onCount: () => renderViewSwitch(),
+    onCount: () => {
+      renderViewSwitch();
+      renderToolbars(); // "Filter · n" follows the downloadable count
+    },
     app,
     query: () => state.galleryQuery,
     arrange: () => state.galleryArrange,
@@ -666,6 +670,12 @@ function bindEvents(root) {
   root.addEventListener("click", async (ev) => {
     const target = ev.target;
     if (!(target instanceof HTMLElement)) return;
+    if (target.closest("#cu-notice-act")) {
+      hideCachedNotice();
+      state.forceNextRecheck = true;
+      startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
+      return;
+    }
     if (target.closest("#cu-gear")) {
       toggleSettings();
       return;
@@ -731,6 +741,36 @@ function bindEvents(root) {
       await loadResultPage(true);
     }
   });
+}
+
+/* Check for Updates with fresh results shows them without a check. Say so, for a
+   few seconds, in the job bar's row, with a way to check anyway. */
+function showCachedNotice() {
+  const bar = state.jobBarEl;
+  if (!bar || state.currentJobId) return;
+  hideCachedNotice();
+  bar.hidden = false;
+  if (state.progressWrapEl) state.progressWrapEl.hidden = true;
+  const text = `Results from ${timeAgo(state.cachedAt)}`;
+  if (state.jobTextEl) {
+    state.jobTextEl.textContent = text;
+    state.jobTextEl.title = text;
+  }
+  const act = bar.querySelector("#cu-notice-act");
+  if (act) act.hidden = false;
+  state.noticeTimer = setTimeout(hideCachedNotice, 5000);
+}
+
+function hideCachedNotice() {
+  if (state.noticeTimer) clearTimeout(state.noticeTimer);
+  const wasShown = Boolean(state.noticeTimer);
+  state.noticeTimer = null;
+  if (!wasShown) return;
+  const act = state.jobBarEl?.querySelector("#cu-notice-act");
+  if (act) act.hidden = true;
+  if (state.progressWrapEl) state.progressWrapEl.hidden = false;
+  if (state.jobTextEl) state.jobTextEl.textContent = "";
+  if (state.jobBarEl && !state.currentJobId) state.jobBarEl.hidden = true;
 }
 
 /* The ⚙ button: the settings open and close above the tabs. */
@@ -857,6 +897,7 @@ function infoLines() {
   if (!state.checkJobId) return ["No update check has run yet."];
   const lines = [];
   if (state.cachedAt) lines.push(`Last checked ${timeAgo(state.cachedAt)}`);
+  if (state.noticeTimer && state.cachedAt) lines.push(`Showing the saved results from ${timeAgo(state.cachedAt)}`);
   if (state.checkSummary) {
     lines.push(summaryLine(state.checkSummary));
   } else if (state.currentJobType === "check-updates") {
@@ -1006,12 +1047,13 @@ async function startJob(endpoint, type) {
       renderFilters();
       await loadResultPage(true);
       renderCacheInfo();
-      setStatus(`Showing cached results from ${timeAgo(state.cachedAt)}`);
+      showCachedNotice();
       return;
     }
   }
   state.forceNextRecheck = false;
   clearError();
+  hideCachedNotice();
 
   try {
     const data = await postJson(endpoint, payload);
@@ -2463,6 +2505,7 @@ function formatEta(seconds) {
 
 function updateProgress(current, total, visible) {
   if (!state.progressFillEl || !state.progressTextEl) return;
+  if (visible) hideCachedNotice();
   if (state.jobBarEl) state.jobBarEl.hidden = !visible;
   const safeTotal = Math.max(0, Number(total || 0));
   const safeCurrent = Math.max(0, Number(current || 0));
