@@ -20,7 +20,7 @@ export function filterEntries(entries, { query = "", types = null, bases = null 
     if (types && !types.includes(TYPE)) return false;
     if (bases && !bases.includes(groupOf(entry))) return false;
     if (!terms.length) return true;
-    const hay = fold(`${entry.creator} ${label(entry)} ${entry.version} ${groupOf(entry)}`);
+    const hay = [entry.creator, label(entry), entry.version, groupOf(entry)].map(fold).join(" ");
     return terms.every((term) => hay.includes(term));
   });
 }
@@ -64,7 +64,7 @@ export function cardModel(entry) {
     creator: entry.creator || "",
     detail: entry.structured && entry.version ? `${entry.version} · ${base}` : base,
     triggers: (entry.triggers || []).length,
-    url: entry.url,
+    url: entry.url || null,
     thumbnail: entry.has_preview ? entry.thumbnail : null,
     stem,
   };

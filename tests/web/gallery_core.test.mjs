@@ -50,6 +50,11 @@ test("filterEntries matches every term", () => {
   assert.deepEqual(filterEntries(all, { query: "maker nope" }), []);
 });
 
+test("filterEntries ignores missing fields", () => {
+  assert.deepEqual(filterEntries(all, { query: "undefined" }), []);
+  assert.deepEqual(filterEntries(all, { query: "und" }), []);
+});
+
 test("filterEntries with an empty selection matches nothing", () => {
   assert.deepEqual(filterEntries(all, { bases: [] }), []);
   assert.deepEqual(filterEntries(all, { types: [] }), []);
@@ -91,7 +96,7 @@ test("cardModel fills gaps", () => {
     creator: "",
     detail: "misc",
     triggers: 0,
-    url: undefined,
+    url: null,
     thumbnail: null,
     stem: "amber",
   });
