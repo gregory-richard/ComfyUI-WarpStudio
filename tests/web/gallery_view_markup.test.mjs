@@ -243,3 +243,10 @@ test("cardHtml always has the action slot and the state overlay, so heights matc
     assert.ok(!face.includes("cu-g-over"));
   }
 });
+
+test("role=img is only on a mark span that shows a mark", () => {
+  assert.ok(!cardHtml(model(), ui(), escapeHtml).includes('role="img"'));
+  const on = cardHtml(model(), ui({ mark: "on" }), escapeHtml);
+  assert.equal(on.split('role="img"').length - 1, 1);
+  assert.match(on, /data-mark="on" role="img" aria-label=/);
+});

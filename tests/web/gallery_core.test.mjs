@@ -7,6 +7,7 @@ import {
   filterEntries,
   galleryFacets,
   foldedIn,
+  toggleFolded,
   galleryOnlyBases,
   stackEntries,
 } from "../../web/gallery_core.js";
@@ -299,4 +300,13 @@ test("arrange orders a stack by its newest member's title", () => {
 test("removing every member of a list leaves no stack", () => {
   const list = [v1, v2];
   assert.deepEqual(stackEntries(list.filter((e) => !list.includes(e))), []);
+});
+
+test("toggleFolded keeps a folded base that is not listed right now", () => {
+  // Folding another band leaves the unlisted "Gone" in storage.
+  assert.deepEqual(toggleFolded(["Gone"], "Pony"), ["Gone", "Pony"]);
+  // Unfolding one removes only that one.
+  assert.deepEqual(toggleFolded(["Gone", "Pony"], "Pony"), ["Gone"]);
+  assert.deepEqual(toggleFolded(null, "Pony"), ["Pony"]);
+  assert.deepEqual(toggleFolded("Pony", "sdxl"), ["sdxl"]);
 });

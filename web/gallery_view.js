@@ -12,6 +12,7 @@ import {
   foldedIn,
   galleryFacets,
   stackEntries,
+  toggleFolded,
 } from "./gallery_core.js";
 import { embeddings, forget, loras, missingLoras, models } from "./library.js";
 import {
@@ -81,7 +82,7 @@ export function safeUrl(url) {
 /** The mark's slot: always drawn, so a mark arriving or going moves nothing. */
 function markHtml(mark, esc) {
   const known = MARKS[mark];
-  if (!known) return `<span class="cu-g-mark" data-g-mark role="img"></span>`;
+  if (!known) return `<span class="cu-g-mark" data-g-mark></span>`;
   return `<span class="cu-g-mark" data-g-mark data-mark="${esc(mark)}" role="img" aria-label="${esc(known.label)}">${known.glyph}</span>`;
 }
 
@@ -397,10 +398,12 @@ export function renderGalleryView(el, options) {
       if (slot) {
         if (known) {
           slot.dataset.mark = mark;
+          slot.setAttribute("role", "img");
           slot.setAttribute("aria-label", known.label);
           slot.textContent = known.glyph;
         } else {
           delete slot.dataset.mark;
+          slot.removeAttribute("role");
           slot.removeAttribute("aria-label");
           slot.textContent = "";
         }
@@ -880,20 +883,28 @@ export function renderGalleryView(el, options) {
       if (!loader) return;
       // Marked already (some version of this model is loaded): nothing to do.
       if (hit.stack.members.some((member) => sameModelName(loadedModel(loader), member.id))) return;
-      if (!setLoaderModel(loader, hit.model.key)) return;
-      noteLoaderUsed(loader);
+      // The widget's own callback can throw after the value is set, so the
+      // marks are repainted either way. Every card repaints: the model that was
+      // loaded before loses its mark now, not on the next watch tick.
+      try {
+        if (!setLoaderModel(loader, hit.model.key)) return;
+        noteLoaderUsed(loader);
+      } finally {
+        paintTargets();
+      }
     } else {
       const node = currentTarget(app);
       if (node !== target) follow(false); // the selection moved without telling us
       if (!node) return;
       if (type === "embeddings") {
-        if (embeddingIn(node, hit.model.stem)) return;
+        // Any version of the stack already in the prompt counts, as for models.
+        if (hit.stack.members.some((member) => embeddingIn(node, stemOf(member.id)))) return;
         if (!addEmbeddingToNode(node, hit.model.stem)) return;
       } else if (!cycleInNode(node, hit.model.stem)) return;
       noteUsed(node);
       target = node;
+      paintOne(hit, nodeResolver());
     }
-    paintOne(hit, nodeResolver());
     // Adding moved focus into the node's box. A press from the keyboard (no
     // pointer, so detail 0) gets it back, so the reader keeps their place.
     if (ev.detail === 0) pick.focus({ preventScroll: true });
@@ -926,12 +937,9 @@ export function renderGalleryView(el, options) {
   function toggleBand(band) {
     const base = band?.dataset.gBand;
     if (base == null || !bandStacks.has(base)) return;
-    const all = listed();
-    const folded = foldedNow(all);
-    if (folded.has(base)) folded.delete(base);
-    else folded.add(base);
-    writeStored(foldedKey(type), JSON.stringify([...folded]));
-    const now = folded.has(base);
+    const stored = toggleFolded(readFolded(type), base);
+    writeStored(foldedKey(type), JSON.stringify(stored));
+    const now = stored.includes(base);
     band.toggleAttribute("data-folded", now);
     const head = band.querySelector("[data-g-fold]");
     head?.setAttribute("aria-expanded", String(!now));

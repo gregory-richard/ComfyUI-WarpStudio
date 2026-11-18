@@ -1549,6 +1549,26 @@ function renderResults() {
   renderPagination();
 }
 
+/* Replaces an element and, if keyboard focus was on it or inside it, puts focus
+   on the matching control of the replacement (the same place among its
+   controls), so a quiet update never drops the reader's place. */
+function replaceKeepingFocus(oldElement, newElement) {
+  const controls = "button, a[href], input, select, textarea, [tabindex]";
+  const active = document.activeElement;
+  let index = -1;
+  let wasFocused = false;
+  if (active && oldElement.contains(active)) {
+    wasFocused = true;
+    index = active === oldElement ? -1 : [...oldElement.querySelectorAll(controls)].indexOf(active);
+  }
+  oldElement.replaceWith(newElement);
+  if (!wasFocused) return;
+  const target = index >= 0
+    ? newElement.querySelectorAll(controls)[index] || newElement.querySelector(controls)
+    : newElement.matches(controls) ? newElement : newElement.querySelector(controls);
+  if (target) target.focus({ preventScroll: true });
+}
+
 /* Puts the entries on the page. On the same page and arrangement, an entry
    whose signature is unchanged keeps its element (no flicker, no entry
    animation, no picture reloaded), a changed one is replaced where it stands,
@@ -1582,7 +1602,7 @@ function applyResultEntries(entries, inPlace) {
       continue;
     }
     const element = entry.build();
-    if (had) had.element.replaceWith(element);
+    if (had) replaceKeepingFocus(had.element, element);
     next.set(key, { sig: entry.sig, element });
   }
   for (const [key, had] of old) {
@@ -3879,7 +3899,7 @@ function injectStyles() {
 
     /* A new version's row is one line: label, date, base, the name, then the download slot and Hide. */
     .cu-versions .cu-ver-row.cu-ver-row-acts {
-      grid-template-columns: 64px 60px minmax(0, 72px) minmax(0, 1fr) auto;
+      grid-template-columns: 64px 60px minmax(0, 72px) minmax(0, 1fr) fit-content(46%);
     }
 
     /* The sidebar is not the viewport: adapt columns to the panel width. */
@@ -3890,7 +3910,7 @@ function injectStyles() {
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        grid-template-columns: 64px 60px minmax(0, 1fr) auto;
+        grid-template-columns: 64px 60px minmax(0, 1fr) fit-content(46%);
       }
 
       .cu-versions .cu-ver-base {
@@ -3904,7 +3924,7 @@ function injectStyles() {
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        grid-template-columns: 64px minmax(0, 1fr) auto;
+        grid-template-columns: 64px minmax(0, 1fr) fit-content(46%);
       }
 
       .cu-versions .cu-ver-date {
@@ -4116,14 +4136,17 @@ function injectStyles() {
       gap: 6px;
       height: 20px;
       min-width: 0;
-      flex: 0 0 auto;
+      flex: 0 1 auto;
     }
 
+    /* The actions never take more than 46% of the row (fit-content above): a long
+       note gives way with an ellipsis, so the version name keeps some characters. */
     .cu-dl {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      flex: 0 0 auto;
+      min-width: 0;
+      flex: 0 1 auto;
     }
 
     .cu-dl-note {
@@ -4131,6 +4154,9 @@ function injectStyles() {
       font-size: 9.5px;
       color: var(--cu-dust);
       white-space: nowrap;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .cu-dl-msg:empty {

@@ -222,12 +222,28 @@ test("galleryActionHtml names the kind of file in Delete's tooltip", () => {
 
 test("a waiting record names the job it waits for", () => {
   const waiting = (waitingFor) => rec({ state: "waiting", waitingFor });
-  assert.equal(recordMessage(waiting("check-updates")), "Waiting for the check");
+  // The overlay and the slot say it; the message line stays empty.
+  assert.equal(recordMessage(waiting("check-updates")), "");
   assert.equal(galleryStateText(waiting("check-updates"), {}), "Waiting for the check");
-  assert.equal(recordMessage(waiting("rename-apply")), "Waiting for the rename");
-  assert.equal(recordMessage(waiting("something-new")), "Waiting for another job");
+  assert.equal(galleryStateText(waiting("rename-apply"), {}), "Waiting for the rename");
   assert.equal(galleryStateText(waiting("something-new"), {}), "Waiting for another job");
   // Without a waitingFor, today's text.
   assert.equal(recordMessage(rec({ state: "waiting" })), "");
   assert.equal(galleryStateText(rec({ state: "waiting" }), {}), "Waiting");
+});
+
+test("a waiting version row shows what it waits for in the slot and no second line", () => {
+  const slot = { paid: false, canReplace: true };
+  const html = versionActionsHtml(slot, rec({ waitingFor: "check-updates" }), escapeHtml);
+  assert.ok(html.includes(">Waiting for the check<"));
+  assert.ok(html.includes(">Cancel<"));
+  assert.equal(recordMessage(rec({ waitingFor: "check-updates" })), "");
+  assert.ok(
+    versionActionsHtml(slot, rec({ waitingFor: "other-job" }), escapeHtml).includes(
+      ">Waiting for another job<"
+    )
+  );
+  assert.ok(versionActionsHtml(slot, rec(), escapeHtml).includes(">Waiting<"));
+  const hostile = versionActionsHtml(slot, rec({ id: "r1", waitingFor: "<b>" }), escapeHtml);
+  assert.ok(!hostile.includes("<b>"));
 });

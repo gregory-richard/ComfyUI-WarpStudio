@@ -19,7 +19,7 @@ export function toolbarHtml({ query, filtered, sortLabel, info, open = false }, 
   const esc = escaper(escapeHtml);
   const text = query || "";
   const search =
-    `<button type="button" class="cu-tb-btn" data-tb="search" title="Search" aria-label="Search"${text ? " data-active" : ""}>` +
+    `<button type="button" class="cu-tb-btn" data-tb="search" title="Search" aria-label="${esc(text ? `Search: ${text}` : "Search")}"${text ? " data-active" : ""}>` +
     `🔍${text ? `<span class="cu-tb-query">${esc(shortQuery(text))}</span>` : ""}</button>`;
   const filter = filtered > 0 ? `Filter · ${filtered}` : "Filter";
   return (
@@ -103,6 +103,10 @@ export function wireToolbar(root, { onQuery, onOpen }) {
     const input = field();
     if (input) input.hidden = true;
   };
+  const focusSearch = () => {
+    const button = root.querySelector('[data-tb="search"]');
+    if (button && button.focus) button.focus();
+  };
   const close = () => {
     closeMenus();
     closeField();
@@ -114,7 +118,13 @@ export function wireToolbar(root, { onQuery, onOpen }) {
     const wasOpen = !el.hidden;
     closeMenus();
     if (wasOpen) return;
-    if (onOpen) onOpen(name);
+    if (onOpen) {
+      try {
+        onOpen(name);
+      } catch (err) {
+        console.warn("[Warp Studio] Toolbar menu:", err);
+      }
+    }
     el.hidden = false;
     setExpanded(name, true);
   };
@@ -140,14 +150,21 @@ export function wireToolbar(root, { onQuery, onOpen }) {
     timer = setTimeout(() => onQuery && onQuery(value), QUERY_DELAY_MS);
   };
   const onBlur = (event) => {
-    if (event.target === field() && !event.target.value) closeField();
+    if (event.target !== field() || event.target.value) return;
+    closeField();
+    // Focus moved to another control: leave it there. Nowhere: back to 🔍.
+    if (!event.relatedTarget) focusSearch();
   };
   const onDocClick = (event) => {
     const inside = event.target.closest && event.target.closest("[data-tb-menu], [data-tb]");
     if (!inside || !root.contains(inside)) closeMenus();
   };
   const onKey = (event) => {
-    if (event.key === "Escape") close();
+    if (event.key !== "Escape") return;
+    const input = field();
+    const hadField = input && !input.hidden;
+    close();
+    if (hadField) focusSearch();
   };
 
   root.addEventListener("click", onClick);

@@ -132,6 +132,14 @@ export function foldedIn(stored, bases) {
   return new Set((Array.isArray(stored) ? stored : []).filter((base) => present.has(base)));
 }
 
+/** The stored fold list after one band is toggled. Every other entry stays,
+ *  including a base that is not listed right now (a filter hides it), so it is
+ *  still folded when it comes back. */
+export function toggleFolded(stored, base) {
+  const list = Array.isArray(stored) ? stored : [];
+  return list.includes(base) ? list.filter((name) => name !== base) : [...list, base];
+}
+
 /** What one card shows. Text is raw; escaping is the view's job. */
 export function cardModel(entry) {
   const stem = stemOf(entry.id);

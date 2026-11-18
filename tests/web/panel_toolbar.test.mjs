@@ -23,9 +23,9 @@ test("a query marks the search button active and shows the query", () => {
 test("a long query is cut to 18 characters with an ellipsis", () => {
   const html = toolbarHtml({ ...base, query: "abcdefghijklmnopqrstuvwxyz" }, escapeHtml);
   assert.ok(html.includes("abcdefghijklmnopqr…"));
-  // The button is cut; the field still holds the whole query.
-  const button = html.slice(0, html.indexOf("</button>"));
-  assert.ok(!button.includes("abcdefghijklmnopqrs"));
+  // The visible text is cut (the label and the field hold the whole query).
+  const shown = html.match(/<span class="cu-tb-query">([^<]*)<\/span>/)[1];
+  assert.ok(!shown.includes("abcdefghijklmnopqrs"));
 });
 
 test("the filter label counts active filters", () => {
@@ -195,4 +195,75 @@ test("aria-expanded follows the menu open and closed", () => {
   wiring.close();
   assert.equal(f.filterMenu.hidden, true);
   assert.equal(f.filterBtn.attrs["aria-expanded"], "false");
+});
+
+test("the search button's label names the active query", () => {
+  const html = toolbarHtml({ ...base, query: "glow" }, escapeHtml);
+  assert.match(html, /data-tb="search"[^>]*aria-label="Search: glow"/);
+  assert.match(toolbarHtml(base, escapeHtml), /data-tb="search"[^>]*aria-label="Search"/);
+  const hostile = toolbarHtml({ ...base, query: '"><b>' }, escapeHtml);
+  assert.ok(!hostile.includes("<b>"));
+});
+
+test("onOpen throwing still opens the menu", () => {
+  const f = fakeRoot();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    wireToolbar(f.root, {
+      onOpen: () => {
+        throw new Error("boom");
+      },
+    });
+    f.click("filter");
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(f.filterMenu.hidden, false);
+  assert.equal(f.filterBtn.attrs["aria-expanded"], "true");
+});
+
+// A fake with a search field and button, to see where focus goes.
+function fieldRoot() {
+  const added = [];
+  const doc = { addEventListener: (t, fn) => added.push([doc, t, fn]), removeEventListener() {} };
+  const field = { hidden: false, value: "", focused: false, focus() {} };
+  const button = {
+    focused: 0,
+    focus() {
+      this.focused += 1;
+    },
+  };
+  const root = {
+    ownerDocument: doc,
+    addEventListener: (t, fn) => added.push([root, t, fn]),
+    removeEventListener() {},
+    contains: () => true,
+    querySelector: (sel) =>
+      sel === '[data-tb="field"]' ? field : sel === '[data-tb="search"]' ? button : null,
+    querySelectorAll: () => [],
+  };
+  const fire = (target, type, event) =>
+    added.filter(([t, ty]) => t === target && ty === type).forEach(([, , fn]) => fn(event));
+  return { root, doc, field, button, fire };
+}
+
+test("Esc closes the field and returns focus to the search button", () => {
+  const f = fieldRoot();
+  wireToolbar(f.root, {});
+  f.fire(f.doc, "keydown", { key: "Escape" });
+  assert.equal(f.field.hidden, true);
+  assert.equal(f.button.focused, 1);
+});
+
+test("an empty blur returns focus to the button unless focus moved to another control", () => {
+  const f = fieldRoot();
+  wireToolbar(f.root, {});
+  f.fire(f.root, "focusout", { target: f.field, relatedTarget: {} });
+  assert.equal(f.field.hidden, true);
+  assert.equal(f.button.focused, 0);
+  f.field.hidden = false;
+  f.fire(f.root, "focusout", { target: f.field, relatedTarget: null });
+  assert.equal(f.field.hidden, true);
+  assert.equal(f.button.focused, 1);
 });
