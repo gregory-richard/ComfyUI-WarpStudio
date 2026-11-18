@@ -35,6 +35,7 @@ from comfy_updater.routes import (
     _register_model_action_routes,
     _unpausable,
     download_context,
+    delete_problem,
     download_problem,
     gallery_request,
     submit_download,
@@ -749,6 +750,7 @@ class DownloadRouteTests(_Dirs):
                 ("GET", "/warp-studio/updater/downloads"),
                 ("POST", "/warp-studio/updater/downloads"),
                 ("POST", "/warp-studio/updater/downloads/{request_id}/stop"),
+                ("POST", "/warp-studio/updater/delete-model"),
             },
             set(self.routes.handlers),
         )
@@ -803,6 +805,39 @@ class DownloadRouteTests(_Dirs):
             {"downloaded": 1, "failed": 0, "stopped": 0}, self.jobs.get(job_id).summary
         )
 
+    def test_delete_problem(self) -> None:
+        queue = DownloadQueue()
+        weights = Path(self.v1)
+        other_job = JobRecord(id="x", type="scan", status="running")
+        download_job = JobRecord(id="d", type=MODEL_DOWNLOAD_JOB, status="running")
+        queue.submit(
+            DownloadRequest(
+                key="version:202",
+                source="updates",
+                model_id="101",
+                version_id="202",
+                model_type="lora",
+                replace_path=self.v1,
+            )
+        )
+        no_bin = (409, "Delete needs the send2trash package.")
+        held = (409, "That file is being replaced. Try again when it's done.")
+        gone = (404, "That LoRA is not there any more.")
+        cases = [
+            ("no recycle bin", (other_job, queue, None, False), no_bin),
+            ("other job", (other_job, queue, weights, True), (409, DOWNLOAD_BUSY_ERROR)),
+            ("no weights", (download_job, queue, None, True), gone),
+            ("held", (download_job, queue, weights, True), held),
+            ("another file", (download_job, queue, self.folder / "b.safetensors", True), None),
+            ("idle", (None, DownloadQueue(), weights, True), None),
+        ]
+        for label, (job, held_queue, path, can_trash), expected in cases:
+            with self.subTest(label):
+                self.assertEqual(
+                    expected,
+                    delete_problem(job, queue=held_queue, weights=path, can_trash=can_trash),
+                )
+
     def test_the_download_route_answers_the_helpers_refusals(self) -> None:
         self.assertEqual(
             (400, {"error": 'source must be "updates" or "gallery"'}),
@@ -837,6 +872,79 @@ class DownloadRouteTests(_Dirs):
         self.assertEqual("gallery:glow.safetensors", body["request"]["key"])
         self.assertEqual("glow.safetensors", body["request"]["name"])
         self.assertEqual(MODEL_DOWNLOAD_JOB, self.jobs.get(body["jobId"]).type)
+
+    def delete(self, name: str):
+        bin_folder = self.root / "bin"
+        bin_folder.mkdir(exist_ok=True)
+
+        def fake_trash(path: str) -> None:
+            os.replace(path, bin_folder / Path(path).name)
+
+        with mock.patch("comfy_updater.routes.lora_roots", return_value=[self.folder]):
+            with mock.patch("comfy_updater.routes.send_to_trash", fake_trash):
+                return self.call("POST", "/warp-studio/updater/delete-model", {"name": name})
+
+    def test_the_delete_route_sends_a_lora_to_the_recycle_bin(self) -> None:
+        sub = self.folder / "studio-k"
+        sub.mkdir()
+        for suffix in (".safetensors", ".civitai.info", ".preview.png"):
+            (sub / f"glow{suffix}").write_bytes(b"x")
+        name = os.path.join("studio-k", "glow.safetensors")
+
+        status, body = self.delete(name)
+
+        self.assertEqual(200, status, body)
+        self.assertEqual("glow.safetensors", body["removed"][0])
+        self.assertEqual(
+            ["glow.civitai.info", "glow.preview.png", "glow.safetensors"], sorted(body["removed"])
+        )
+        self.assertEqual([], body["warnings"])
+        self.assertEqual([], list(sub.iterdir()))
+
+    def test_the_delete_route_refuses_what_is_not_a_lora_in_the_folders(self) -> None:
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "glow.safetensors").write_bytes(b"x")
+        (self.folder / "glow.civitai.info").write_bytes(b"{}")
+        gone = (404, {"error": "That LoRA is not there any more."})
+        for name in (
+            "",
+            "missing.safetensors",
+            os.path.join("..", "elsewhere", "glow.safetensors"),
+            str(elsewhere / "glow.safetensors"),
+            "glow.civitai.info",
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(gone, self.delete(name))
+        self.assertTrue((elsewhere / "glow.safetensors").exists())
+        self.assertTrue((self.folder / "glow.civitai.info").exists())
+
+    def test_the_delete_route_answers_a_refused_trash_with_500(self) -> None:
+        (self.folder / "glow.safetensors").write_bytes(b"x")
+
+        def refuse(path: str) -> None:
+            raise OSError("in use")
+
+        with mock.patch("comfy_updater.routes.lora_roots", return_value=[self.folder]):
+            with mock.patch("comfy_updater.routes.send_to_trash", refuse):
+                status, body = self.call(
+                    "POST", "/warp-studio/updater/delete-model", {"name": "glow.safetensors"}
+                )
+        self.assertEqual(
+            (500, {"error": "Could not send glow.safetensors to the Recycle Bin: in use"}),
+            (status, body),
+        )
+        self.assertTrue((self.folder / "glow.safetensors").exists())
+
+    def test_the_delete_route_waits_for_another_kind_of_job(self) -> None:
+        (self.folder / "glow.safetensors").write_bytes(b"x")
+        try:
+            self.jobs.start("scan", _blocking_runner(self.release))
+            self.assertEqual((409, {"error": DOWNLOAD_BUSY_ERROR}), self.delete("glow.safetensors"))
+        finally:
+            self.release.set()
+            _join_job_threads()
+        self.assertTrue((self.folder / "glow.safetensors").exists())
 
     def test_a_refused_start_answers_409_with_the_requests_error(self) -> None:
         with mock.patch("comfy_updater.routes.download_problem", return_value=None):

@@ -20,6 +20,7 @@ from comfy_updater.jobs import JobManager
 from comfy_updater.model_actions import (
     EARLY_ACCESS_ERROR,
     DownloadContext,
+    delete_model,
     download_one,
     info_payload,
     release_is_paid,
@@ -684,6 +685,86 @@ class ModelActionsTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "That folder isn't one of your model folders.")
         self.assertTrue(outside.is_file())
         self.assertEqual(self.session.calls, [])
+
+    # --- delete ----------------------------------------------------------------
+
+    def glow_files(self) -> Path:
+        folder = self.root / "glow-folder"
+        for suffix in (".safetensors", ".civitai.info", ".preview.png", ".json"):
+            touch(folder / f"glow{suffix}")
+        touch(folder / "glow.v2.safetensors")
+        return folder / "glow.safetensors"
+
+    def test_delete_sends_the_weights_and_every_sibling_to_the_recycle_bin(self) -> None:
+        weights = self.glow_files()
+
+        result = delete_model(
+            weights, trash=self.trash, job_manager=self.manager, data_dir=self.data
+        )
+
+        self.assertEqual(self.trashed[0], "glow.safetensors")
+        self.assertEqual(
+            sorted(self.trashed),
+            ["glow.civitai.info", "glow.json", "glow.preview.png", "glow.safetensors"],
+        )
+        self.assertEqual(result, {"removed": self.trashed, "warnings": []})
+        self.assertEqual([p.name for p in weights.parent.iterdir()], ["glow.v2.safetensors"])
+
+    def test_delete_keeps_the_sidecars_when_the_weights_cannot_go(self) -> None:
+        weights = self.glow_files()
+
+        def refuse(path: Path) -> None:
+            raise OSError("in use")
+
+        self.on_trash = refuse
+        with self.assertRaises(DownloadError) as caught:
+            delete_model(weights, trash=self.trash, job_manager=self.manager, data_dir=self.data)
+        self.assertEqual(
+            str(caught.exception), "Could not send glow.safetensors to the Recycle Bin: in use"
+        )
+        self.assertEqual(self.trashed, [])
+        self.assertEqual(len(list(weights.parent.iterdir())), 5)
+
+        # A trash that raises nothing but leaves the weights is the same refusal.
+        with self.assertRaises(DownloadError) as caught:
+            delete_model(
+                weights, trash=lambda path: None, job_manager=self.manager, data_dir=self.data
+            )
+        self.assertIn("it is still there", str(caught.exception))
+        self.assertEqual(len(list(weights.parent.iterdir())), 5)
+        self.assertEqual(len(self.saved_items()), 1)
+
+    def test_a_sidecar_that_cannot_go_is_a_warning(self) -> None:
+        weights = self.glow_files()
+
+        def refuse_info(path: Path) -> None:
+            if path.name.endswith(".civitai.info"):
+                raise OSError("in use")
+
+        self.on_trash = refuse_info
+        result = delete_model(
+            weights, trash=self.trash, job_manager=self.manager, data_dir=self.data
+        )
+
+        self.assertEqual(
+            sorted(result["removed"]), ["glow.json", "glow.preview.png", "glow.safetensors"]
+        )
+        self.assertEqual(
+            result["warnings"], ["Could not send glow.civitai.info to the Recycle Bin: in use"]
+        )
+
+    def test_delete_takes_the_file_out_of_the_check_results(self) -> None:
+        weights = self.glow_files()
+        glow_item = dict(self.v1_item, modelPath=str(weights), filePath=str(weights))
+        self.job.items.append(copy.deepcopy(glow_item))
+        payload = json.loads(self.saved.read_text(encoding="utf-8"))
+        payload["items"].append(glow_item)
+        self.saved.write_text(json.dumps(payload), encoding="utf-8")
+
+        delete_model(weights, trash=self.trash, job_manager=self.manager, data_dir=self.data)
+
+        self.assertEqual([item["modelPath"] for item in self.job.items], [str(self.v1)])
+        self.assertEqual([item["modelPath"] for item in self.saved_items()], [str(self.v1)])
 
     # --- Gallery ---------------------------------------------------------------
 

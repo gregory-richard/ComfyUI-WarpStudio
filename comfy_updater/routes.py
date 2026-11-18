@@ -24,17 +24,25 @@ from .comfy_queue import (
     has_text_generation,
     list_naming_models,
 )
-from .constants import CACHE_SCHEMA_VERSION, INFO_SIDECAR_SUFFIX, SUPPORTED_MODEL_TYPES, USER_AGENT
+from .constants import (
+    CACHE_SCHEMA_VERSION,
+    INFO_SIDECAR_SUFFIX,
+    SUPPORTED_MODEL_EXTENSIONS,
+    SUPPORTED_MODEL_TYPES,
+    USER_AGENT,
+)
 from .download_queue import MODEL_DOWNLOAD_JOB, DownloadQueue, DownloadRequest, run_queue
 from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
 from .model_actions import (
     EARLY_ACCESS_ERROR,
     INFO_GONE_ERROR,
     DownloadContext,
+    delete_model,
     download_one,
     release_is_paid,
 )
-from .model_files import lora_roots, missing_info
+from .model_download import DownloadError
+from .model_files import lora_roots, missing_info, resolve_name
 from .naming_ai import SYSTEM_PROMPT
 from .naming_check import base_named_by, base_vocabulary, name_check_flags, needs_review, users_own_words, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
@@ -992,6 +1000,29 @@ def download_problem(active_job, *, journal_pending: bool) -> Optional[tuple]:
     return None
 
 
+NO_TRASH_DELETE_ERROR = "Delete needs the send2trash package."
+LORA_GONE_ERROR = "That LoRA is not there any more."
+REPLACE_BUSY_ERROR = "That file is being replaced. Try again when it's done."
+
+
+def delete_problem(
+    active_job, *, queue, weights: Optional[Path], can_trash: bool
+) -> Optional[tuple]:
+    """Why a LoRA can't be deleted now, as (HTTP status, message), or None.
+
+    A download may run beside a delete, unless it is about to replace this file.
+    """
+    if not can_trash:
+        return 409, NO_TRASH_DELETE_ERROR
+    if active_job is not None and not _is_model_download(active_job):
+        return 409, DOWNLOAD_BUSY_ERROR
+    if weights is None:
+        return 404, LORA_GONE_ERROR
+    if queue.holds(str(weights)):
+        return 409, REPLACE_BUSY_ERROR
+    return None
+
+
 def updates_request(payload: dict, job, *, can_trash: bool, queue) -> DownloadRequest | tuple:
     """The request for a release the check results offer, or why not, as (HTTP status, message)."""
     if job is None or getattr(job, "type", None) != CHECK_JOB:
@@ -1200,6 +1231,38 @@ def _register_model_action_routes(
         if held is None:
             return web.json_response({"error": "download not found"}, status=404)
         return web.json_response({"request": held.as_dict()})
+
+    @routes.post("/warp-studio/updater/delete-model")
+    @_guarded
+    async def delete_lora(request):
+        payload = _normalize_download_payload(await _read_json(request))
+        name = payload["name"]
+
+        def find():
+            if not any(name.lower().endswith(ext) for ext in SUPPORTED_MODEL_EXTENSIONS):
+                return None
+            return resolve_name(lora_roots(), name)
+
+        weights = await asyncio.to_thread(find)
+        problem = delete_problem(
+            job_manager.get_active(),
+            queue=queue,
+            weights=weights,
+            can_trash=send2trash_available(),
+        )
+        if problem:
+            return refused(problem)
+        try:
+            result = await asyncio.to_thread(
+                delete_model,
+                weights,
+                trash=send_to_trash,
+                job_manager=job_manager,
+                data_dir=config_store.data_dir,
+            )
+        except DownloadError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response(result)
 
     return queue
 

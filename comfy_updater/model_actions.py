@@ -380,6 +380,46 @@ def _record(
         request.warnings.append(f"Could not update the check results: {_reason(exc)}")
 
 
+def delete_model(
+    weights: Path, *, trash: Callable[[str], None], job_manager, data_dir: Path
+) -> dict:
+    """Send a LoRA's weights and every sidecar to the Recycle Bin.
+
+    The weights go first and on their own. If they can't go, ``DownloadError``
+    is raised and nothing else is touched, so weights ComfyUI holds open keep
+    their info file and preview. A sidecar that can't go is only a warning.
+    The file then leaves the check results.
+    """
+    files = stem_files(weights)
+    if not files:
+        return {"removed": [], "warnings": []}
+    weights = files[0]
+    try:
+        trash(str(weights))
+    except Exception as exc:  # noqa: BLE001 - the card shows the reason
+        raise DownloadError(
+            f"Could not send {weights.name} to the Recycle Bin: {_reason(exc)}"
+        ) from exc
+    if os.path.lexists(weights):
+        raise DownloadError(
+            f"Could not send {weights.name} to the Recycle Bin: {WEIGHTS_STILL_THERE}"
+        )
+    removed = [weights.name]
+    warnings: list[str] = []
+    for path in files[1:]:
+        try:
+            trash(str(path))
+            removed.append(path.name)
+        except Exception as exc:  # noqa: BLE001 - the rest still go
+            warnings.append(f"Could not send {path.name} to the Recycle Bin: {_reason(exc)}")
+    try:
+        update_check_records(job_manager, data_dir, remove=[str(weights)], add=[])
+    except Exception as exc:  # noqa: BLE001
+        print(f"Civitai updater: could not update the check results ({exc})")
+        warnings.append(f"Could not update the check results: {_reason(exc)}")
+    return {"removed": removed, "warnings": warnings}
+
+
 # --- small helpers -------------------------------------------------------------
 
 
