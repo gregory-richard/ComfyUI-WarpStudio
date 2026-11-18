@@ -11,8 +11,11 @@ const escaper = (escapeHtml) => (value) => escapeHtml(value == null ? "" : Strin
 const shortQuery = (query) =>
   query.length > QUERY_SHOWN ? `${query.slice(0, QUERY_SHOWN)}…` : query;
 
-/** The toolbar row, the hidden search field and the two empty menu slots. */
-export function toolbarHtml({ query, filtered, sortLabel, info }, escapeHtml) {
+/**
+ * The toolbar row, the search field and the two empty menu slots. The field is
+ * hidden unless `open`, so a re-render while the user types can keep it shown.
+ */
+export function toolbarHtml({ query, filtered, sortLabel, info, open = false }, escapeHtml) {
   const esc = escaper(escapeHtml);
   const text = query || "";
   const search =
@@ -22,20 +25,22 @@ export function toolbarHtml({ query, filtered, sortLabel, info }, escapeHtml) {
   return (
     `<div class="cu-tb">` +
     `<div class="cu-tb-row">${search}` +
-    `<button type="button" class="cu-tb-btn" data-tb="filter" aria-haspopup="true">${esc(filter)} ▾</button>` +
-    `<button type="button" class="cu-tb-btn" data-tb="sort" aria-haspopup="true">${esc(`Sort · ${sortLabel}`)} ▾</button>` +
+    `<button type="button" class="cu-tb-btn" data-tb="filter" aria-haspopup="true" aria-expanded="false">${esc(filter)} ▾</button>` +
+    `<button type="button" class="cu-tb-btn" data-tb="sort" aria-haspopup="true" aria-expanded="false">${esc(`Sort · ${sortLabel}`)} ▾</button>` +
     (info
       ? `<button type="button" class="cu-tb-btn cu-tb-info" data-tb="info" title="About this tab" aria-label="About this tab">ⓘ</button>`
       : "") +
     `</div>` +
-    `<input type="search" class="cu-tb-field" data-tb="field" value="${esc(text)}" placeholder="Search" aria-label="Search" hidden>` +
+    `<input type="search" class="cu-tb-field" data-tb="field" value="${esc(text)}" placeholder="Search" aria-label="Search"${open ? "" : " hidden"}>` +
     `<div class="cu-tb-menu" data-tb-menu="filter" hidden></div>` +
     `<div class="cu-tb-menu" data-tb-menu="sort" hidden></div>` +
     `</div>`
   );
 }
 
-function sectionHtml(section, esc) {
+let menuCalls = 0;
+
+function sectionHtml(section, esc, uid) {
   const key = esc(section.key);
   if (section.kind === "toggle") {
     return (
@@ -48,7 +53,7 @@ function sectionHtml(section, esc) {
     .map((option) => {
       const on = section.kind === "choice" ? option.value === section.value : option.checked;
       return (
-        `<label class="cu-filter-option"><input type="${type}" name="${key}" data-key="${key}" data-value="${esc(option.value)}"${on ? " checked" : ""}>` +
+        `<label class="cu-filter-option"><input type="${type}" name="${uid}-${key}" data-key="${key}" data-value="${esc(option.value)}"${on ? " checked" : ""}>` +
         `<span>${esc(option.label)}</span></label>`
       );
     })
@@ -59,23 +64,40 @@ function sectionHtml(section, esc) {
   );
 }
 
-/** The menu panel, in the existing cu-filter-panel styles. */
+/**
+ * The menu panel, in the existing cu-filter-panel styles. Radio names carry a
+ * per-call id, so two menus with the same key never share a radio group.
+ */
 export function menuHtml(sections, escapeHtml) {
   const esc = escaper(escapeHtml);
-  return `<div class="cu-filter-panel">${sections.map((s) => sectionHtml(s, esc)).join("")}</div>`;
+  const uid = `cu-tb-${++menuCalls}`;
+  return `<div class="cu-filter-panel">${sections.map((s) => sectionHtml(s, esc, uid)).join("")}</div>`;
 }
 
+const wired = new WeakMap();
+
 /**
- * Wire one toolbar. Listens on `root` and the document; destroy() removes the
- * document listeners (call it before re-rendering), close() just closes.
+ * Wire one toolbar. Listens on `root` and the document. Wiring a root that is
+ * already wired first removes the earlier wiring, so a caller that re-renders
+ * and wires again never stacks listeners. destroy() removes everything this
+ * call added; close() just closes the field and the menus.
  */
 export function wireToolbar(root, { onQuery, onOpen }) {
+  const earlier = wired.get(root);
+  if (earlier) earlier();
   const field = () => root.querySelector('[data-tb="field"]');
   const menu = (name) => root.querySelector(`[data-tb-menu="${name}"]`);
   let timer = null;
 
+  const setExpanded = (name, open) => {
+    const button = root.querySelector(`[data-tb="${name}"]`);
+    if (button) button.setAttribute("aria-expanded", open ? "true" : "false");
+  };
   const closeMenus = () => {
-    for (const el of root.querySelectorAll("[data-tb-menu]")) el.hidden = true;
+    for (const el of root.querySelectorAll("[data-tb-menu]")) {
+      el.hidden = true;
+      setExpanded(el.dataset.tbMenu, false);
+    }
   };
   const closeField = () => {
     const input = field();
@@ -94,6 +116,7 @@ export function wireToolbar(root, { onQuery, onOpen }) {
     if (wasOpen) return;
     if (onOpen) onOpen(name);
     el.hidden = false;
+    setExpanded(name, true);
   };
 
   const onClick = (event) => {
@@ -134,15 +157,15 @@ export function wireToolbar(root, { onQuery, onOpen }) {
   doc.addEventListener("click", onDocClick);
   doc.addEventListener("keydown", onKey);
 
-  return {
-    close,
-    destroy() {
-      clearTimeout(timer);
-      root.removeEventListener("click", onClick);
-      root.removeEventListener("input", onInput);
-      root.removeEventListener("focusout", onBlur);
-      doc.removeEventListener("click", onDocClick);
-      doc.removeEventListener("keydown", onKey);
-    },
+  const destroy = () => {
+    wired.delete(root);
+    clearTimeout(timer);
+    root.removeEventListener("click", onClick);
+    root.removeEventListener("input", onInput);
+    root.removeEventListener("focusout", onBlur);
+    doc.removeEventListener("click", onDocClick);
+    doc.removeEventListener("keydown", onKey);
   };
+  wired.set(root, destroy);
+  return { close, destroy };
 }

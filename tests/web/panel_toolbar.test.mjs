@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { menuHtml, toolbarHtml } from "../../web/panel_toolbar.js";
+import { menuHtml, toolbarHtml, wireToolbar } from "../../web/panel_toolbar.js";
 
 const escapeHtml = (text) =>
   String(text)
@@ -97,4 +97,102 @@ test("menuHtml escapes titles, labels and values", () => {
   );
   assert.ok(!html.includes("<b>"));
   assert.ok(html.includes("&lt;b&gt;"));
+});
+
+test("the search field is hidden unless open", () => {
+  assert.match(toolbarHtml(base, escapeHtml), /data-tb="field"[^>]* hidden>/);
+  assert.doesNotMatch(
+    toolbarHtml({ ...base, open: true }, escapeHtml),
+    /data-tb="field"[^>]* hidden/
+  );
+});
+
+test("two menus with the same key get different radio names", () => {
+  const sections = [
+    {
+      kind: "choice",
+      key: "sort",
+      title: "Sort",
+      options: [{ value: "a", label: "A" }],
+      value: "a",
+    },
+  ];
+  const name = (html) => html.match(/name="([^"]+)"/)[1];
+  assert.notEqual(name(menuHtml(sections, escapeHtml)), name(menuHtml(sections, escapeHtml)));
+  assert.match(menuHtml(sections, escapeHtml), /data-key="sort" data-value="a"/);
+});
+
+test("the filter and sort buttons start collapsed", () => {
+  const html = toolbarHtml(base, escapeHtml);
+  assert.equal(html.split('aria-expanded="false"').length - 1, 2);
+});
+
+// A minimal fake DOM: recording listeners and just the elements wireToolbar reads.
+function fakeRoot() {
+  const added = [];
+  const removed = [];
+  const el = (extra = {}) => ({
+    hidden: true,
+    attrs: {},
+    setAttribute(k, v) {
+      this.attrs[k] = v;
+    },
+    ...extra,
+  });
+  const doc = {
+    addEventListener: (type, fn) => added.push([doc, type, fn]),
+    removeEventListener: (type, fn) => removed.push([doc, type, fn]),
+  };
+  const filterBtn = el();
+  const filterMenu = el({ dataset: { tbMenu: "filter" } });
+  const sortMenu = el({ dataset: { tbMenu: "sort" } });
+  const root = {
+    ownerDocument: doc,
+    addEventListener: (type, fn) => added.push([root, type, fn]),
+    removeEventListener: (type, fn) => removed.push([root, type, fn]),
+    contains: () => true,
+    querySelector: (sel) =>
+      sel === '[data-tb="filter"]'
+        ? filterBtn
+        : sel === '[data-tb-menu="filter"]'
+          ? filterMenu
+          : null,
+    querySelectorAll: () => [filterMenu, sortMenu],
+  };
+  const click = (name) =>
+    added
+      .filter(([target, type]) => target === root && type === "click")
+      .forEach(([, , fn]) => fn({ target: { closest: () => ({ dataset: { tb: name } }) } }));
+  return { root, added, removed, filterBtn, filterMenu, click };
+}
+
+test("wiring the same root twice removes the first wiring", () => {
+  const f = fakeRoot();
+  wireToolbar(f.root, {});
+  const first = f.added.slice();
+  assert.equal(f.removed.length, 0);
+  wireToolbar(f.root, {});
+  assert.equal(f.removed.length, first.length);
+  for (const entry of first) assert.ok(f.removed.some((r) => r.every((v, i) => v === entry[i])));
+});
+
+test("destroy removes every listener it added", () => {
+  const f = fakeRoot();
+  wireToolbar(f.root, {}).destroy();
+  assert.ok(f.added.length >= 5);
+  assert.equal(f.removed.length, f.added.length);
+  for (const entry of f.added) assert.ok(f.removed.some((r) => r.every((v, i) => v === entry[i])));
+});
+
+test("aria-expanded follows the menu open and closed", () => {
+  const f = fakeRoot();
+  const opened = [];
+  const wiring = wireToolbar(f.root, { onOpen: (name) => opened.push(name) });
+  f.click("filter");
+  assert.equal(f.filterMenu.hidden, false);
+  assert.equal(f.filterBtn.attrs["aria-expanded"], "true");
+  assert.deepEqual(opened, ["filter"]);
+  wiring.close();
+  assert.equal(f.filterMenu.hidden, true);
+  assert.equal(f.filterBtn.attrs["aria-expanded"], "false");
 });
