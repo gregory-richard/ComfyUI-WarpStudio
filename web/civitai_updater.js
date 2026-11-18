@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 import { renderGalleryView } from "./gallery_view.js";
 import { noteUsed } from "./prompt_target.js";
+import { createScrollMemory, findScroller } from "./scroll_memory.js";
 
 const TAB_ID = "warp-studio-updater";
 const EXTENSION_NAME = "warpstudio.updater";
@@ -163,6 +164,9 @@ const state = {
   galleryLoaded: false,
   // An "open the gallery" request that arrived while the panel was not drawn.
   pendingGallery: null,
+  // Scroll offset per view, and the view whose pane is showing.
+  scrollMemory: createScrollMemory(),
+  shownMode: null,
   // Text encoders the backend can run, from /rename/status: the naming-model setting's options.
   namingModels: [],
   syncedNamingModel: null,
@@ -632,6 +636,7 @@ function bindEvents(root) {
       // The filters stay: they serve every view.
       state.pageOffset = 0;
       await loadResultPage(true);
+      restoreScroll(mode);
       return;
     }
     const filterAction = target.dataset.filterAction;
@@ -1438,6 +1443,7 @@ function renderViewSwitch() {
       + `<span>${label}</span>${withCount ? `<span class="cu-view-count">${Number(counts[mode] || 0)}</span>` : ""}</button>`;
   };
   const galleryCount = state.galleryView?.count?.();
+  counts.gallery = galleryCount;
   const galleryTab = tab("gallery", "Gallery", "Your LoRAs, ready to add to a prompt", galleryCount != null);
   const checkTabs = state.checkJobId
     ? tab("updates", "Updates", "Models with a newer release") + tab("issues", "Issues", "Models Civitai could not match or check")
@@ -1445,7 +1451,6 @@ function renderViewSwitch() {
   // Rename counts the models with a new name to apply, under the same filters.
   const renameCount = state.renameView?.count?.();
   counts.rename = renameCount;
-  counts.gallery = galleryCount;
   state.viewSwitchEl.innerHTML = galleryTab + checkTabs
     + tab("rename", "Rename", "Rename your model files after their Civitai releases", renameCount != null);
 }
@@ -1455,6 +1460,9 @@ function renderViewSwitch() {
    the target, and reorder when the target's base changed. */
 function applyResultMode() {
   const mode = state.resultMode;
+  const scroller = state.rootEl?.isConnected ? findScroller(state.rootEl, getComputedStyle) : null;
+  if (scroller && state.shownMode) state.scrollMemory.save(state.shownMode, scroller.scrollTop);
+  state.shownMode = mode;
   const rename = mode === "rename";
   const gallery = mode === "gallery";
   if (state.galleryPaneEl) state.galleryPaneEl.style.display = gallery ? "" : "none";
@@ -1465,6 +1473,16 @@ function applyResultMode() {
   renderViewSwitch();
   if (rename && state.renameView) state.renameView.refresh();
   if (gallery) showGallery();
+  restoreScroll(mode);
+}
+
+/* Back at the offset this view was left at, once its content is in. */
+function restoreScroll(mode) {
+  requestAnimationFrame(() => {
+    if (state.resultMode !== mode || !state.rootEl?.isConnected) return;
+    const scroller = findScroller(state.rootEl, getComputedStyle);
+    if (scroller) scroller.scrollTop = state.scrollMemory.get(mode);
+  });
 }
 
 function showGallery() {

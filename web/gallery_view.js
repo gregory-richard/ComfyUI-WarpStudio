@@ -228,9 +228,15 @@ export function renderGalleryView(el, options) {
     return { baseChanged };
   }
 
-  /* For callers that do not wait: the canvas hook, a click, the first draw. */
-  function follow() {
-    updateTarget().catch((err) => console.warn("[Warp Studio] Gallery target:", err));
+  /* For callers that do not wait: the canvas hook, a click, the first draw.
+     A changed base reorders the bands, but never on a click: the cards under
+     the cursor stay put. */
+  function follow(reorder = true) {
+    updateTarget()
+      .then(({ baseChanged }) => {
+        if (reorder && baseChanged) render();
+      })
+      .catch((err) => console.warn("[Warp Studio] Gallery target:", err));
   }
 
   /* ---- loading ---- */
@@ -365,7 +371,7 @@ export function renderGalleryView(el, options) {
     const hit = card ? cards.get(card.dataset.gKey) : null;
     if (!hit) return;
     const node = currentTarget(app);
-    if (node !== target) follow(); // the selection moved without telling us
+    if (node !== target) follow(false); // the selection moved without telling us
     if (!node || !insertIntoNode(node, hit.model.stem)) return;
     noteUsed(node);
     flashAdded(card);
@@ -397,7 +403,7 @@ export function renderGalleryView(el, options) {
     }, SEARCH_DELAY);
   });
 
-  onSelection = follow;
+  onSelection = () => follow();
   follow();
   render();
   return {
