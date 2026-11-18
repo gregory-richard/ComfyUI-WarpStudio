@@ -31,7 +31,7 @@ Civitai matches a checkpoint or LoRA by a hash of the file, not by its name.
 The hash is `AutoV2`: the first 10 characters of the file's SHA256.
 
 Hashes are read from a model's `.civitai.info` sidecar when one exists, as
-written by the Civitai panel and tools like it. Without a sidecar, the file is hashed
+written by the Warp Studio panel and tools like it. Without a sidecar, the file is hashed
 once and the result cached by path, size and modification time, so large
 checkpoints are not re-read on later saves.
 

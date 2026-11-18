@@ -131,7 +131,7 @@ Hashes: {"model":"4c2b8e1f0a","lora:film-grain-xl":"3b1f0c2a9d"}, Version: Comfy
 
 It also shows what it saved next to the before image, in the same slider.
 
-Trigger words, base models and titles come from the `.civitai.info` files the
+Trigger words, base models and titles come from the `.civitai.info` files next to your models.
 The **Warp Studio** panel (below) shows the same library as a gallery. **Browse LoRAs** on the node opens it.
 
 ## Warp Studio panel
@@ -212,7 +212,7 @@ A rename cut off by a crash can be finished or undone on the next start. Saved
 workflows that use the old names will show those models as missing; re-pick
 them. Every move is recorded in `ComfyUI/user/warp-studio/updater/rename_log.jsonl`.
 What is never renamed, and the rest of the details, are in the
-[wiki](WIKI.md#civitai-panel).
+[wiki](WIKI.md#warp-studio-panel).
 
 ## Example workflow
 
@@ -246,7 +246,7 @@ release, is in the [changelog](CHANGELOG.md).
 ## Credits
 
 Screenshots use demo LoRAs and stand-in images, not anyone's real models. The
-Civitai panel builds on ideas from
+Warp Studio panel builds on ideas from
 [Stable-Diffusion-Webui-Civitai-Helper](https://github.com/zixaphir/Stable-Diffusion-Webui-Civitai-Helper).
 Developed with AI assistance (GPT-5.3-Codex, Claude Opus 4.6, Claude Opus 5).
 [MIT License](LICENSE).

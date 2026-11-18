@@ -190,7 +190,7 @@ looking. Slashes in ordinary text - `1/2`, `and/or` - suggest nothing, because a
 bare slash is a slash until you type something after it.
 
 The **Browse LoRAs** button opens the Gallery in the **Warp Studio** sidebar panel
-instead, with previews, search and filters, and this node as the target.
+instead, with previews, search and filters, and this node as the target. A click on a card writes its tag on a line of its own, at the caret of the box you last worked in.
 
 ### It suggests what fits the model you are using
 

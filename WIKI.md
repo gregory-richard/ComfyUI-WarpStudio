@@ -5,7 +5,7 @@ inside ComfyUI, behind the `?` on the node.
 
 - [Getting started](#getting-started)
 - [Usage](#usage)
-- [Civitai panel](#civitai-panel)
+- [Warp Studio panel](#warp-studio-panel)
 - [Node reference](#node-reference)
 - [HTTP API](#http-api)
 - [Architecture](#architecture)
@@ -30,7 +30,7 @@ an Unwarp gives it back. Whole model setups become a single connection you move.
 **A sidebar panel for your model library.** The **Warp Studio** tab shows your LoRAs as a gallery, checks your models
 against their Civitai releases, renames your files into one scheme and finds
 previews for models Civitai no longer serves. It is described under
-[Civitai panel](#civitai-panel).
+[Warp Studio panel](#warp-studio-panel).
 
 Warp Studio is WarpPipe and Civitai Updater in one package. If you used either,
 see [Coming from WarpPipe or Civitai Updater](#coming-from-warppipe-or-civitai-updater).
@@ -59,7 +59,7 @@ in rather than copying — see [Development](#setting-up).
 ### What it needs
 
 ComfyUI and Python 3.9 or newer. The nodes use only what ships with ComfyUI
-(`Pillow`, `aiohttp`, `torch`). The Civitai panel adds `requests`, `Pillow`,
+(`Pillow`, `aiohttp`, `torch`). The Warp Studio panel adds `requests`, `Pillow`,
 `imageio-ffmpeg` (only to turn video previews into thumbnails) and `send2trash`
 (only to move the renamer's extra copies to the Recycle Bin). The registry
 installs them; for a clone, run `pip install -r requirements.txt` with ComfyUI's
@@ -297,7 +297,7 @@ where the other went.
 this node as the target. The Gallery is described under
 [The Gallery tab](#the-gallery-tab); there is no separate pop-up.
 
-Clicking a card writes its tag into this node's LoRAs list.
+Clicking a card writes its tag on a line of its own, at the caret of the box you last worked in (the LoRAs list, until you click into another).
 
 ### Bundling a generation
 
@@ -399,7 +399,7 @@ dropped, rather than silently omitting it.
 ### What the sidecars give you
 
 Warp Studio reads `.civitai.info` files sitting beside your models — the sidecars
-the [Civitai panel](#civitai-panel) writes and keeps current.
+the [Warp Studio panel](#warp-studio-panel) writes and keeps current.
 
 | Field | Used for | Without it |
 | --- | --- | --- |
@@ -424,7 +424,9 @@ flagged safe.
 
 ---
 
-## Civitai panel
+<a id="civitai-panel"></a>
+
+## Warp Studio panel
 
 The sidebar tab **Warp Studio** has four tabs: **Gallery**, **Updates**, **Issues** and **Rename**. The Gallery comes first and is described next; the rest is the updater.
 
@@ -432,7 +434,7 @@ The sidebar tab **Warp Studio** has four tabs: **Gallery**, **Updates**, **Issue
 
 Your LoRAs as cards with their previews, grouped by base model. Search matches name, creator and version, and the filters narrow by type and base model. Nothing matching shows an empty state, not the whole library.
 
-A line under the search says where a click goes: **Adds to:** and the title of a Prompt + LoRAs node. That is the selected node; with none selected, the last one you used. If the workflow has none, the line says so. Clicking a card writes the LoRA's tag into that node's LoRAs list and the card says **Added**.
+A line under the search says where a click goes: **Adds to:** and the title of a Prompt + LoRAs node. That is the selected node; with none selected, the last one you used. If the workflow has none, the line says so. Clicking a card writes the LoRA's tag on a line of its own, at the caret of the box you last worked in in that node (the LoRAs list, until you click into another), and the card says **Added**.
 
 **Browse LoRAs** on a Prompt + LoRAs node opens the panel on this tab with that node as the target (it sends the `warpstudio:open-gallery` window event, with the node id).
 
@@ -1164,8 +1166,8 @@ naming it rather than quietly dropping it.
 Every route starts with `/warp-studio/`, and is registered on ComfyUI's own
 `PromptServer` at import. They exist for Warp Studio's frontend; nothing stops
 you calling them yourself. The first group serves the nodes and the Prompt
-Writer. The Civitai panel's routes, under `/warp-studio/updater/`, are
-[further down](#civitai-panel-routes).
+Writer. The Warp Studio panel's routes, under `/warp-studio/updater/`, are
+[further down](#warp-studio-panel-routes).
 
 If `aiohttp` or `server` cannot be imported — running the module outside
 ComfyUI, for tests or a lint — registration is skipped and the nodes still work.
@@ -1309,7 +1311,7 @@ These routes are unauthenticated, exactly as the rest of ComfyUI's are. Anyone
 who can reach your ComfyUI can list your model library through them, which is
 worth knowing if you have bound the server to something other than localhost.
 
-### Civitai panel routes
+### Warp Studio panel routes
 
 The panel's routes all start with `/warp-studio/updater/`, and return JSON.
 
@@ -1530,12 +1532,12 @@ POST /warp-studio/updater/jobs/download-naming-model
 ```
 warp_pipe.py          every node, the storage, the resource scan, the routes
 prompt_writer.py      the Prompt Writer's backend and its /warp-studio/llm routes
-comfy_updater/        the Civitai panel's backend, see below
+comfy_updater/        the Warp Studio panel's backend, see below
 studio/               the first-start data migration and the check for old packages
 standdown/            the notice shown when an old package is still active
 __init__.py           starts both halves, or stands down for an old package
 web/
-  civitai_updater.js  the Civitai sidebar panel
+  civitai_updater.js  the Warp Studio sidebar panel
   rename_view.js      its Rename view
   storage_migration.js  carries the Rename view's saved choices over
   prompt_ui.js        the coloured prompt box, the strip, inline completion
@@ -1719,7 +1721,7 @@ other packs accept a workflow built around RES4LYF's schedulers even when
 RES4LYF has not loaded. Startup logs which names it stood in for.
 
 
-### The Civitai panel
+### The Warp Studio panel
 
 The panel has two layers: a backend service (`comfy_updater/`) and a frontend sidebar tab (`web/civitai_updater.js`). Both are started from `__init__.py`.
 
@@ -1962,7 +1964,7 @@ being skipped with a warning nobody reads. Fix the tag, or comment it out with
 
 Previews are read off the disk: an image beside the model file named
 `<model>.preview.png`, `.preview.jpg`, `.preview.webp`, or just `<model>.png`.
-The [Civitai panel](#civitai-panel) downloads them (**Fetch Missing Metadata**); so do most model managers.
+The [Warp Studio panel](#warp-studio-panel) downloads them (**Fetch Missing Metadata**); so do most model managers.
 
 If the files are there but the cards are blank, the thumbnail cache has nowhere
 to write. It goes next to ComfyUI's user directory; check that is writable, and
@@ -1982,7 +1984,7 @@ words, base model and link appear.
 ### No trigger words anywhere
 
 Trigger words come only from `.civitai.info` sidecars — there is no fallback,
-because nothing else on disk knows them. Run the Civitai panel's **Fetch Missing
+because nothing else on disk knows them. Run the Warp Studio panel's **Fetch Missing
 Metadata** to fetch them without checking for updates.
 
 `Tab` on a tag always answers: it says the LoRA declares none rather than doing
@@ -2060,9 +2062,9 @@ it into the Warp — or check that the Warp you are unpacking is the one you
 think, since a chained Warp only carries what it was given plus what it was told.
 
 
-### The Civitai panel
+### The Warp Studio panel
 
-#### The Civitai tab is not in the sidebar
+#### The Warp Studio tab is not in the sidebar
 
 1. Confirm the folder is directly under Comfy `custom_nodes`, and that Warp Studio is not switched off (see above).
 2. Confirm restart was a full process restart.
