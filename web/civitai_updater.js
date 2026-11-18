@@ -220,7 +220,7 @@ app.registerExtension({
       id: TAB_ID,
       icon: TAB_ICON,
       title: "Warp Studio",
-      tooltip: "Check local Comfy models for newer Civitai versions",
+      tooltip: "Your models: gallery, updates and renaming",
       type: "custom",
       render: (el) => renderTab(el),
     });

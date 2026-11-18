@@ -189,8 +189,8 @@ the undo history, and never marks the workflow changed just because you were
 looking. Slashes in ordinary text - `1/2`, `and/or` - suggest nothing, because a
 bare slash is a slash until you type something after it.
 
-The **Browse LoRAs** button opens the full library instead, with previews and a
-rail of model families.
+The **Browse LoRAs** button opens the Gallery in the **Warp Studio** sidebar panel
+instead, with previews, search and filters, and this node as the target.
 
 ### It suggests what fits the model you are using
 

@@ -11,7 +11,7 @@ It is WarpPipe and Civitai Updater in one package, for people who switch models 
 - **Warp / Unwarp**: a whole generation in one wire.
 - **Warp Send / Select**: switch between model groups without moving a wire.
 - **Save Image (Civitai)**: metadata Civitai reads, so an upload credits the right model and LoRAs.
-- **Civitai panel**: a sidebar panel that tells you which of your models have a newer release, and renames your files into one scheme.
+- **Warp Studio panel**: a sidebar panel with a gallery of your LoRAs, a check for models with a newer release, and a rename into one scheme.
 
 ## Install
 
@@ -29,7 +29,7 @@ Or clone `https://github.com/gregory-richard/ComfyUI-WarpStudio` into `ComfyUI/c
 
 Don't uninstall Civitai Updater until Warp Studio has started once: your updater data lives in its folder and is copied on that first start.
 
-Nothing looks different: the nodes, the Prompt Writer, the LoRA browser and the **Civitai** panel work as before. Settings now sit under **Warp Studio** in ComfyUI's settings, and the updater's groups read "Civitai Network", "Civitai General" and so on. The HTTP routes start with `/warp-studio/`.
+Nothing looks different: the nodes, the Prompt Writer, the LoRA browser and the updater panel work as before. The panel is now called **Warp Studio**. Settings now sit under **Warp Studio** in ComfyUI's settings, and the updater's groups read "Civitai Network", "Civitai General" and so on. The HTTP routes start with `/warp-studio/`.
 
 ## Prompt + LoRAs
 
@@ -132,18 +132,34 @@ Hashes: {"model":"4c2b8e1f0a","lora:film-grain-xl":"3b1f0c2a9d"}, Version: Comfy
 It also shows what it saved next to the before image, in the same slider.
 
 Trigger words, base models and titles come from the `.civitai.info` files the
-Civitai panel (below) keeps next to your models.
+The **Warp Studio** panel (below) shows the same library as a gallery. **Browse LoRAs** on the node opens it.
 
-## Civitai panel
+## Warp Studio panel
 
-The **Civitai** tab in ComfyUI's sidebar checks the models on your disk against
-their Civitai releases and lists the ones that have moved on without you.
+The **Warp Studio** tab in ComfyUI's sidebar holds your model library. It has
+a Gallery of your LoRAs, a check of your models against their Civitai releases,
+and a rename for your files.
+
+### Gallery
+
+Your LoRAs as cards with their previews. Search by name, creator or version, and
+filter by type or base model. A line under the search says which Prompt + LoRAs
+node a click adds to: the selected one, or else the last one you used. Click a
+card and its tag is written into that node, and the card says **Added**.
+
+**Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with
+that node as the target.
+
+### Updates, Issues and Rename
+
+The other tabs check the models on your disk against their Civitai releases and
+list the ones that have moved on without you.
 
 It identifies each file by its SHA256 hash, reads the `.civitai.info` files you
 already have, and writes only `.civitai.info` and `.preview.png` files next to
 your models. Checking downloads no model; a card links you to the release page.
 
-Three views sit above the list:
+Three more views sit above the list:
 
 - **Updates**: models with a release newer than your newest local version. A card is a ledger of that model's releases, one row per version. Red means one thing: a release exists that you do not have. A **Buzz** badge marks a release that costs Buzz.
 - **Issues**: files Civitai had no release for (a merge, a conversion, a file never uploaded) or could not be asked about (removed, needs an API key). The reason is under each row.
@@ -221,7 +237,7 @@ has the workflow inside: drag it into ComfyUI to open it, or grab the
 | 🌀 Scheduler Adapter for FaceDetailer | KSampler schedulers for FaceDetailer |
 | 🚫 Dead End | Takes anything, does nothing. Parks a branch |
 
-The **Civitai** sidebar panel is not a node; it is described above.
+The **Warp Studio** sidebar panel is not a node; it is described above.
 
 Each node has its own help behind the `?` in ComfyUI. Everything else, every
 input and the HTTP routes are in the **[wiki](WIKI.md)**. What changed, release by

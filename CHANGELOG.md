@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- A **Gallery** tab, first in the sidebar panel: your LoRAs as cards with previews, search, and filters by type and base model.
+- A target node. A line under the search says which Prompt + LoRAs node a click adds to: the selected one, or else the last one you used.
+- **Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with that node as the target.
+
+### Changed
+
+- The sidebar panel is called **Warp Studio**, not Civitai.
+- The Browse LoRAs pop-up is gone; the Gallery replaces it.
+
 ## [1.0.0] - 2026-11-18
 
 Warp Studio is WarpPipe and Civitai Updater in one package. Nothing looks

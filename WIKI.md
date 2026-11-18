@@ -27,7 +27,7 @@ off are all edits to it.
 **One wire instead of twenty.** A Warp bundles everything a generation needs;
 an Unwarp gives it back. Whole model setups become a single connection you move.
 
-**A sidebar panel for your model library.** The **Civitai** tab checks your models
+**A sidebar panel for your model library.** The **Warp Studio** tab shows your LoRAs as a gallery, checks your models
 against their Civitai releases, renames your files into one scheme and finds
 previews for models Civitai no longer serves. It is described under
 [Civitai panel](#civitai-panel).
@@ -291,18 +291,13 @@ word. While the caret is in a word or a tag, that LoRA's tag and all of its
 words are picked out with a soft background in every box, so either one shows
 where the other went.
 
-#### The browser
+#### The gallery
 
-**Browse LoRAs** opens the library as cards.
+**Browse LoRAs** opens the **Warp Studio** sidebar panel on its Gallery tab, with
+this node as the target. The Gallery is described under
+[The Gallery tab](#the-gallery-tab); there is no separate pop-up.
 
-![The LoRA library browser](assets/docs/lora-browser.webp)
-
-The rail groups by family with counts. The families with LoRAs for the model you
-have connected are pinned and marked, and the largest is opened; the rest stay
-visible but dimmed, because you may have a reason. For a model known only by its
-folder, those are the families of the LoRAs filed in the folder of that name. Search matches creator, name, version and family. Clicking a
-card writes its tag into the LoRAs list, or wherever the caret is if it is in
-one of the boxes at the time.
+Clicking a card writes its tag into this node's LoRAs list.
 
 ### Bundling a generation
 
@@ -431,14 +426,28 @@ flagged safe.
 
 ## Civitai panel
 
-The sidebar tab **Civitai** checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models.
+The sidebar tab **Warp Studio** has four tabs: **Gallery**, **Updates**, **Issues** and **Rename**. The Gallery comes first and is described next; the rest is the updater.
+
+### The Gallery tab
+
+Your LoRAs as cards with their previews, grouped by base model. Search matches name, creator and version, and the filters narrow by type and base model. Nothing matching shows an empty state, not the whole library.
+
+A line under the search says where a click goes: **Adds to:** and the title of a Prompt + LoRAs node. That is the selected node; with none selected, the last one you used. If the workflow has none, the line says so. Clicking a card writes the LoRA's tag into that node's LoRAs list and the card says **Added**.
+
+**Browse LoRAs** on a Prompt + LoRAs node opens the panel on this tab with that node as the target (it sends the `warpstudio:open-gallery` window event, with the node id).
+
+The tab only reads the library the Prompt + LoRAs node already uses, so it needs no new route and writes no file.
+
+### Updates, Issues and Rename
+
+The Updates tab checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models.
 
 Base models are grouped by family, because Civitai records one per version and the spellings multiply: `Flux.1 D`, `Flux.2 Klein 9B` and `Flux.2 Klein 9B-base` all file under **Flux**, while every row still prints its exact base. A version counts as **new** when its `publishedAt` date (or `createdAt`, when `publishedAt` is missing) is later than the newest local version you have of that model, not by version number.
 
 
 ### 1. Open panel
 
-In ComfyUI, open the sidebar tab `Civitai`.
+In ComfyUI, open the sidebar tab `Warp Studio`.
 
 ### 2. Configure settings
 
@@ -1530,7 +1539,7 @@ web/
   rename_view.js      its Rename view
   storage_migration.js  carries the Rename view's saved choices over
   prompt_ui.js        the coloured prompt box, the strip, inline completion
-  lora_browser.js     the library modal
+  lora_browser.js     the Browse LoRAs button, which opens the panel's Gallery
   model_base.js       which base model a node is wired to
   library.js          one fetch of the index, shared by both views
   text.js             escaping and filename helpers
