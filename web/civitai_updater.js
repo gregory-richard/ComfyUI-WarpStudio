@@ -1,6 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
+import { renderGalleryView } from "./gallery_view.js";
+import { noteUsed } from "./prompt_target.js";
 
 const TAB_ID = "warp-studio-updater";
 const EXTENSION_NAME = "warpstudio.updater";
@@ -109,7 +111,7 @@ const state = {
   forceRehash: false,
   refetchMetadata: false,
   statusText: "",
-  resultMode: "updates",
+  resultMode: "gallery",
   modeCounts: { updates: 0, issues: 0 },
   stopRequested: false,
 
@@ -154,6 +156,13 @@ const state = {
   renameView: null,
   renamePaneEl: null,
   updatesPaneEl: null,
+  // The Gallery view, its pane, its filter options, and whether it has loaded.
+  galleryView: null,
+  galleryPaneEl: null,
+  galleryFacets: { modelTypes: [], baseModels: [] },
+  galleryLoaded: false,
+  // An "open the gallery" request that arrived while the panel was not drawn.
+  pendingGallery: null,
   // Text encoders the backend can run, from /rename/status: the naming-model setting's options.
   namingModels: [],
   syncedNamingModel: null,
@@ -210,11 +219,12 @@ app.registerExtension({
     app.extensionManager.registerSidebarTab({
       id: TAB_ID,
       icon: TAB_ICON,
-      title: "Civitai",
+      title: "Warp Studio",
       tooltip: "Check local Comfy models for newer Civitai versions",
       type: "custom",
       render: (el) => renderTab(el),
     });
+    window.addEventListener("warpstudio:open-gallery", (ev) => openGallery(ev?.detail?.nodeId));
   },
 });
 
@@ -224,8 +234,8 @@ async function renderTab(el) {
   root.className = "cu-root";
   root.innerHTML = `
     <header class="cu-hero">
-      <div class="cu-hero-title">Civitai Updater</div>
-      <p class="cu-hero-sub">Your local models, checked against their Civitai releases</p>
+      <div class="cu-hero-title">Warp Studio</div>
+      <p class="cu-hero-sub">Your models, ready to use and kept up to date</p>
     </header>
 
     <section class="cu-card">
@@ -287,6 +297,7 @@ async function renderTab(el) {
       </div>
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
       <div id="cu-loading-bar" class="cu-loading-bar" aria-hidden="true"></div>
+      <div id="cu-gallery-pane"></div>
       <div id="cu-rename-pane" style="display:none"></div>
       <div id="cu-updates-pane">
       <div id="cu-scan-report" class="cu-scan-report"></div>
@@ -334,6 +345,7 @@ async function renderTab(el) {
   state.pauseEl = root.querySelector("#cu-pause");
   state.stopEl = root.querySelector("#cu-stop");
   state.jobControlsEl = root.querySelector("#cu-job-controls");
+  state.galleryPaneEl = root.querySelector("#cu-gallery-pane");
   state.renamePaneEl = root.querySelector("#cu-rename-pane");
   state.updatesPaneEl = root.querySelector("#cu-updates-pane");
   state.renameView = renderRenameView(state.renamePaneEl, {
@@ -351,10 +363,18 @@ async function renderTab(el) {
     openPreview: openLightbox,
     copyOrReveal,
     copyPathTitle,
-    filter: renameFilter,
+    filter: sharedFilter,
     onFacets: onRenameFacets,
     onCount: () => renderViewSwitch(),
     setLoading,
+  });
+  state.galleryLoaded = false;
+  state.galleryView = renderGalleryView(state.galleryPaneEl, {
+    escapeHtml,
+    filter: sharedFilter,
+    onFacets: onGalleryFacets,
+    onCount: () => renderViewSwitch(),
+    app,
   });
   bindEvents(root);
   state.statusEl.textContent = state.statusText;
@@ -368,7 +388,11 @@ async function renderTab(el) {
   updateControlButtons();
   root.querySelector("#cu-size").value = String(state.pageSize);
   el.appendChild(root);
+  const pending = state.pendingGallery;
+  state.pendingGallery = null;
+  if (pending) state.resultMode = "gallery";
   applyResultMode();
+  if (pending) openedGallery(pending.nodeId);
   // The saved dry run loads in the background, so the Rename tab shows its count.
   if (state.resultMode !== "rename") state.renameView.refresh().catch(() => {});
 
@@ -604,8 +628,8 @@ function bindEvents(root) {
       if (!mode || mode === state.resultMode) return;
       state.resultMode = mode;
       applyResultMode();
-      if (mode === "rename") return;
-      // The filters stay: they serve all three views.
+      if (mode === "rename" || mode === "gallery") return;
+      // The filters stay: they serve every view.
       state.pageOffset = 0;
       await loadResultPage(true);
       return;
@@ -804,6 +828,7 @@ function pollJob(jobId) {
       state.lastItemCount = itemCount;
 
       const renameJob = RENAME_JOB_TYPES.includes(state.currentJobType);
+      const scanJob = state.currentJobType === "scan";
       const finished = ["completed", "failed", "cancelled"].includes(status);
       if (renameJob && !finished && state.renameView) state.renameView.onJob(job, false);
 
@@ -852,6 +877,8 @@ function pollJob(jobId) {
         updateControlButtons();
         // After the job is cleared, so the view sees no active job while it reloads.
         if (renameJob && state.renameView) await state.renameView.onJob(job, true);
+        // A rename or a scan can change the library: the gallery reads it again, once it has loaded.
+        if ((renameJob || scanJob) && state.galleryLoaded) state.galleryView?.refresh();
       }
     } catch (error) {
       if (isLostJobError(error)) {
@@ -883,9 +910,9 @@ function pollJob(jobId) {
 
 async function loadResultPage(force) {
   const requestSeq = ++state.resultRequestSeq;
-  // The Rename view has no result pages; switching back loads them. The
-  // Updates and Issues counts (and their filter options) still load.
-  if (state.resultMode === "rename") {
+  // The Rename and Gallery views have no result pages; switching back loads
+  // them. The Updates and Issues counts (and their filter options) still load.
+  if (state.resultMode === "rename" || state.resultMode === "gallery") {
     await loadModeCounts();
     return;
   }
@@ -1410,25 +1437,73 @@ function renderViewSwitch() {
     return `<button class="cu-view-tab" type="button" role="tab" data-view="${mode}" aria-selected="${selected}" title="${hint}">`
       + `<span>${label}</span>${withCount ? `<span class="cu-view-count">${Number(counts[mode] || 0)}</span>` : ""}</button>`;
   };
+  const galleryCount = state.galleryView?.count?.();
+  const galleryTab = tab("gallery", "Gallery", "Your LoRAs, ready to add to a prompt", galleryCount != null);
   const checkTabs = state.checkJobId
     ? tab("updates", "Updates", "Models with a newer release") + tab("issues", "Issues", "Models Civitai could not match or check")
     : tab("updates", "Updates", "Run Check for Updates to list newer releases", false);
   // Rename counts the models with a new name to apply, under the same filters.
   const renameCount = state.renameView?.count?.();
   counts.rename = renameCount;
-  state.viewSwitchEl.innerHTML = checkTabs
+  counts.gallery = galleryCount;
+  state.viewSwitchEl.innerHTML = galleryTab + checkTabs
     + tab("rename", "Rename", "Rename your model files after their Civitai releases", renameCount != null);
 }
 
-/* Show the selected view's pane; the Rename view loads its state when shown. */
+/* Show the selected view's pane; the Rename view loads its state when shown.
+   The Gallery loads on its first show; later shows only redraw it and follow
+   the target, and reorder when the target's base changed. */
 function applyResultMode() {
-  const rename = state.resultMode === "rename";
+  const mode = state.resultMode;
+  const rename = mode === "rename";
+  const gallery = mode === "gallery";
+  if (state.galleryPaneEl) state.galleryPaneEl.style.display = gallery ? "" : "none";
   if (state.renamePaneEl) state.renamePaneEl.style.display = rename ? "" : "none";
-  if (state.updatesPaneEl) state.updatesPaneEl.style.display = rename ? "none" : "";
+  if (state.updatesPaneEl) state.updatesPaneEl.style.display = rename || gallery ? "none" : "";
   const size = state.rootEl?.querySelector("#cu-size");
-  if (size) size.style.visibility = rename ? "hidden" : "";
+  if (size) size.style.visibility = rename || gallery ? "hidden" : "";
   renderViewSwitch();
   if (rename && state.renameView) state.renameView.refresh();
+  if (gallery) showGallery();
+}
+
+function showGallery() {
+  const view = state.galleryView;
+  if (!view) return;
+  if (!state.galleryLoaded) {
+    state.galleryLoaded = true;
+    view.refresh().catch(() => {});
+    return;
+  }
+  view.render();
+  view.updateTarget().then(({ baseChanged }) => {
+    if (baseChanged && state.galleryView === view) view.render();
+  }).catch(() => {});
+}
+
+/* A Prompt + LoRAs node asked for the gallery: note it as used, show the
+   Gallery (opening the sidebar if needed) and reorder for that node. */
+function openGallery(nodeId) {
+  const sidebar = app.extensionManager?.sidebarTab;
+  const drawn = Boolean(state.rootEl?.isConnected && state.galleryView);
+  if (!drawn) state.pendingGallery = { nodeId };
+  if (sidebar && sidebar.activeSidebarTabId !== TAB_ID) sidebar.toggleSidebarTab(TAB_ID);
+  if (!drawn) return; // renderTab applies the request when it draws
+  state.pendingGallery = null;
+  state.resultMode = "gallery";
+  applyResultMode();
+  openedGallery(nodeId);
+}
+
+function openedGallery(nodeId) {
+  const nodes = app.graph?._nodes ?? app.graph?.nodes ?? [];
+  const node = Array.from(nodes).find((n) => n && String(n.id) === String(nodeId));
+  if (node) noteUsed(node);
+  const view = state.galleryView;
+  if (!view) return;
+  view.updateTarget().then(() => {
+    if (state.galleryView === view) view.render(); // opened on purpose: bands follow the target
+  }).catch(() => {});
 }
 
 /* Start a job for the Rename view through the shared progress and pause/stop
@@ -1568,15 +1643,25 @@ function setLoading(kind, on) {
   state.loadingBarEl?.classList.toggle("is-on", loadingNow.size > 0);
 }
 
-/* The filter menus serve all three views: the check's models plus the dry run's. */
+/* The filter menus serve every view: the check's models, the dry run's and the gallery's. */
 function mergedFacets() {
   const check = state.checkFacets || {};
   const rename = state.renameFacets || {};
-  const union = (a, b) => [...new Set([...(a || []), ...(b || [])])].sort();
+  const gallery = state.galleryFacets || {};
+  const union = (...lists) => [...new Set(lists.flatMap((list) => list || []))].sort();
   return {
-    modelTypes: union(check.modelTypes, rename.modelTypes),
-    baseModels: union(check.baseModels, rename.baseModels),
+    modelTypes: union(check.modelTypes, rename.modelTypes, gallery.modelTypes),
+    baseModels: union(check.baseModels, rename.baseModels, gallery.baseModels),
   };
+}
+
+function onGalleryFacets(facets) {
+  state.galleryFacets = {
+    modelTypes: Array.isArray(facets?.modelTypes) ? facets.modelTypes : [],
+    baseModels: Array.isArray(facets?.baseModels) ? facets.baseModels : [],
+  };
+  applyFacets(mergedFacets());
+  renderFilters();
 }
 
 function onRenameFacets(facets) {
@@ -1588,8 +1673,8 @@ function onRenameFacets(facets) {
   renderFilters();
 }
 
-/* The Rename view's filter: null for a menu that shows everything. */
-function renameFilter() {
+/* The Rename and Gallery views' filter: null for a menu that shows everything. */
+function sharedFilter() {
   const pick = (selection, options) => (selection === null || selectsAll(selection, options) ? null : [...(selection || [])]);
   return { types: pick(state.filterTypes, state.facets.modelTypes), bases: pick(state.filterBases, state.facets.baseModels) };
 }
@@ -1599,7 +1684,8 @@ async function onFiltersChanged() {
   renderFilters();
   // The Rename list (and so its tab count) follows the filters even while hidden.
   state.renameView?.render();
-  if (state.resultMode === "rename") await loadModeCounts();
+  if (state.galleryLoaded) state.galleryView?.render();
+  if (state.resultMode === "rename" || state.resultMode === "gallery") await loadModeCounts();
   else await loadResultPage(true);
 }
 

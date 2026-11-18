@@ -182,7 +182,8 @@ export function renderGalleryView(el, options) {
 
   const fitTitle = () => (connected ? `Made for ${describeBase(connected)}` : "");
 
-  /* The target and what fits its model. True when the fit marks need redrawing. */
+  /* The target and what fits its model. Says whether the fit marks need
+     redrawing, and whether the connected base itself changed. */
   async function retarget() {
     hookSelection(app);
     const seq = ++targetSeq;
@@ -196,13 +197,15 @@ export function renderGalleryView(el, options) {
         base = null;
       }
     }
-    if (seq !== targetSeq) return false; // a newer call has the answer
+    if (seq !== targetSeq) return { redraw: false, baseChanged: false }; // a newer call has the answer
     const next = entries ? new Set(fittingFamilies(entries, base).keys()) : new Set();
     const before = fitTitle();
+    const baseChanged =
+      (base ? describeBase(base) : "") !== (connected ? describeBase(connected) : "");
     const same = next.size === fitting.size && [...next].every((name) => fitting.has(name));
     connected = base;
     fitting = next;
-    return !same || fitTitle() !== before;
+    return { redraw: !same || fitTitle() !== before, baseChanged };
   }
 
   /* Only the target line and the fit marks: the bands keep their order until the
@@ -218,8 +221,11 @@ export function renderGalleryView(el, options) {
     }
   }
 
+  /* Resolves to { baseChanged }: the caller decides whether to reorder the bands. */
   async function updateTarget() {
-    if (await retarget()) drawFits();
+    const { redraw, baseChanged } = await retarget();
+    if (redraw) drawFits();
+    return { baseChanged };
   }
 
   /* For callers that do not wait: the canvas hook, a click, the first draw. */
