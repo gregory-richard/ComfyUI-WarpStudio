@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
@@ -14,6 +15,8 @@ from .updater_service import sidecar_seed_item
 
 CHECK_JOB = "check-updates"
 LAST_CHECK_FILENAME = "last_check.json"
+# One writer of the held jobs and the saved check at a time.
+_WRITE_LOCK = threading.Lock()
 # What a fresh download takes from the record of another file of its model.
 _CARRIED_FIELDS = ("remoteVersions", "creatorName", "modelUrl", "nsfw")
 
@@ -68,11 +71,16 @@ def update_check_records(
     remove = [str(path) for path in remove if path]
     if not remove and not add:
         return
+    with _WRITE_LOCK:
+        _update_locked(job_manager, Path(data_dir), remove, add)
+
+
+def _update_locked(job_manager, data_dir: Path, remove: list[str], add: list[dict]) -> None:
     # Each record gets its own copies, so an edit of one never shows in another.
     job_manager.edit_items(
         CHECK_JOB, lambda items: edit_check_items(items, remove=remove, add=copy.deepcopy(add))
     )
-    path = Path(data_dir) / LAST_CHECK_FILENAME
+    path = data_dir / LAST_CHECK_FILENAME
     if not path.is_file():
         return
     payload = read_data_file(path)

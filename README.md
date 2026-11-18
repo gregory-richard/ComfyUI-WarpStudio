@@ -153,7 +153,8 @@ LoRA folders but whose weights are not. Their cards are dimmed and can't be adde
 to a prompt. **Download** on one fetches the version its info file describes and
 puts it next to that file, under the same name. On the other cards, **Delete**
 turns into **Delete?** for four seconds; click again and the weights and their
-info and preview go to the Recycle Bin. Without `send2trash`, Delete is not offered.
+info and preview go to the Recycle Bin. On a drive without a Recycle Bin, or for a file
+too big for it, Windows deletes the file for good. Without `send2trash`, Delete is not offered.
 
 **Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with
 that node as the target.
@@ -177,7 +178,8 @@ Each newer release has a **Download** button. When the version you have is on
 this drive, there is also **Replace**: it downloads the new release, checks it,
 and only then sends the old weights and their info and preview to the Recycle
 Bin. If the old weights can't be sent, nothing else of the old version is
-touched. A release that costs Buzz or is in early access shows **Early access**
+touched. On a drive without a Recycle Bin, or for a file too big for it, Windows
+deletes the file for good. A release that costs Buzz or is in early access shows **Early access**
 instead of the buttons.
 
 Downloads run on the ComfyUI server, one at a time, so they carry on if you close

@@ -15,6 +15,7 @@ import hashlib
 import ipaddress
 import os
 import re
+import time
 from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlsplit
@@ -30,6 +31,10 @@ HASH_MESSAGE = "The downloaded file doesn't match Civitai's SHA-256. It was dele
 EARLY_STOP_MESSAGE = "The download stopped early. Try again."
 NO_SHA_MESSAGE = "Civitai lists no SHA-256 for this file, so it can't be checked."
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+# A scanner or indexer can hold a freshly written file for a moment (Windows: WinError 32).
+RENAME_TRIES = 5
+RENAME_DELAY = 0.5
+_URL_QUERY = re.compile(r"(https?://[^\s?#'\"<>]+)[?#][^\s'\"<>]*")
 
 
 class DownloadError(RuntimeError):
@@ -89,7 +94,7 @@ def open_download(session, url: str, *, api_key: str, timeout: float, max_redire
     hops = 0
     while True:
         on_civitai = _is_civitai_https_url(url)
-        headers = {"User-Agent": USER_AGENT}
+        headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
         if on_civitai and api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         response = session.get(
@@ -180,13 +185,34 @@ def download_to(
             raise DownloadError(HASH_MESSAGE)
         if target.exists():
             raise FileExistsError(f"A file named {target.name} is already there.")
-        os.rename(part, target)
+        _move_into_place(part, target)
     except requests.RequestException as exc:
         _cleanup(handle, response, part)
-        raise DownloadError(f"The download failed: {exc}"[:300]) from exc
+        raise DownloadError(f"The download failed: {_without_queries(str(exc))}"[:300]) from exc
     except BaseException:
         _cleanup(handle, response, part)
         raise
+
+
+def _without_queries(text: str) -> str:
+    """The text with every URL's query string cut off: a signed link must not reach the card."""
+    return _URL_QUERY.sub(lambda match: match.group(1), text)
+
+
+def _move_into_place(part: Path, target: Path) -> None:
+    """Rename the checked ``.part`` to its name, retrying a briefly locked file; never overwrites."""
+    reason: Optional[OSError] = None
+    for attempt in range(max(RENAME_TRIES, 1)):
+        if attempt:
+            time.sleep(RENAME_DELAY)
+        if target.exists():
+            raise FileExistsError(f"A file named {target.name} is already there.")
+        try:
+            os.rename(part, target)
+            return
+        except PermissionError as exc:
+            reason = exc
+    raise DownloadError(f"Could not move the finished download into place: {reason}"[:300])
 
 
 def _content_length(response) -> int:

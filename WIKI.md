@@ -449,7 +449,7 @@ The tab lists the library the Prompt + LoRAs node already uses, and changes noth
 
 **Download** on one of these cards fetches the version its info file names, and writes it next to the info file under the same name, so no naming is needed. While it waits, **Cancel** is offered; while it runs, the card shows the percentage and **Stop**. An error is shown on the card as the server sent it.
 
-**Delete** is on the cards whose weights are here. The first click turns it into **Delete?**; if you don't click again within four seconds it turns back. The second click shows **Deleting…** and sends the weights, then every sidecar that shares their name (info, preview and the rest), to the Recycle Bin. The weights go first: if they can't, nothing else is touched. A sidecar that can't go is a warning. Without the `send2trash` package, Delete is not offered. It is refused while a LoRA is waiting to be replaced by a download, and while a job other than a download runs.
+**Delete** is on the cards whose weights are here. The first click turns it into **Delete?**; if you don't click again within four seconds it turns back. The second click shows **Deleting…** and sends the weights, then every sidecar that shares their name (info, preview and the rest), to the Recycle Bin. The weights go first: if they can't, nothing else is touched. A sidecar that can't go is a warning. On a drive without a Recycle Bin, or for a file too big for it, Windows deletes the file for good. Without the `send2trash` package, Delete is not offered. It is refused while a LoRA is waiting to be replaced by a download, and while a job other than a download runs.
 
 ### Updates, Issues and Rename
 
@@ -563,7 +563,8 @@ on the server.
   a proper one. The download is refused only when Civitai's name is taken too. Its `.civitai.info` and preview
   are written the way a scan writes them.
 - **Replace** adds one step: once the new file is checked and in place, the old
-  version's weights go to the Recycle Bin, then its sidecars. If the weights can't
+  version's weights go to the Recycle Bin (on a drive without one, or for a file too big
+  for it, Windows deletes the file for good), then its sidecars. If the weights can't
   go, nothing else of the old version is touched, and the row says so. If the new
   version's info file can't be written, the old version is kept and the row says so. The new
   version is never the one sent away. Tags in prompts that name the old file go red,

@@ -989,8 +989,8 @@ def _normalize_download_payload(payload: dict) -> dict:
 def download_problem(active_job, *, journal_pending: bool) -> Optional[tuple]:
     """Why no download may be queued now, as (HTTP status, message), or None.
 
-    Only the download job may run beside a download: that also keeps the
-    check results' file (``check_records``) to one writer at a time.
+    Only the download job may run beside a download. ``check_records`` holds a
+    lock around its edits, so a delete beside a download never interleaves.
     """
     if active_job is not None and not _is_model_download(active_job):
         # A rename apply holds the journal while it runs: the job is the reason then.

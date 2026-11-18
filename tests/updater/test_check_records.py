@@ -4,9 +4,13 @@ import copy
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from comfy_updater import check_records
 from comfy_updater.check_records import (
     check_item_for,
     downloaded_item,
@@ -193,6 +197,28 @@ class CheckRecordsTests(unittest.TestCase):
         self.assertEqual(payload["schemaVersion"], CACHE_SCHEMA_VERSION)
         self.assertEqual(payload["summary"]["withUpdates"], 0)
         self.assertEqual(payload["summary"]["total"], 1)
+
+    def test_two_concurrent_updates_both_land(self) -> None:
+        other = self.root / "pony" / "maker - glow - other (pony).safetensors"
+        self.save_check([v1_item(self.v1), v1_item(other)])
+        real_write = check_records.write_json
+
+        def slow_write(path, payload, **kwargs):
+            time.sleep(0.05)  # Widens the window between one read and its write.
+            real_write(path, payload, **kwargs)
+
+        def remove(path: Path) -> None:
+            update_check_records(self.manager, self.data, remove=[str(path)], add=[])
+
+        with mock.patch.object(check_records, "write_json", side_effect=slow_write):
+            threads = [threading.Thread(target=remove, args=(path,)) for path in (self.v1, other)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        payload = json.loads((self.data / "last_check.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["items"], [])
 
     def test_an_outdated_saved_check_is_left_alone(self) -> None:
         saved = self.save_check([v1_item(self.v1)], schema=CACHE_SCHEMA_VERSION - 1)

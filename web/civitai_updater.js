@@ -1657,8 +1657,11 @@ function paintDownloads() {
   if (root) {
     for (const slot of root.querySelectorAll(".cu-dl[data-dl-key]")) {
       const record = state.downloads.get(slot.dataset.dlKey);
+      // canReplace is worked out each time: /downloads may answer after the cards were drawn.
+      const canReplace = state.canTrash && slot.dataset.hasLocal === "1";
+      slot.dataset.canReplace = canReplace ? "1" : "0";
       const html = versionActionsHtml(
-        { paid: slot.dataset.paid === "1", canReplace: slot.dataset.canReplace === "1" },
+        { paid: slot.dataset.paid === "1", canReplace },
         record,
         escapeHtml,
       );
@@ -1949,12 +1952,13 @@ function renderRemoteVersionRow(item, version, hidden) {
   const hiddenClass = hidden ? " is-hidden" : "";
   // The download slot: painted in place while a download runs, so the row keeps its size.
   const current = (item.localVersions || [])[0];
-  const canReplace = state.canTrash && Boolean(current) && !current.metadataOnly;
+  const hasLocal = Boolean(current) && !current.metadataOnly;
+  const canReplace = state.canTrash && hasLocal;
   const key = versionKey(version.versionId);
   const record = state.downloads.get(key);
   const paid = isPaid(version);
   const slot = versionActionsHtml({ paid, canReplace }, record, escapeHtml);
-  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
+  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
   return `
     <div class="cu-ver-row${hiddenClass}">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>

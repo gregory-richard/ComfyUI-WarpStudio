@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.parse import urlsplit
 
 import requests
 
+from comfy_updater import model_download
 from comfy_updater.model_download import (
     API_KEY_MESSAGE,
     DownloadError,
@@ -265,6 +268,64 @@ class ModelDownloadTests(unittest.TestCase):
         self.assertIs(pick_file(version, "bb"), fp32)
         self.assertIs(pick_file(version), fp16)
         self.assertIsNone(pick_file(version, "cc"))
+
+    def test_every_hop_asks_for_the_raw_bytes(self):
+        session = FakeSession(
+            {
+                CIVITAI: FakeResponse(302, {"Location": STORAGE}),
+                STORAGE: _ok(),
+            }
+        )
+        self.run_download(session)
+        self.assertEqual(len(session.calls), 2)
+        for _url, headers, _kwargs in session.calls:
+            self.assertEqual(headers["Accept-Encoding"], "identity")
+
+    def test_a_locked_finished_file_is_retried(self):
+        real_rename = os.rename
+        attempts = []
+
+        def flaky(src, dst):
+            attempts.append(src)
+            if len(attempts) < 3:
+                raise PermissionError(32, "in use")
+            return real_rename(src, dst)
+
+        session = FakeSession({CIVITAI: _ok()})
+        with mock.patch.object(model_download, "RENAME_DELAY", 0), mock.patch.object(
+            model_download.os, "rename", side_effect=flaky
+        ):
+            self.run_download(session)
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(self.target.read_bytes(), BODY)
+        self.assertEqual([p.name for p in self.folder.iterdir()], [self.target.name])
+
+    def test_a_rename_that_keeps_failing_is_an_error(self):
+        session = FakeSession({CIVITAI: _ok()})
+        with mock.patch.object(model_download, "RENAME_DELAY", 0), mock.patch.object(
+            model_download.os, "rename", side_effect=PermissionError(32, "in use")
+        ) as rename:
+            with self.assertRaises(DownloadError) as ctx:
+                self.run_download(session)
+        self.assertEqual(rename.call_count, model_download.RENAME_TRIES)
+        self.assertTrue(
+            str(ctx.exception).startswith("Could not move the finished download into place: ")
+        )
+        self.assert_folder_empty()
+
+    def test_the_error_text_carries_no_signed_query(self):
+        class Dropping(FakeSession):
+            def get(self, url, headers=None, **kwargs):
+                raise requests.ConnectionError(
+                    "Max retries for https://files.example-storage.net/x?sig=SECRET (reset)"
+                )
+
+        with self.assertRaises(DownloadError) as ctx:
+            self.run_download(Dropping({}))
+        self.assertNotIn("SECRET", str(ctx.exception))
+        self.assertNotIn("sig=", str(ctx.exception))
+        self.assertIn("https://files.example-storage.net/x", str(ctx.exception))
+        self.assert_folder_empty()
 
 
 if __name__ == "__main__":
