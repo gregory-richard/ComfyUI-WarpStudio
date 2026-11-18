@@ -5,7 +5,7 @@
 // cu-g- classes live in the panel's style template. ComfyUI's app comes in
 // through the options rather than an import, so the markup builders below can
 // be tested in node.
-import { cardModel, filterEntries, galleryFacets, groupEntries } from "./gallery_core.js";
+import { arrange, cardModel, filterEntries, galleryFacets } from "./gallery_core.js";
 import { forget, loras, missingLoras } from "./library.js";
 import {
   CONFIRM_FOR,
@@ -468,7 +468,11 @@ export function renderGalleryView(el, options) {
           `<div class="cu-empty">${esc(all.length ? COPY.empty : COPY.noLoras)}</div>`
         );
       } else {
-        const bands = groupEntries(visible, fitting);
+        const stacks = visible.map((entry) => ({ key: "file:" + entry.id, members: [entry] }));
+        const bands = arrange(stacks, { groupBy: "base", sort: "name", fitting }).map((band) => ({
+          ...band,
+          entries: band.stacks.map((s) => s.members[0]),
+        }));
         const title = fitTitle();
         content = fragment(
           bands
