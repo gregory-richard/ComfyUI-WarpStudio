@@ -6,7 +6,6 @@ import { baseKey, groupOf, normaliseBase } from "./model_base.js";
 import { stemOf } from "./text.js";
 
 const TYPE = "lora";
-const label = (entry) => entry.title || entry.name || "";
 const fold = (text) => String(text ?? "").toLowerCase();
 
 /* The keys a selected base stands for: as written, and as the server files it.
@@ -39,7 +38,9 @@ export function filterEntries(entries, { query = "", types = null, bases = null 
       if (!bases.includes(group) && !wanted.has(baseKey(group))) return false;
     }
     if (!terms.length) return true;
-    const hay = [entry.creator, label(entry), entry.version, groupOf(entry)].map(fold).join(" ");
+    const hay = [entry.creator, entry.name, entry.title, entry.version, groupOf(entry)]
+      .map(fold)
+      .join(" ");
     return terms.every((term) => hay.includes(term));
   });
 }
@@ -65,24 +66,69 @@ export function galleryOnlyBases(galleryBases, otherBases) {
   return (galleryBases || []).filter((base) => !taken.has(baseKey(base)));
 }
 
-/** Entries as bands by base: the ones that fit first, then the biggest. */
-export function groupEntries(entries, fitting = new Set()) {
-  const bands = new Map();
+const num = (value) => (Number.isFinite(Number(value)) && value != null ? Number(value) : 0);
+const time = (iso) => {
+  const ms = Date.parse(iso ?? "");
+  return Number.isNaN(ms) ? 0 : ms;
+};
+const byId = (x, y) => String(x.id).localeCompare(String(y.id));
+
+/** Entries of one Civitai model and base as a stack, newest version first.
+ *
+ * An entry without a model id stands alone. Stacks keep the order in which
+ * their first member appears.
+ */
+export function stackEntries(entries) {
+  const stacks = new Map();
   for (const entry of entries) {
-    const base = groupOf(entry);
-    if (!bands.has(base)) bands.set(base, []);
-    bands.get(base).push(entry);
+    const key = entry.model_id
+      ? `stack:${entry.kind || TYPE}:${entry.model_id}:${groupOf(entry)}`
+      : `file:${entry.id}`;
+    if (!stacks.has(key)) stacks.set(key, { key, members: [] });
+    stacks.get(key).members.push(entry);
   }
+  const newest = (x, y) =>
+    time(y.published) - time(x.published) || num(y.version_id) - num(x.version_id) || byId(x, y);
+  return [...stacks.values()].map((stack) => ({ ...stack, members: stack.members.sort(newest) }));
+}
+
+/** Stacks as bands: by base (the ones that fit first, then the biggest) or as
+ * one band. Within a band, by the shown member's title or by when it was added. */
+export function arrange(stacks, { groupBy = "base", sort = "name", fitting = new Set() } = {}) {
+  const shown = (stack) => stack.members[0];
   const byName = (x, y) =>
-    fold(label(x)).localeCompare(fold(label(y))) || String(x.id).localeCompare(String(y.id));
+    fold(cardTitle(shown(x))).localeCompare(fold(cardTitle(shown(y)))) || byId(shown(x), shown(y));
+  const byAdded = (x, y) => time(shown(y).added) - time(shown(x).added) || byName(x, y);
+  const order = sort === "newest" ? byAdded : byName;
+  if (groupBy === "none") {
+    return [{ base: null, fits: false, stacks: [...stacks].sort(order) }];
+  }
+  const bands = new Map();
+  for (const stack of stacks) {
+    const base = groupOf(shown(stack));
+    if (!bands.has(base)) bands.set(base, []);
+    bands.get(base).push(stack);
+  }
   return [...bands]
-    .map(([base, list]) => ({ base, fits: fitting.has(base), entries: list.sort(byName) }))
+    .map(([base, list]) => ({ base, fits: fitting.has(base), stacks: list.sort(order) }))
     .sort(
       (x, y) =>
         Number(y.fits) - Number(x.fits) ||
-        y.entries.length - x.entries.length ||
+        y.stacks.length - x.stacks.length ||
         x.base.localeCompare(y.base)
     );
+}
+
+/** The folded bases that still exist; a remembered one that is gone is dropped. */
+export function foldedIn(stored, bases) {
+  const present = new Set(bases);
+  return new Set((stored || []).filter((base) => present.has(base)));
+}
+
+/** The name a card shows: the file's own when it follows the naming scheme. */
+function cardTitle(entry) {
+  const name = entry.structured ? entry.name : entry.title || entry.name;
+  return name || entry.title || stemOf(entry.id);
 }
 
 /** What one card shows. Text is raw; escaping is the view's job. */
@@ -91,7 +137,8 @@ export function cardModel(entry) {
   const base = groupOf(entry);
   return {
     key: entry.id,
-    title: entry.title || entry.name || stem,
+    title: cardTitle(entry),
+    kind: entry.kind || TYPE,
     creator: entry.creator || "",
     detail: entry.structured && entry.version ? `${entry.version} · ${base}` : base,
     triggers: (entry.triggers || []).length,
