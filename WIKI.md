@@ -297,7 +297,7 @@ where the other went.
 this node as the target. The Gallery is described under
 [The Gallery tab](#the-gallery-tab); there is no separate pop-up.
 
-A click on a card adds its tag to the node's LoRA list, on a line of its own.
+A click on a card adds its tag to the node's LoRA list, on a line of its own; a second click parks it, a third switches it on again.
 
 ### Bundling a generation
 
@@ -428,28 +428,45 @@ flagged safe.
 
 ## Warp Studio panel
 
-The sidebar tab **Warp Studio** has four tabs: **Gallery**, **Updates**, **Issues** and **Rename**. The Gallery comes first and is described next; the rest is the updater.
+The sidebar tab **Warp Studio** has a header with the title and a ⚙, and four tabs under it: **Gallery**, **Updates**, **Issues** and **Rename**. The Gallery comes first and is described next; the rest is the updater. The ⚙ opens the settings that belong to the updater: **Model Scope**, **Force rehash**, **Refetch metadata that already exists** and the resolved roots. While any job runs, a job bar under the tabs shows its progress, **Pause** and **Stop**, in every tab. Errors show inline where they happen; routine status sits behind the ⓘ.
+
+Each tab has one toolbar. The Gallery has 🔍, **Filter** and **Sort**; **Updates** and **Issues** have **Filter**, **Sort** and ⓘ; **Rename** has **Filter**. Tabs that cannot search have no 🔍. **Filter** shows a count when something is narrowed, and Types and Bases are one selection shared by the tabs.
 
 ### The Gallery tab
 
-Your LoRAs as cards with their previews, grouped by base model. Search matches name, creator and version, and the filters narrow by type and base model. Nothing matching shows an empty state, not the whole library.
+Your LoRAs as cards with their previews, grouped by base model. A switch at the top picks **LoRAs**, **Models** (checkpoints and diffusion models) or **Embeddings**. A type with no files is not offered, and the last type is remembered across a reload. Nothing matching shows an empty state, not the whole library.
 
-A line above the search says where a click goes: **Adds to:** and the title of
-a Prompt + LoRAs node, with its id after it when another one has the same title.
-That is the selected node; with none selected, the last one you used. Inside an
-open subgraph it is one of that subgraph's nodes. If the graph on screen has
-none, the line says so. A click on a card adds its tag to the node's LoRA list,
-on a line of its own, and the card says **Added**.
+A card shows the creator, title and version read from the file name when it follows `creator - title - version (base)` (for example `maker - glow - v2 (krea2)`); otherwise Civitai's model name; otherwise the file name. All three types use the same card, with its preview, **↗** and **Delete**.
+
+**Toolbar.** 🔍 opens the search in place; **Esc**, or leaving it empty, closes it. It matches name, creator, version and Civitai's model name, so an old name still finds the card, and the 🔍 stays lit and shows the text while a search is active. **Filter** narrows by base model, and holds **Include downloadable** when it applies. **Sort** has **Group by** (**Base** or **None**, one flat grid) and **Sort** (**Name** or **Newest on disk**); the choice is remembered. The Gallery has no ⓘ.
+
+**Bands.** Each base model is a band. A click on its header folds or unfolds it; folded bands are remembered per base across a reload, and a remembered base that is not there is ignored. The band whose base matches the model wired into the target node is marked **for this workflow** and comes first. Switching to another workflow tab, or opening a subgraph, re-targets and reorders, as selecting a node does. A click on a card never reorders the bands under the cursor. For Models there is no such band.
+
+**Stacked versions.** One card stands for one Civitai model on one base, and shows its newest version on disk by the publish date in the info file. With more than one, a chip **n versions ▾** lists them by version name and date; picking one makes the card act for that version: its click, its marks and its **Delete**. The marks show when any version of the stack is in the list. Deleting the shown version falls back to the next; deleting the last removes the card. Files with no Civitai link stay single cards.
+
+**Where a click goes.** The target is the selected Prompt + LoRAs node, or else the last one you used, or else the only one. The marks show which node is meant and change when you select another. A line shows only when nothing can be acted on, and the cards are disabled then: **Select a Prompt + LoRAs node** when there are several and none is picked, **No Prompt + LoRAs node in this workflow** when there is none.
+
+**LoRAs.** A click goes through three states, and never deletes a line:
+
+1. A card with no mark: a click adds `<lora:name:1.00>` as a new line at the end of the node's LoRA list, where you can see it, not at the caret.
+2. A card marked ✓ (on): a click parks the line as `// <lora:…>`, keeping its weight. The mark becomes hollow.
+3. A card marked hollow (parked): a click switches it back on.
+
+A click changes only the line it names. A line matches a card by the tag's name with the weight ignored, case-insensitively; a name with a subfolder is matched whole. With two lines for one LoRA, the first switched-on line counts, and if none is on, the first parked line. `//// SECTION` headers and other `//` lines that hold no tag are ignored. The marks follow the list when you edit it by hand, and the next click acts on the text as it is then. The prose box never gets a LoRA from a click. The node's LoRA lists are `loras`, and `loras_2` for the second pass; the click goes to `loras_2` only when `loras_2_on` is on and it was the last list the caret was in.
+
+**Models.** A click sets the model of the target loader: `ckpt_name` of Load Checkpoint, or `unet_name` of Load Diffusion Model. The target is the selected loader of the right kind, then the last one you used, then the only one in the graph. The card of the model it loads has a ✓. No other loader is supported.
+
+**Embeddings.** A click adds `embedding:name` to the end of the target Prompt + LoRAs node's prompt, once; the card has a ✓ while the prompt holds it.
 
 **Browse LoRAs** on a Prompt + LoRAs node opens the panel on this tab with that node as the target: it selects the node, then sends the `warpstudio:open-gallery` window event with the node and its id.
 
-The tab lists the library the Prompt + LoRAs node already uses, and changes nothing until you press **Delete** or **Download**.
+The tab lists the library the Prompt + LoRAs node already uses, and changes nothing until you click a card, **Delete** or **Download**.
 
-**Not on this drive** is a filter, off by default and kept for the session, not across a reload. It lists the LoRAs whose `.civitai.info` is in a LoRA folder but whose weights are not, from `GET /warp-studio/loras/missing`. Their cards are dimmed, show their previews, and can't be added to a prompt. If the list can't be loaded, the tab says `Could not load the LoRAs that are not on this drive:` and the reason.
+**Include downloadable** is in **Filter**, and is offered only when some LoRAs have a `.civitai.info` in a LoRA folder but no weights, from `GET /warp-studio/loras/missing`. It is off by default and kept for the session, not across a reload. Those cards are dimmed, show their previews, and can't be added to a prompt. If the list can't be loaded, the tab says `Could not load the LoRAs that are not on this drive:` and the reason.
 
 **Download** on one of these cards fetches the version its info file names, and writes it next to the info file under the same name, so no naming is needed. While it waits, **Cancel** is offered; while it runs, the card shows the percentage and **Stop**. An error is shown on the card as the server sent it.
 
-**Delete** is on the cards whose weights are here. The first click turns it into **Delete?**; if you don't click again within four seconds it turns back. The second click shows **Deleting…** and sends the weights, then every sidecar that shares their name (info, preview and the rest), to the Recycle Bin. The weights go first: if they can't, nothing else is touched. A sidecar that can't go is a warning. On a drive without a Recycle Bin, or for a file too big for it, Windows deletes the file for good. Without the `send2trash` package, Delete is not offered. It is refused while a LoRA is waiting to be replaced by a download, and while a job other than a download runs.
+**Delete** is on the cards whose weights are here, for every type. The first click turns it into **Delete?**; if you don't click again within four seconds it turns back. The second click shows **Deleting…** and sends the weights, then every sidecar that shares their name (info, preview and the rest), to the Recycle Bin. The weights go first: if they can't, nothing else is touched. A sidecar that can't go is a warning. On a drive without a Recycle Bin, or for a file too big for it, Windows deletes the file for good. Without the `send2trash` package, Delete is not offered. It is refused while a LoRA is waiting to be replaced by a download, and while a job other than a download runs.
 
 ### Updates, Issues and Rename
 
@@ -477,19 +494,19 @@ Go to **Settings → Warp Studio**, the groups that start with "Civitai":
 ### 3. Quick workflow
 
 1. Click `Check for Updates`.
-2. Watch progress bar and status.
+2. Watch the job bar under the tabs. The list stays still while the check runs.
 3. Review the `Results` cards. The `Updates` view lists models with a newer
    release; `Issues` lists the models Civitai could not match or check, with the
    reason under each file.
-4. Use the multi-select `Types` and `Bases` filters, plus `Show hidden`, to narrow the result list.
+4. Use `Types`, `Bases` and `Show hidden` in **Filter** to narrow the result list.
 5. Use `Pause/Resume` or `Stop` for long jobs. `Stop` waits at most for the
    request in flight; a file being hashed is abandoned.
-6. Limit the **Model Scope** in the panel settings to re-check only some types; results for the other types are kept from the previous check.
+6. Limit the **Model Scope** in the panel's ⚙ settings to re-check only some types; results for the other types are kept from the previous check.
 
 Within the cache duration, `Check for Updates` shows the saved results instead
 of checking again, unless Model Scope differs from the last check, files were
 added or removed, `Force rehash` is ticked, or the last check was stopped.
-`Refresh` next to "Last checked" always runs a check.
+With fresh saved results, the click shows "Results from … ago" with **Check again** for about five seconds. The same **Check again** is in the ⓘ, which also holds when it was last checked, the counts and "Changes detected" when files changed; it always runs a check.
 
 ### 4. Metadata workflow (Advanced)
 
@@ -548,7 +565,13 @@ this drive also gives the row **Replace**. Both start a download of that release
 on the server.
 
 - Downloads run one at a time, in a queue. A click while one runs shows `Waiting`
-  with **Cancel**. The running one shows its percentage (`Downloading` while the
+  with **Cancel**. A click while another job runs (a check, a dry run, a rename,
+  a metadata fetch, the naming model download) shows `Waiting for the check`
+  (or the dry run, and so on) in the same slot, and starts by itself when that job
+  ends; the download takes the job slot before any job started later.
+  Cancel removes it. It is checked again when it starts: if the file moved or the
+  saved results changed meanwhile, the card shows an ordinary download error.
+  Only a rename that was cut off and still needs recovering refuses a download. The running one shows its percentage (`Downloading` while the
   size is unknown) with **Stop**; Stop deletes its partial file. A finished one
   shows `Downloaded`. A stopped one shows no note, and **Download** comes back. The job bar follows the run, and ends with
   `Done — 2 downloaded`, plus `, 1 failed` and `, 1 stopped` when they are not
@@ -576,7 +599,7 @@ on the server.
 - Most adult models need a Civitai API key. Without one the row shows `Civitai needs an API key for this download: Settings → Warp Studio → Civitai Network → API Key`.
   The key goes to Civitai hosts over https only. A redirect to the storage host is
   followed, without the key.
-- After a restart of ComfyUI the queue is gone. A `.part` left behind is not
+- Waiting and running downloads are kept in the server's memory. After a restart of ComfyUI the queue is gone. A `.part` left behind is not
   listed as a model, and the next try replaces it.
 
 `Version` means a specific Civitai release.
@@ -589,7 +612,7 @@ are ignored.
 
 ### 7. Grouping and sorting
 
-Open `Arrange` in the filter row to set two levels of grouping and the sort
+Open **Sort** in the toolbar to set two levels of grouping and the sort
 applied inside them.
 
 - `Group` / `Then`: `Nothing`, `Model type`, or `Base model`.
@@ -773,7 +796,7 @@ Under **Settings → Warp Studio** (the groups that start with "Civitai"):
 - **API key** — optional, but some restricted resources need one.
 - **Cache duration** — how long **Check for Updates** shows the saved results
   instead of checking again. Changing **Model Scope**, adding or removing model
-  files, or clicking **Refresh** runs a real check inside that window.
+  files, or clicking **Check again** runs a real check inside that window.
 - **Timeout, retries, delay between models** — for slow or rate-limited runs.
 - **Treat `.civitai.info` as installed** — count a valid orphan sidecar as an
   installed version, so a model you deleted but still track keeps reporting
@@ -1618,7 +1641,7 @@ __init__.py           starts both halves, or stands down for an old package
 web/
   civitai_updater.js  the Warp Studio sidebar panel
   rename_view.js      its Rename view
-  gallery_view.js     its Gallery view: the cards, the bands, the target line
+  gallery_view.js     its Gallery view: the cards, the bands, the marks
   gallery_core.js     the Gallery's search, filters, bands and card data, without markup
   prompt_target.js    which Prompt + LoRAs node a Gallery click adds to
   scroll_memory.js    each panel view's own scroll offset

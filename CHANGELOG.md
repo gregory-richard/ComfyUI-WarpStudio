@@ -7,16 +7,30 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - A **Gallery** tab, first in the sidebar panel: your LoRAs as cards with previews, search, and filters by type and base model.
-- A target node. A line above the search says which Prompt + LoRAs node a click adds to: the selected one, or else the last one you used. A click adds the tag to that node's LoRA list, on a line of its own.
+- A target node: the selected Prompt + LoRAs node, or else the last one you used. The cards' marks show which one. A line shows only when nothing can be added: **Select a Prompt + LoRAs node** or **No Prompt + LoRAs node in this workflow**.
+- **A click on a Gallery card goes in three steps**, and never deletes a line. It adds `<lora:name:1.00>` as a new line at the end of the node's LoRA list (✓), parks it as `// <lora:…>` (a hollow mark), then switches it on again. The marks follow the list when you edit it by hand. The second-pass list gets the LoRA only when it is on and was the last list you typed in
+- **Models and Embeddings** in the Gallery, with a switch at the top. A click on a model sets the selected Load Checkpoint or Load Diffusion Model node; a click on an embedding adds `embedding:name` to the prompt once
+- **Stacked versions**: one card per Civitai model per base, with a **n versions ▾** chip to pick one. Its click, marks and Delete act for that version
+- **Bands fold** when you click the base header, and stay folded after a reload. The band matching the target node's model is marked **for this workflow** and follows workflow switches
+- **A toolbar on every tab**: 🔍, **Filter** and **Sort** in the Gallery; **Filter**, **Sort** and ⓘ in Updates and Issues; **Filter** in Rename. The ⓘ holds when it was last checked, the counts, "Changes detected" and **Check again**. The Gallery's cards use the file's `creator - title - version (base)` name, and the search also finds Civitai's old model name
+- **A download clicked while another job runs waits** as "Waiting for the check" (or the dry run, the rename, the metadata fetch, the naming model download) and starts when that job ends. **Cancel** removes it. Waiting downloads are kept in memory, so a ComfyUI restart drops them
 - **Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with that node as the target.
 - **Download** and **Replace** on the Updates cards. Downloads run on the server, one at a time, with a queue, **Stop**, progress in the job bar and a SHA-256 check. Replace sends the old version to the Recycle Bin only after the new file is checked and in place. A release in early access shows **Early access**. Most adult models need the Civitai API key.
-- **Not on this drive** in the Gallery: LoRAs whose info file is here but whose weights are not, as dimmed cards with **Download**, which puts the file next to the info file under the same name.
+- **Include downloadable** in the Gallery's **Filter**, offered only when some LoRAs have an info file here but no weights: they show as dimmed cards with **Download**, which puts the file next to the info file under the same name.
 - **Delete** on Gallery cards: **Delete?** for four seconds, then the weights and their sidecars go to the Recycle Bin, weights first.
 
 ### Changed
 
 - The sidebar panel is called **Warp Studio**, not Civitai.
 - The Browse LoRAs pop-up is gone; the Gallery replaces it.
+- The panel has a header with the title and a ⚙. The settings card moved behind the ⚙: model scope, **Force rehash**, **Refetch metadata** and the resolved roots. The subtitle and the Gallery's "Adds to" line are gone, and **Added** is no longer flashed
+- **Check for Updates** and **Fetch Missing Metadata** moved to the top of Updates and Issues. On fresh saved results, Check for Updates shows "Results from … ago" with **Check again** for about five seconds. The "cached" pill and the status line are gone
+- The job bar sits under the tabs, in every tab, only while a job runs. Errors stay inline
+- Updates rows are one line again: **Download**, **Replace** and **Hide** sit at the right end, and a long version name ends in "…"
+
+### Fixed
+
+- The Updates list no longer jumps during a check: the thin loading bar stays off for the reloads a check makes, the list reloads only when the count changes, and unchanged cards stay in place
 
 ## [1.0.0] - 2026-11-18
 

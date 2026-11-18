@@ -142,16 +142,42 @@ and a rename for your files.
 
 ### Gallery
 
-Your LoRAs as cards with their previews. Search by name, creator or version, and
-filter by type or base model. A line above the search says which Prompt + LoRAs
-node a click adds to: the selected one, or else the last one you used. Click a
-card and its tag is added to that node's LoRA list, on a line of its own, and
-the card says **Added**.
+Your LoRAs as cards with their previews, in bands by base model. A switch at
+the top picks **LoRAs**, **Models** or **Embeddings**; a type with no files is
+not offered, and the last one you used is remembered. A card shows the creator,
+title and version from the file name when it follows `creator - title - version
+(base)`; otherwise Civitai's model name, then the file name.
 
-**Not on this drive** lists LoRAs whose `.civitai.info` is in your
-LoRA folders but whose weights are not. Their cards are dimmed and can't be added
-to a prompt. **Download** on one fetches the version its info file describes and
-puts it next to that file, under the same name. On the other cards, **Delete**
+The toolbar has 🔍, **Filter** and **Sort**. 🔍 opens the search, which matches
+name, creator, version and Civitai's model name, and stays lit while it holds
+text. **Filter** narrows by base model. **Sort** groups by base or not at all
+and orders by name or by what is newest on disk. A base band folds when you
+click its header, and stays folded after a reload. The band that matches the
+model wired into the target node is marked **for this workflow** and comes
+first; it follows you when you switch workflows.
+
+A card is one Civitai model on one base. When you have several versions of it,
+a **n versions ▾** chip lists them, and the one you pick is the one the card
+acts for.
+
+A click acts on the Prompt + LoRAs node you selected, or else the last one you
+used. A line shows only when there is nothing to act on: **Select a Prompt +
+LoRAs node**, or **No Prompt + LoRAs node in this workflow**.
+
+- **LoRAs:** the first click adds `<lora:name:1.00>` as a new line at the end of
+  the node's LoRA list. A ✓ on the card says it is on. The next click parks it
+  as `// <lora:…>`, with a hollow mark. The next switches it on again. A click
+  never deletes a line, and the marks follow the list when you edit it by hand.
+  The second-pass list gets the LoRA only when it is switched on and was the last
+  list you typed in.
+- **Models:** a click sets the model of the selected Load Checkpoint or Load
+  Diffusion Model node. The card of the model it loads has a ✓.
+- **Embeddings:** a click adds `embedding:name` to the node's prompt, once.
+
+**Include downloadable** in **Filter**, offered only when some LoRAs have an info
+file here but no weights, shows them as dimmed cards. **Download** on one fetches
+the version its info file describes and puts it next to that file, under the same
+name. On the other cards, **Delete**
 turns into **Delete?** for four seconds; click again and the weights and their
 info and preview go to the Recycle Bin. On a drive without a Recycle Bin, or for a file
 too big for it, Windows deletes the file for good. Without `send2trash`, Delete is not offered.
@@ -162,7 +188,9 @@ that node as the target.
 ### Updates, Issues and Rename
 
 The other tabs check the models on your disk against their Civitai releases and
-list the ones that have moved on without you.
+list the ones that have moved on without you. The ⚙ in the panel's header holds
+the settings for it: model scope, **Force rehash**, **Refetch metadata** and the
+resolved roots.
 
 It identifies each file by its SHA256 hash, reads the `.civitai.info` files you
 already have, and writes only `.civitai.info` and `.preview.png` files next to
@@ -183,8 +211,10 @@ deletes the file for good. A release that costs Buzz or is in early access shows
 instead of the buttons.
 
 Downloads run on the ComfyUI server, one at a time, so they carry on if you close
-the tab. A click while one runs says **Waiting**, and **Cancel** takes it out of
-the queue. A running one shows its percentage and **Stop**; the job bar shows the
+the tab. A click while another job runs says **Waiting for the check** (or the dry run,
+the rename, the metadata fetch, the naming model download) and starts by itself
+when that job ends; **Cancel** takes it out. Waiting downloads are kept in the
+server's memory, so a ComfyUI restart drops them, and the running one. A running one shows its percentage and **Stop**; the job bar shows the
 progress and ends with a line like "Done — 2 downloaded". Each file is checked
 against Civitai's SHA-256 before it is renamed into place, and nothing already
 there is overwritten. A new file gets the name the renamer would give it, in its
@@ -193,10 +223,15 @@ base model's folder; when no naming model is set, it keeps Civitai's file name.
 Most adult models need a Civitai API key to download. Set it under **Warp Studio**
 → **Civitai Network** → **API Key**; it is sent only to Civitai, over https.
 
-**Check for Updates** scans and compares. **Fetch Missing Metadata** only
-downloads sidecars and previews for models that lack them. Both can be paused,
-resumed and stopped, and survive a page reload. **Arrange** groups the list by
-model type and base model and sorts it. Any release you don't want can be hidden.
+**Check for Updates** and **Fetch Missing Metadata** sit at the top of **Updates**
+and **Issues**. The first scans and compares; with fresh saved results it shows
+"Results from … ago" with **Check again** for a few seconds instead. The second
+only downloads sidecars and previews for models that lack them. Both can be
+paused, resumed and stopped, and survive a page reload. The toolbar has
+**Filter** (types, bases, hidden), **Sort** (grouping, order, page size) and ⓘ,
+which holds when it was last checked, the counts, "Changes detected" and
+**Check again**. **Rename** has **Filter** only. The list stays still while a
+check runs. Any release you don't want can be hidden.
 
 The API key, cache time, extra model folders and how mature models show are in
 the settings, under **Warp Studio** in the groups that start with "Civitai".
