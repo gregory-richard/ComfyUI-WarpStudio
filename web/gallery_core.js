@@ -98,5 +98,6 @@ export function cardModel(entry) {
     url: entry.url || null,
     thumbnail: entry.has_preview ? entry.thumbnail : null,
     stem,
+    missing: Boolean(entry.missing),
   };
 }

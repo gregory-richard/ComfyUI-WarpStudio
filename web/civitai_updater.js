@@ -5,6 +5,7 @@ import { renderGalleryView } from "./gallery_view.js";
 import {
   MODEL_DOWNLOAD_JOB,
   finishedText,
+  galleryKey,
   isPaid,
   latestRecords,
   recordMessage,
@@ -172,6 +173,8 @@ const state = {
   galleryPaneEl: null,
   galleryFacets: { modelTypes: [], baseModels: [] },
   galleryLoaded: false,
+  // "Not on this drive" lasts the session, not a reload.
+  galleryShowMissing: false,
   // An "open the gallery" request that arrived while the panel was not drawn.
   pendingGallery: null,
   // Scroll offset per view, and the view whose pane is showing.
@@ -398,6 +401,15 @@ async function renderTab(el) {
     onFacets: onGalleryFacets,
     onCount: () => renderViewSwitch(),
     app,
+    showMissing: () => state.galleryShowMissing,
+    onShowMissing: (on) => {
+      state.galleryShowMissing = Boolean(on);
+    },
+    downloads: () => state.downloads,
+    canTrash: () => state.canTrash,
+    onDownload: (name) => startDownload({ source: "gallery", name }, galleryKey(name)),
+    onStop: (requestId) => stopDownload(requestId),
+    onDelete: (name) => deleteModel(name),
   });
   bindEvents(root);
   state.statusEl.textContent = state.statusText;
@@ -1682,6 +1694,18 @@ async function stopDownload(requestId) {
     setStatus(`Could not stop the download: ${error.message}`);
   }
   paintDownloads();
+}
+
+// Sends one LoRA and its sidecars to the Recycle Bin. Resolves "" on success, else the error.
+async function deleteModel(name) {
+  try {
+    const data = await postJson("/warp-studio/updater/delete-model", { name });
+    if (data.error) return String(data.error);
+    await refreshAfterAction();
+    return "";
+  } catch (error) {
+    return String(error?.message || error);
+  }
 }
 
 // After a download finished: the check results and the gallery read the library again.
@@ -4300,6 +4324,19 @@ function injectStyles() {
       color: var(--cu-bone);
     }
 
+    .cu-g-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+    }
+
+    .cu-g .cu-g-missing {
+      width: auto;
+      gap: 7px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
     .cu-g-search {
       display: block;
       box-sizing: border-box;
@@ -4426,6 +4463,12 @@ function injectStyles() {
       border-color: var(--cu-seam);
     }
 
+    /* Not on this drive: dimmed, and it can't be added to a prompt. */
+    .cu-g-card[data-missing] .cu-g-pick {
+      opacity: 0.45;
+      cursor: default;
+    }
+
     .cu-g-card[data-added] .cu-g-pick {
       border-color: rgba(147, 181, 120, 0.55);
     }
@@ -4543,6 +4586,80 @@ function injectStyles() {
       margin-bottom: 7px;
       font-family: var(--cu-mono);
       font-size: 9.5px;
+    }
+
+    /* Download, Cancel, Stop and Delete: top-left, the height of the link out.
+       Delete shows on hover or focus; visibility keeps the box where it is. */
+    .cu-g-act {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      display: flex;
+      align-items: center;
+      height: 22px;
+    }
+
+    .cu-g .cu-g-btn {
+      height: 22px;
+      padding: 0 7px;
+      border-color: var(--cu-seam-strong);
+      background: rgba(19, 19, 22, 0.72);
+      color: var(--cu-bone);
+      line-height: 1;
+    }
+
+    .cu-g .cu-g-btn:hover:not(:disabled),
+    .cu-g .cu-g-btn:focus-visible {
+      border-color: var(--cu-dust);
+    }
+
+    .cu-g .cu-g-btn:disabled {
+      cursor: default;
+      color: var(--cu-dust);
+    }
+
+    .cu-g-card:not(:hover):not(:focus-within) .cu-g-del:not([data-confirm]):not([data-deleting]) {
+      visibility: hidden;
+    }
+
+    /* Covers exactly the thumbnail; the state sits in its middle, as "Added" does. */
+    .cu-g-over {
+      position: absolute;
+      inset: 0 0 auto 0;
+      aspect-ratio: 3 / 4;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      padding: 30px 8px;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .cu-g-state {
+      max-width: 100%;
+      max-height: 100%;
+      box-sizing: border-box;
+      padding: 5px 10px;
+      overflow: hidden;
+      border-radius: var(--cu-radius);
+      border: 1px solid var(--cu-seam-strong);
+      background: rgba(19, 19, 22, 0.88);
+      color: var(--cu-bone);
+      font-family: var(--cu-mono);
+      font-size: 9.5px;
+      line-height: 1.4;
+      text-align: center;
+      overflow-wrap: anywhere;
+    }
+
+    .cu-g-state[data-error] {
+      border-color: rgba(255, 75, 62, 0.35);
+      color: var(--cu-red-soft);
+    }
+
+    .cu-g-state:empty {
+      display: none;
     }
 
     /* The link out sits on the card, beside its button rather than inside it. */

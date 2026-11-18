@@ -6,7 +6,15 @@
 // through the options rather than an import, so the markup builders below can
 // be tested in node.
 import { cardModel, filterEntries, galleryFacets, groupEntries } from "./gallery_core.js";
-import { forget, loras } from "./library.js";
+import { forget, loras, missingLoras } from "./library.js";
+import {
+  CONFIRM_FOR,
+  DONE_FOR,
+  galleryActionHtml,
+  galleryKey,
+  galleryStateText,
+  slotState,
+} from "./model_actions.js";
 import { connectedBase, describeBase, fittingFamilies } from "./model_base.js";
 import {
   currentTarget,
@@ -25,6 +33,8 @@ export const COPY = {
   empty: "Nothing matches. Clear the search or the filters.",
   noLoras: "No LoRAs found.",
   added: "Added",
+  missing: "Not on this drive",
+  missingFailed: "Could not load the LoRAs that are not on this drive:",
   noNode: "No Prompt + LoRAs node in this workflow",
   // Two or more nodes, none selected and none used yet: naming none of them
   // is the truth, and "none in this workflow" would not be.
@@ -60,13 +70,17 @@ export function cardHtml(model, escapeHtml) {
     ? `<a class="cu-g-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Open on Civitai" aria-label="${esc(`Open ${model.title} on Civitai`)}">↗</a>`
     : "";
   return (
-    `<div class="cu-g-card" data-g-key="${esc(model.key)}">` +
-    `<button type="button" class="cu-g-pick" title="${esc(model.stem)}">` +
+    `<div class="cu-g-card" data-g-key="${esc(model.key)}"${model.missing ? " data-missing" : ""}>` +
+    `<button type="button" class="cu-g-pick" title="${esc(model.stem)}"${model.missing ? ' aria-disabled="true"' : ""}>` +
     `<span class="cu-g-thumb">${thumb}${badge}<span class="cu-g-added" role="status"></span></span>` +
     `<span class="cu-g-creator">${esc(model.creator)}</span>` +
     `<span class="cu-g-title">${esc(model.title)}</span>` +
     `<span class="cu-g-detail">${esc(model.detail)}</span>` +
-    `</button>${link}</div>`
+    `</button>${link}` +
+    // Empty slots, siblings of the face: never dimmed, never a button in a button.
+    `<span class="cu-g-act" data-g-act></span>` +
+    `<span class="cu-g-over"><span class="cu-g-state" role="status"></span></span>` +
+    `</div>`
   );
 }
 
@@ -119,7 +133,9 @@ function hookSelection(app) {
 
 /* ---------------------------------------------------------------- the view */
 
-/* options: { escapeHtml, filter() -> { types, bases }, onFacets(facets), onCount(), app } */
+/* options: { escapeHtml, filter() -> { types, bases }, onFacets(facets), onCount(), app,
+     showMissing() -> boolean, onShowMissing(on), downloads() -> Map, canTrash() -> boolean,
+     onDownload(name), onStop(requestId), onDelete(name) -> Promise<"" | error> } */
 export function renderGalleryView(el, options) {
   const esc = escaper(options.escapeHtml);
   const app = options.app;
@@ -127,13 +143,19 @@ export function renderGalleryView(el, options) {
   el.innerHTML =
     `<div class="cu-g-top">` +
     `<div class="cu-summary cu-g-target" data-g-target></div>` +
+    `<div class="cu-g-row">` +
     `<input class="cu-g-search" type="search" placeholder="${esc(COPY.search)}" aria-label="Search the gallery" spellcheck="false" autocomplete="off">` +
-    `</div><div class="cu-g-bands" data-g-bands></div>`;
+    `<label class="cu-toggle cu-g-missing"><input type="checkbox" data-g-missing><span>${esc(COPY.missing)}</span></label>` +
+    `</div></div><div class="cu-g-bands" data-g-bands></div>`;
   const targetEl = el.querySelector("[data-g-target]");
   const searchEl = el.querySelector(".cu-g-search");
   const bandsEl = el.querySelector("[data-g-bands]");
+  const missingEl = el.querySelector("[data-g-missing]");
+  missingEl.checked = Boolean(options.showMissing?.());
 
   let entries = null; // null until the first load
+  let absent = null; // the LoRAs that are not on this drive; null until asked for
+  let absentError = "";
   let error = "";
   let query = "";
   let shown = 0;
@@ -156,7 +178,8 @@ export function renderGalleryView(el, options) {
   function setDisabled(card) {
     const pick = card.querySelector(".cu-g-pick");
     if (!pick) return;
-    if (target) pick.removeAttribute("aria-disabled");
+    // A card that is not on this drive can never be added, target or not.
+    if (target && !card.hasAttribute("data-missing")) pick.removeAttribute("aria-disabled");
     else pick.setAttribute("aria-disabled", "true");
   }
 
@@ -193,7 +216,7 @@ export function renderGalleryView(el, options) {
       }
     }
     if (seq !== targetSeq) return { redraw: false, baseChanged: false }; // a newer call has the answer
-    const next = entries ? new Set(fittingFamilies(entries, base).keys()) : new Set();
+    const next = entries ? new Set(fittingFamilies(listed(), base).keys()) : new Set();
     const before = fitTitle();
     const baseChanged =
       (base ? describeBase(base) : "") !== (connected ? describeBase(connected) : "");
@@ -236,6 +259,29 @@ export function renderGalleryView(el, options) {
 
   /* ---- loading ---- */
 
+  /* What the gallery shows: the index, plus the LoRAs not on this drive when asked. */
+  function listed() {
+    if (!entries) return [];
+    if (!absent || !options.showMissing?.()) return entries;
+    const have = new Set(entries.map((entry) => entry.id));
+    return [...entries, ...absent.filter((entry) => !have.has(entry.id))];
+  }
+
+  async function loadAbsent() {
+    if (!options.showMissing?.()) {
+      absent = null;
+      absentError = "";
+      return;
+    }
+    try {
+      absent = await missingLoras();
+      absentError = "";
+    } catch (err) {
+      absent = null;
+      absentError = `${COPY.missingFailed} ${err?.message || err}`;
+    }
+  }
+
   /* Loads the LoRA index. The first load takes the shared cache (the prompt may
      have filled it); every later one asks the server again, so a model added
      since shows up. The cards on screen stay until the new list is in. */
@@ -247,9 +293,10 @@ export function renderGalleryView(el, options) {
         const list = await loras();
         entries = list;
         error = "";
-        const keys = new Set(list.map((entry) => entry.id));
+        await loadAbsent();
+        const keys = new Set(listed().map((entry) => entry.id));
         for (const key of cards.keys()) if (!keys.has(key)) cards.delete(key);
-        options.onFacets?.(galleryFacets(entries));
+        options.onFacets?.(galleryFacets(listed()));
       } catch (err) {
         // A failed reload keeps the gallery that works; only a first load shows the error.
         if (!entries) error = err?.message || String(err);
@@ -278,6 +325,92 @@ export function renderGalleryView(el, options) {
     return document.scrollingElement;
   }
 
+  /* ---- downloads and delete, painted in place ---- */
+
+  const painted = new Map(); // key -> the download state last painted, for "just downloaded"
+  const justDone = new Set();
+  const asking = new Map(); // key -> "confirming" | "deleting"
+  const askTimers = new Map();
+  const notes = new Map(); // key -> why a delete failed
+
+  function paintCard(hit) {
+    const key = hit.model.key;
+    const record = options.downloads?.().get(galleryKey(key));
+    const state = slotState(record);
+    const before = painted.get(key);
+    if (state === "done" && (before === "waiting" || before === "downloading")) {
+      justDone.add(key);
+      setTimeout(() => {
+        justDone.delete(key);
+        paintDownloads();
+      }, DONE_FOR);
+    }
+    painted.set(key, state);
+    const ask = asking.get(key);
+    const html = galleryActionHtml(
+      hit.model,
+      record,
+      {
+        canTrash: Boolean(options.canTrash?.()),
+        confirming: ask === "confirming",
+        deleting: ask === "deleting",
+      },
+      options.escapeHtml
+    );
+    if (html !== hit.act) {
+      hit.act = html;
+      hit.el.querySelector("[data-g-act]").innerHTML = html;
+    }
+    const text = notes.get(key) || galleryStateText(record, { justDone: justDone.has(key) });
+    const bad = Boolean(notes.get(key)) || state === "error";
+    if (text !== hit.text || bad !== hit.bad) {
+      hit.text = text;
+      hit.bad = bad;
+      const stateEl = hit.el.querySelector(".cu-g-state");
+      stateEl.textContent = text;
+      stateEl.toggleAttribute("data-error", bad);
+    }
+  }
+
+  function paintDownloads() {
+    for (const hit of cards.values()) paintCard(hit);
+  }
+
+  function setAsking(key, value) {
+    clearTimeout(askTimers.get(key));
+    if (value) asking.set(key, value);
+    else asking.delete(key);
+    const hit = cards.get(key);
+    if (hit) paintCard(hit);
+  }
+
+  async function onAction(button, card) {
+    const key = card.dataset.gKey;
+    const action = button.dataset.gAction;
+    if (action === "download") {
+      await options.onDownload?.(key);
+    } else if (action === "stop") {
+      await options.onStop?.(button.dataset.requestId || "");
+    } else if (action === "delete") {
+      const ask = asking.get(key);
+      if (ask === "deleting") return;
+      if (ask !== "confirming") {
+        notes.delete(key);
+        setAsking(key, "confirming");
+        askTimers.set(
+          key,
+          setTimeout(() => setAsking(key, null), CONFIRM_FOR)
+        );
+        return;
+      }
+      setAsking(key, "deleting");
+      const failure = await options.onDelete?.(key);
+      if (failure) notes.set(key, failure);
+      setAsking(key, null);
+    }
+    paintDownloads();
+  }
+
   function cardsFor(list) {
     const models = list.map(cardModel);
     const missing = [];
@@ -291,8 +424,10 @@ export function renderGalleryView(el, options) {
       // One parse for every new card, not one per card.
       const built = [...fragment(missing.map((m) => m.html).join("")).children];
       missing.forEach(({ model, html }, i) => {
-        cards.set(model.key, { html, el: built[i], model });
+        const hit = { html, el: built[i], model, act: null, text: null };
+        cards.set(model.key, hit);
         setDisabled(built[i]);
+        paintCard(hit);
       });
     }
     return models.map((model) => cards.get(model.key).el);
@@ -311,7 +446,8 @@ export function renderGalleryView(el, options) {
           );
     } else {
       const filter = options.filter?.() || {};
-      const visible = filterEntries(entries, {
+      const all = listed();
+      const visible = filterEntries(all, {
         query,
         types: filter.types ?? null,
         bases: filter.bases ?? null,
@@ -319,7 +455,7 @@ export function renderGalleryView(el, options) {
       shown = visible.length;
       if (!visible.length) {
         content = fragment(
-          `<div class="cu-empty">${esc(entries.length ? COPY.empty : COPY.noLoras)}</div>`
+          `<div class="cu-empty">${esc(all.length ? COPY.empty : COPY.noLoras)}</div>`
         );
       } else {
         const bands = groupEntries(visible, fitting);
@@ -338,6 +474,9 @@ export function renderGalleryView(el, options) {
         const grids = content.querySelectorAll(".cu-g-grid");
         bands.forEach((band, i) => grids[i].append(...cardsFor(band.entries)));
       }
+    }
+    if (entries && absentError && options.showMissing?.()) {
+      content.prepend(fragment(`<div class="cu-g-error">${esc(absentError)}</div>`));
     }
     bandsEl.replaceChildren(content);
     if (box && box.scrollTop !== top) box.scrollTop = top;
@@ -365,6 +504,7 @@ export function renderGalleryView(el, options) {
     const card = pick?.closest("[data-g-key]");
     const hit = card ? cards.get(card.dataset.gKey) : null;
     if (!hit) return;
+    if (hit.model.missing) return; // not on this drive: nothing to add
     const node = currentTarget(app);
     if (node !== target) follow(false); // the selection moved without telling us
     if (!node || !insertIntoNode(node, hit.model.stem)) return;
@@ -373,6 +513,26 @@ export function renderGalleryView(el, options) {
     // Adding moved focus into the node's box. A press from the keyboard (no
     // pointer, so detail 0) gets it back, so the reader keeps their place.
     if (ev.detail === 0) pick.focus({ preventScroll: true });
+  });
+
+  // The action buttons are siblings of the face, so these clicks never reach its insert.
+  bandsEl.addEventListener("click", (ev) => {
+    const button = ev.target instanceof Element ? ev.target.closest("[data-g-action]") : null;
+    const card = button?.closest("[data-g-key]");
+    if (!button || !card || button.disabled) return;
+    onAction(button, card).catch((err) => console.warn("[Warp Studio] Gallery action:", err));
+  });
+
+  missingEl.addEventListener("change", () => {
+    options.onShowMissing?.(missingEl.checked);
+    if (!entries) return; // the first load reads the toggle
+    loadAbsent()
+      .then(() => {
+        options.onFacets?.(galleryFacets(listed()));
+        return retarget();
+      })
+      .then(() => render())
+      .catch((err) => console.warn("[Warp Studio] Gallery:", err));
   });
 
   // A thumbnail that fails to load becomes the quiet stem box, in the same space.
@@ -409,5 +569,6 @@ export function renderGalleryView(el, options) {
     render,
     count: () => (entries ? shown : null),
     updateTarget,
+    paintDownloads,
   };
 }

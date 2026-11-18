@@ -22,6 +22,7 @@ const model = (fields) => ({
   url: null,
   thumbnail: null,
   stem: "maker - glow - v1 (pony)",
+  missing: false,
   ...fields,
 });
 
@@ -134,4 +135,29 @@ test("targetHtml tells two untitled nodes apart", () => {
     'Adds to: <span class="cu-g-node">Prompt + LoRAs · #7</span>'
   );
   assert.notEqual(targetHtml(pair[0], pair, escapeHtml), targetHtml(pair[1], pair, escapeHtml));
+});
+
+test("cardHtml dims a card that is not on this drive and disables its face", () => {
+  const html = cardHtml(model({ missing: true }), escapeHtml);
+  assert.ok(html.includes('class="cu-g-card" data-g-key'));
+  assert.ok(html.includes(" data-missing"));
+  assert.ok(html.includes('class="cu-g-pick"'));
+  assert.ok(/<button[^>]*class="cu-g-pick"[^>]*aria-disabled="true"/.test(html));
+  const onDisk = cardHtml(model(), escapeHtml);
+  assert.ok(!onDisk.includes("data-missing"));
+  assert.ok(!onDisk.includes("aria-disabled"));
+});
+
+test("cardHtml always has the action slot and the state overlay, so heights match", () => {
+  for (const missing of [false, true]) {
+    const html = cardHtml(model({ missing }), escapeHtml);
+    assert.ok(html.includes('<span class="cu-g-act" data-g-act></span>'));
+    assert.ok(
+      html.includes('<span class="cu-g-over"><span class="cu-g-state" role="status"></span></span>')
+    );
+    // Siblings of the face: never inside the button.
+    const face = html.slice(html.indexOf("<button"), html.indexOf("</button>"));
+    assert.ok(!face.includes("data-g-act"));
+    assert.ok(!face.includes("cu-g-over"));
+  }
 });

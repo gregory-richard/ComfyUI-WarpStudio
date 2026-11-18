@@ -14,6 +14,10 @@ export const COPY = {
   downloaded: "Downloaded",
   earlyAccess: "Early access",
   downloadTitle: "Download this release",
+  delete: "Delete",
+  deleteAsk: "Delete?",
+  deleting: "Deleting…",
+  deleteTitle: "Send this LoRA and its sidecars to the Recycle Bin",
   replaceTitle: "Download this release, then send the version you have to the Recycle Bin",
 };
 
@@ -80,4 +84,42 @@ export function finishedText(summary) {
   if (summary?.failed) text += `, ${summary.failed} failed`;
   if (summary?.stopped) text += `, ${summary.stopped} stopped`;
   return text;
+}
+
+/* The Gallery card's action slot. card = { missing }, ui = { canTrash, confirming, deleting }. */
+export function galleryActionHtml(card, record, ui, escapeHtml) {
+  const button = (action, label, extra = "") =>
+    `<button type="button" class="cu-inline-btn cu-g-btn" data-g-action="${action}"${extra}>${label}</button>`;
+  if (card?.missing) {
+    const state = slotState(record);
+    if (state === "waiting" || state === "downloading") {
+      const label = state === "waiting" ? COPY.cancel : COPY.stop;
+      return button("stop", label, ` data-request-id="${escapeHtml(record.id)}"`);
+    }
+    if (state === "done") return "";
+    return button("download", COPY.download, ` title="${COPY.downloadTitle}"`);
+  }
+  if (!ui?.canTrash) return "";
+  const title = ` title="${COPY.deleteTitle}"`;
+  const mark = `class="cu-inline-btn cu-g-btn cu-g-del"`;
+  if (ui.deleting) {
+    return `<button type="button" ${mark} data-g-action="delete" data-deleting disabled${title}>${COPY.deleting}</button>`;
+  }
+  if (ui.confirming) {
+    return `<button type="button" ${mark} data-g-action="delete" data-confirm${title}>${COPY.deleteAsk}</button>`;
+  }
+  return `<button type="button" ${mark} data-g-action="delete"${title}>${COPY.delete}</button>`;
+}
+
+/* The Gallery card's state overlay: Waiting, the percentage, the error; Downloaded only just after. */
+export function galleryStateText(record, { justDone = false } = {}) {
+  const state = slotState(record);
+  if (state === "waiting") return COPY.waiting;
+  if (state === "downloading") {
+    const pct = percent(record);
+    return pct === null ? COPY.downloading : `${pct}%`;
+  }
+  if (state === "done") return justDone ? COPY.downloaded : "";
+  if (state === "error") return recordMessage(record);
+  return "";
 }

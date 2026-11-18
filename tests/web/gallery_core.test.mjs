@@ -105,11 +105,17 @@ test("cardModel fills gaps", () => {
     url: null,
     thumbnail: null,
     stem: "amber",
+    missing: false,
   });
   assert.equal(cardModel(a).detail, "v1 · Pony");
   assert.equal(cardModel(a).thumbnail, "/t?a");
   assert.equal(cardModel(a).triggers, 1);
   assert.equal(cardModel({ id: "x/y.safetensors", name: "<img src=x>" }).title, "<img src=x>");
+});
+
+test("cardModel marks an entry that is not on this drive", () => {
+  assert.equal(cardModel({ ...a, missing: true }).missing, true);
+  assert.equal(cardModel(a).missing, false);
 });
 
 // The panel's Bases menu also lists the check's raw Civitai spellings, which the

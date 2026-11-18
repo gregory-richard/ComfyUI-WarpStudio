@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   COPY,
   finishedText,
+  galleryActionHtml,
+  galleryStateText,
   isPaid,
   latestRecords,
   percent,
@@ -143,4 +145,69 @@ test("finishedText counts what finished", () => {
   );
   assert.equal(finishedText({ downloaded: 1 }), "Done — 1 downloaded");
   assert.ok(COPY.download);
+});
+
+const dlrec = (fields) => ({ id: "r1", key: "gallery:a.safetensors", ...fields });
+const onDisk = { missing: false };
+const gone = { missing: true };
+const ui = (fields) => ({ canTrash: true, confirming: false, deleting: false, ...fields });
+
+test("galleryActionHtml offers Download on a missing card and Delete on one on disk", () => {
+  const download = galleryActionHtml(gone, undefined, ui(), escapeHtml);
+  assert.ok(download.includes('data-g-action="download"'));
+  assert.ok(download.includes(">Download<"));
+  assert.ok(!download.includes("delete"));
+  assert.equal(
+    galleryActionHtml(gone, dlrec({ state: "error", error: "x" }), ui(), escapeHtml),
+    download
+  );
+  const cancel = galleryActionHtml(gone, dlrec({ state: "waiting" }), ui(), escapeHtml);
+  assert.ok(cancel.includes('data-g-action="stop"') && cancel.includes('data-request-id="r1"'));
+  assert.ok(cancel.includes(">Cancel<"));
+  const stop = galleryActionHtml(gone, dlrec({ state: "downloading" }), ui(), escapeHtml);
+  assert.ok(stop.includes(">Stop<"));
+  assert.equal(galleryActionHtml(gone, dlrec({ state: "done" }), ui(), escapeHtml), "");
+  const del = galleryActionHtml(onDisk, undefined, ui(), escapeHtml);
+  assert.ok(del.includes('data-g-action="delete"'));
+  assert.ok(del.includes(">Delete<"));
+  assert.ok(del.includes('title="Send this LoRA and its sidecars to the Recycle Bin"'));
+  assert.ok(!del.includes("data-confirm"));
+  assert.ok(!del.includes("download"));
+});
+
+test("galleryActionHtml escapes the request id", () => {
+  const html = galleryActionHtml(gone, dlrec({ id: '"><b>', state: "waiting" }), ui(), escapeHtml);
+  assert.ok(!html.includes("<b>"));
+});
+
+test("galleryActionHtml asks before deleting", () => {
+  const ask = galleryActionHtml(onDisk, undefined, ui({ confirming: true }), escapeHtml);
+  assert.ok(ask.includes(">Delete?<"));
+  assert.ok(ask.includes("data-confirm"));
+  assert.ok(!ask.includes("disabled"));
+  const busy = galleryActionHtml(onDisk, undefined, ui({ deleting: true }), escapeHtml);
+  assert.ok(busy.includes(">Deleting…<"));
+  assert.ok(busy.includes("disabled"));
+});
+
+test("galleryActionHtml offers no Delete without the Recycle Bin", () => {
+  assert.equal(galleryActionHtml(onDisk, undefined, ui({ canTrash: false }), escapeHtml), "");
+  // A download needs no Recycle Bin.
+  assert.ok(
+    galleryActionHtml(gone, undefined, ui({ canTrash: false }), escapeHtml).includes("Download")
+  );
+});
+
+test("galleryStateText shows Waiting, the percentage and the error, and Downloaded only just after", () => {
+  assert.equal(galleryStateText(undefined, {}), "");
+  assert.equal(galleryStateText(dlrec({ state: "waiting" }), {}), "Waiting");
+  assert.equal(
+    galleryStateText(dlrec({ state: "downloading", written: 42, total: 100 }), {}),
+    "42%"
+  );
+  assert.equal(galleryStateText(dlrec({ state: "downloading" }), {}), "Downloading");
+  assert.equal(galleryStateText(dlrec({ state: "done" }), {}), "");
+  assert.equal(galleryStateText(dlrec({ state: "done" }), { justDone: true }), "Downloaded");
+  assert.equal(galleryStateText(dlrec({ state: "error", error: "Nope." }), {}), "Nope.");
+  assert.equal(galleryStateText(dlrec({ state: "waiting" }), { justDone: true }), "Waiting");
 });

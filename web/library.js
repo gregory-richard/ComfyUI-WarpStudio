@@ -8,6 +8,8 @@
 
 let pending = null;
 let cached = null;
+let missingPending = null;
+let missingCached = null;
 
 // Throws on failure rather than returning nothing: the browser wants to say why
 // it is empty, and the prompt - which does not care - catches at its own call.
@@ -44,8 +46,25 @@ export function everything() {
   return pending;
 }
 
+/** The LoRAs Civitai knows of that are not on this drive, with one shared request. */
+export function missingLoras() {
+  if (missingCached) return Promise.resolve(missingCached);
+  if (missingPending) return missingPending;
+  missingPending = ask("/warp-studio/loras/missing", "loras")
+    .then((list) => {
+      missingCached = list;
+      return list;
+    })
+    .finally(() => {
+      missingPending = null;
+    });
+  return missingPending;
+}
+
 /** Forget it, so a model added since is picked up on the next ask. */
 export function forget() {
   cached = null;
   pending = null;
+  missingCached = null;
+  missingPending = null;
 }
