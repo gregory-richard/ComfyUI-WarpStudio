@@ -67,8 +67,8 @@ class CivitaiClient:
             return None
         return cached
 
-    def get_version(self, version_id: int | str) -> dict | None:
-        return self._get_json(f"{MODEL_VERSION_BY_ID_URL}/{version_id}")
+    def get_version(self, version_id: int | str, *, raise_on_error: bool = False) -> dict | None:
+        return self._get_json(f"{MODEL_VERSION_BY_ID_URL}/{version_id}", raise_on_error=raise_on_error)
 
     def get_model_versions_for_model(self, model_id: int | str) -> tuple[str, list[dict], bool]:
         model = self.get_model(model_id, raise_on_error=True)
