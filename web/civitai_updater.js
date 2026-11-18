@@ -2,6 +2,15 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 import { renderGalleryView } from "./gallery_view.js";
+import {
+  MODEL_DOWNLOAD_JOB,
+  finishedText,
+  isPaid,
+  latestRecords,
+  recordMessage,
+  versionActionsHtml,
+  versionKey,
+} from "./model_actions.js";
 import { galleryOnlyBases } from "./gallery_core.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
@@ -180,6 +189,10 @@ const state = {
   localPreviewCache: new Map(),
   localPreviewJobId: null,
   lightboxLocalUrls: null,
+  // Model downloads: the newest record per key (version:ID), and whether the
+  // server can send a replaced file to the Recycle Bin.
+  downloads: new Map(),
+  canTrash: false,
 };
 
 app.registerExtension({
@@ -409,6 +422,15 @@ async function renderTab(el) {
   if (!state.currentJobId && !state.checkJobId) {
     loadCachedResults();
   }
+  // A reloaded panel finds a running download job and paints every card's state.
+  loadDownloads()
+    .then((jobId) => {
+      if (jobId && !state.currentJobId) {
+        attachToRunningJob({ jobId, type: MODEL_DOWNLOAD_JOB, status: "running" });
+      }
+      paintDownloads();
+    })
+    .catch(() => {});
 }
 
 /* After the renamer moved files: the check results (patched to the new paths on
@@ -423,7 +445,9 @@ async function loadCachedResults() {
   // /last-check walks every model root and can take seconds. A job started
   // meanwhile owns the results view; binding to the cached record after that
   // would pin the list to the previous check's results for the whole run.
-  const superseded = () => Boolean(state.currentJobId || state.checkJobId);
+  // A download job does not: it leaves the last check on screen.
+  const superseded = () =>
+    Boolean((state.currentJobId && state.currentJobType !== MODEL_DOWNLOAD_JOB) || state.checkJobId);
   // Until the last check is back, the list shows that it is loading, not that it is empty.
   state.startupLoading = true;
   setLoading("startup", true);
@@ -436,7 +460,8 @@ async function loadCachedResults() {
     if (superseded()) return;
     if (activeResp.job) {
       attachToRunningJob(activeResp.job);
-      return;
+      // A download job leaves the last check on screen; any other job owns the view.
+      if (activeResp.job.type !== MODEL_DOWNLOAD_JOB) return;
     }
 
     const resp = await getJson("/warp-studio/updater/last-check");
@@ -645,6 +670,27 @@ function bindEvents(root) {
       restoreScroll(mode);
       return;
     }
+    const dlButton = target.closest("[data-dl-action]");
+    if (dlButton && dlButton.closest(".cu-dl")) {
+      const slot = dlButton.closest(".cu-dl");
+      const action = dlButton.dataset.dlAction;
+      if (action === "stop") {
+        await stopDownload(dlButton.dataset.requestId || "");
+      } else if (action === "download" || action === "replace") {
+        await startDownload(
+          {
+            source: "updates",
+            jobId: state.checkJobId,
+            modelId: slot.dataset.modelId,
+            versionId: slot.dataset.versionId,
+            modelPath: slot.dataset.modelPath,
+            replace: action === "replace",
+          },
+          slot.dataset.dlKey,
+        );
+      }
+      return;
+    }
     const filterAction = target.dataset.filterAction;
     if (filterAction) {
       const key = target.dataset.filterKind === "type" ? "filterTypes" : "filterBases";
@@ -783,6 +829,8 @@ async function stopCurrentJob() {
 
 function pollJob(jobId) {
   if (state.pollTimer) clearInterval(state.pollTimer);
+  // Download records seen as done, so the list reloads once per finished download.
+  let seenDone = null;
   let consecutiveFailures = 0;
   // A slow tick must not overlap the next one: two ticks can both see the
   // job finish and run the completion path twice.
@@ -792,6 +840,8 @@ function pollJob(jobId) {
     tickInFlight = true;
     try {
       const job = await getJson(`/warp-studio/updater/jobs/${jobId}`);
+      // A new job was bound while this tick waited: it owns the state now.
+      if (state.currentJobId !== jobId) return;
       consecutiveFailures = 0;
       const status = job.status || "running";
       const progress = Number(job.progress || 0);
@@ -840,7 +890,17 @@ function pollJob(jobId) {
 
       const renameJob = RENAME_JOB_TYPES.includes(state.currentJobType);
       const scanJob = state.currentJobType === "scan";
+      const downloadJob = state.currentJobType === MODEL_DOWNLOAD_JOB;
       const finished = ["completed", "failed", "cancelled"].includes(status);
+      if (downloadJob && !finished) {
+        // Each tick paints the cards in place; the list reloads only when a download finished.
+        await loadDownloads();
+        paintDownloads();
+        const done = new Set([...state.downloads.values()].filter((r) => r.state === "done").map((r) => r.id));
+        const newlyDone = seenDone !== null && [...done].some((id) => !seenDone.has(id));
+        seenDone = done;
+        if (newlyDone) await refreshAfterAction();
+      }
       if (renameJob && !finished && state.renameView) state.renameView.onJob(job, false);
 
       if (finished) {
@@ -872,6 +932,8 @@ function pollJob(jobId) {
           setStatus("Job cancelled");
         } else if (renameJob) {
           setStatus("Done");
+        } else if (downloadJob) {
+          setStatus(finishedText(job.summary));
         } else if (state.currentJobType === "check-updates") {
           const updates = job.summary?.withUpdates || 0;
           const hidden = job.summary?.hiddenUpdates || 0;
@@ -890,6 +952,11 @@ function pollJob(jobId) {
         if (renameJob && state.renameView) await state.renameView.onJob(job, true);
         // A rename or a scan can change the library: the gallery reads it again, once it has loaded.
         if ((renameJob || scanJob) && state.galleryLoaded) state.galleryView?.refresh();
+        if (downloadJob) {
+          await loadDownloads().catch(() => {});
+          paintDownloads();
+          await refreshAfterAction();
+        }
       }
     } catch (error) {
       if (isLostJobError(error)) {
@@ -1011,7 +1078,7 @@ function renderProgressCounts() {
     setStatus("Stopping\u2026");
     return;
   }
-  if (RENAME_JOB_TYPES.includes(state.currentJobType)) {
+  if (RENAME_JOB_TYPES.includes(state.currentJobType) || state.currentJobType === MODEL_DOWNLOAD_JOB) {
     // Dry runs, applies and the download report their step as the job message.
     setStatus(state.currentMessage || `Processing ${state.currentProgress} of ${state.currentTotal}`);
     return;
@@ -1163,7 +1230,7 @@ function buildResultCard(item, cardIndex) {
   ]).filter(([kind, index]) => lists[kind]?.[index]);
   const versionRows = order.map(([kind, index], position) => {
     const v = lists[kind][index];
-    if (kind !== "saved") return renderRemoteVersionRow(item.modelId, v, kind === "hidden");
+    if (kind !== "saved") return renderRemoteVersionRow(item, v, kind === "hidden");
     // Files of one model usually fail for one reason; print it once, under the
     // last row of each run that shares it.
     const [nextKind, nextIndex] = order[position + 1] || [];
@@ -1540,7 +1607,13 @@ async function startPanelJob(endpoint, type, payload, statusText) {
   if (state.currentJobId) throw new Error("A job is already running.");
   const data = await postJson(endpoint, payload || {});
   if (!data || !data.jobId) return data || {};
-  state.currentJobId = data.jobId;
+  bindJob(data.jobId, type, statusText);
+  return data;
+}
+
+/* Follow a job that was just started: the shared progress bar, controls and poll. */
+function bindJob(jobId, type, statusText) {
+  state.currentJobId = jobId;
   state.currentJobType = type;
   state.currentJobStatus = "queued";
   state.currentSummary = null;
@@ -1554,8 +1627,67 @@ async function startPanelJob(endpoint, type, payload, statusText) {
   updateProgress(0, 0, true);
   updateControlButtons();
   setStatus(statusText || "Working\u2026");
-  pollJob(data.jobId);
-  return data;
+  pollJob(jobId);
+}
+
+/* ---- Model downloads (Updates cards) ---- */
+
+async function loadDownloads() {
+  const data = await getJson("/warp-studio/updater/downloads");
+  state.downloads = latestRecords(data.requests);
+  state.canTrash = Boolean(data.canTrash);
+  return data.jobId || null;
+}
+
+// Paint each card's download slot in place: only what changed is written, so nothing jumps.
+function paintDownloads() {
+  const root = state.resultsEl;
+  if (root) {
+    for (const slot of root.querySelectorAll(".cu-dl[data-dl-key]")) {
+      const record = state.downloads.get(slot.dataset.dlKey);
+      const html = versionActionsHtml(
+        { paid: slot.dataset.paid === "1", canReplace: slot.dataset.canReplace === "1" },
+        record,
+        escapeHtml,
+      );
+      if (slot.innerHTML !== html) slot.innerHTML = html;
+    }
+    for (const msg of root.querySelectorAll("[data-dl-msg]")) {
+      const text = recordMessage(state.downloads.get(msg.dataset.dlMsg));
+      if (msg.textContent !== text) msg.textContent = text;
+    }
+  }
+  state.galleryView?.paintDownloads?.();
+}
+
+async function startDownload(payload, key) {
+  try {
+    const data = await postJson("/warp-studio/updater/downloads", payload);
+    if (data.request) state.downloads.set(data.request.key || key, data.request);
+    paintDownloads();
+    if (data.jobId && data.jobId !== state.currentJobId) {
+      bindJob(data.jobId, MODEL_DOWNLOAD_JOB, "Downloading\u2026");
+    }
+  } catch (error) {
+    state.downloads.set(key, { key, state: "error", error: String(error?.message || error) });
+    paintDownloads();
+  }
+}
+
+async function stopDownload(requestId) {
+  try {
+    const data = await postJson(`/warp-studio/updater/downloads/${encodeURIComponent(requestId)}/stop`, {});
+    if (data.request) state.downloads.set(data.request.key, data.request);
+  } catch (error) {
+    setStatus(`Could not stop the download: ${error.message}`);
+  }
+  paintDownloads();
+}
+
+// After a download finished: the check results and the gallery read the library again.
+async function refreshAfterAction() {
+  if (state.checkJobId) await loadResultPage(true);
+  if (state.galleryLoaded) state.galleryView?.refresh();
 }
 
 function setNamingModels(list) {
@@ -1778,7 +1910,8 @@ function carryAllSelectionForward(selectionKey, previousOptions, nextOptions) {
   }
 }
 
-function renderRemoteVersionRow(modelId, version, hidden) {
+function renderRemoteVersionRow(item, version, hidden) {
+  const modelId = item.modelId;
   const date = version.versionDate ? shortDate(version.versionDate) : "—";
   const name = escapeHtml(version.versionName || "?");
   const link = version.versionUrl
@@ -1789,6 +1922,14 @@ function renderRemoteVersionRow(modelId, version, hidden) {
     : `<button class="cu-inline-btn" data-archive-action="archive" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Hide</button>`;
   const accessBadge = renderPaidBadge(version) || renderAvailabilityBadge(version.availability);
   const hiddenClass = hidden ? " is-hidden" : "";
+  // The download slot: painted in place while a download runs, so the row keeps its size.
+  const current = (item.localVersions || [])[0];
+  const canReplace = state.canTrash && Boolean(current) && !current.metadataOnly;
+  const key = versionKey(version.versionId);
+  const record = state.downloads.get(key);
+  const paid = isPaid(version);
+  const slot = versionActionsHtml({ paid, canReplace }, record, escapeHtml);
+  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
   return `
     <div class="cu-ver-row${hiddenClass}">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>
@@ -1797,9 +1938,11 @@ function renderRemoteVersionRow(modelId, version, hidden) {
       <span class="cu-ver-main">
         ${link}
         ${accessBadge}
+        ${dlSlot}
         ${action}
       </span>
-    </div>`;
+    </div>
+    <div class="cu-issue-msg cu-dl-msg" data-dl-msg="${escapeHtml(key)}">${escapeHtml(recordMessage(record))}</div>`;
 }
 
 /* Buzz: downloading the release costs Buzz. Early access is free from its end
@@ -1952,7 +2095,8 @@ function updateControlButtons() {
   const active = Boolean(state.currentJobId);
   state.pauseEl.textContent = active && state.currentJobStatus === "paused" ? "Resume" : "Pause";
   // The server refuses to pause the naming-model download (it cannot resume).
-  state.pauseEl.style.display = state.currentJobType === "naming-model-download" ? "none" : "";
+  state.pauseEl.style.display =
+    state.currentJobType === "naming-model-download" || state.currentJobType === MODEL_DOWNLOAD_JOB ? "none" : "";
   state.jobControlsEl.style.display = active ? "flex" : "none";
 }
 
@@ -3786,6 +3930,24 @@ function injectStyles() {
       white-space: nowrap;
       flex: 0 0 auto;
       transition: color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .cu-dl {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    .cu-dl-note {
+      font-family: var(--cu-mono);
+      font-size: 9.5px;
+      color: var(--cu-dust);
+      white-space: nowrap;
+    }
+
+    .cu-dl-msg:empty {
+      display: none;
     }
 
     .cu-inline-btn:hover {
