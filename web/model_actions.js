@@ -69,7 +69,8 @@ const waitingText = (record) =>
 export function recordMessage(record) {
   if (!record) return "";
   if (record.error) return String(record.error);
-  if (record.state === "waiting" && record.waitingFor) return waitingText(record);
+  // A waiting card says so in its slot (or its overlay), not in a message line.
+  if (record.state === "waiting" && record.waitingFor) return "";
   return (record.warnings || []).join(" ");
 }
 
@@ -80,7 +81,10 @@ export function versionActionsHtml(slot, record, escapeHtml) {
   const state = slotState(record);
   const stopButton = (label) =>
     `<button type="button" class="cu-inline-btn" data-dl-action="stop" data-request-id="${escapeHtml(record.id)}">${label}</button>`;
-  if (state === "waiting") return note(COPY.waiting) + stopButton(COPY.cancel);
+  // The slot says what it waits for, so the row needs no second line.
+  if (state === "waiting") {
+    return `<span class="cu-dl-note" title="${escapeHtml(waitingText(record) || COPY.waiting)}">${escapeHtml(waitingText(record) || COPY.waiting)}</span>${stopButton(COPY.cancel)}`;
+  }
   if (state === "downloading") {
     const pct = percent(record);
     return note(pct === null ? COPY.downloading : `${pct}%`) + stopButton(COPY.stop);

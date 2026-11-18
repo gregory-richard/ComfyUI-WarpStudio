@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { menuHtml, toolbarHtml, wireToolbar } from "../../web/panel_toolbar.js";
+import {
+  infoHtml,
+  menuHtml,
+  toolbarHtml,
+  updateToolbar,
+  wireToolbar,
+} from "../../web/panel_toolbar.js";
 
 const escapeHtml = (text) =>
   String(text)
@@ -23,9 +29,9 @@ test("a query marks the search button active and shows the query", () => {
 test("a long query is cut to 18 characters with an ellipsis", () => {
   const html = toolbarHtml({ ...base, query: "abcdefghijklmnopqrstuvwxyz" }, escapeHtml);
   assert.ok(html.includes("abcdefghijklmnopqr…"));
-  // The button is cut; the field still holds the whole query.
-  const button = html.slice(0, html.indexOf("</button>"));
-  assert.ok(!button.includes("abcdefghijklmnopqrs"));
+  // The visible text is cut (the label and the field hold the whole query).
+  const shown = html.match(/<span class="cu-tb-query">([^<]*)<\/span>/)[1];
+  assert.ok(!shown.includes("abcdefghijklmnopqrs"));
 });
 
 test("the filter label counts active filters", () => {
@@ -123,8 +129,9 @@ test("two menus with the same key get different radio names", () => {
 });
 
 test("the filter and sort buttons start collapsed", () => {
-  const html = toolbarHtml(base, escapeHtml);
-  assert.equal(html.split('aria-expanded="false"').length - 1, 2);
+  const count = (html) => html.split('aria-expanded="false"').length - 1;
+  assert.equal(count(toolbarHtml({ ...base, info: false }, escapeHtml)), 2);
+  assert.equal(count(toolbarHtml(base, escapeHtml)), 3);
 });
 
 // A minimal fake DOM: recording listeners and just the elements wireToolbar reads.
@@ -195,4 +202,198 @@ test("aria-expanded follows the menu open and closed", () => {
   wiring.close();
   assert.equal(f.filterMenu.hidden, true);
   assert.equal(f.filterBtn.attrs["aria-expanded"], "false");
+});
+
+test("the search button's label names the active query", () => {
+  const html = toolbarHtml({ ...base, query: "glow" }, escapeHtml);
+  assert.match(html, /data-tb="search"[^>]*aria-label="Search: glow"/);
+  assert.match(toolbarHtml(base, escapeHtml), /data-tb="search"[^>]*aria-label="Search"/);
+  const hostile = toolbarHtml({ ...base, query: '"><b>' }, escapeHtml);
+  assert.ok(!hostile.includes("<b>"));
+});
+
+test("onOpen throwing still opens the menu", () => {
+  const f = fakeRoot();
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    wireToolbar(f.root, {
+      onOpen: () => {
+        throw new Error("boom");
+      },
+    });
+    f.click("filter");
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(f.filterMenu.hidden, false);
+  assert.equal(f.filterBtn.attrs["aria-expanded"], "true");
+});
+
+// A fake with a search field and button, to see where focus goes.
+function fieldRoot() {
+  const added = [];
+  const doc = { addEventListener: (t, fn) => added.push([doc, t, fn]), removeEventListener() {} };
+  const field = { hidden: false, value: "", focused: false, focus() {} };
+  const button = {
+    focused: 0,
+    focus() {
+      this.focused += 1;
+    },
+  };
+  const root = {
+    ownerDocument: doc,
+    addEventListener: (t, fn) => added.push([root, t, fn]),
+    removeEventListener() {},
+    contains: () => true,
+    querySelector: (sel) =>
+      sel === '[data-tb="field"]' ? field : sel === '[data-tb="search"]' ? button : null,
+    querySelectorAll: () => [],
+  };
+  const fire = (target, type, event) =>
+    added.filter(([t, ty]) => t === target && ty === type).forEach(([, , fn]) => fn(event));
+  return { root, doc, field, button, fire };
+}
+
+test("Esc closes the field and returns focus to the search button", () => {
+  const f = fieldRoot();
+  wireToolbar(f.root, {});
+  f.fire(f.doc, "keydown", { key: "Escape" });
+  assert.equal(f.field.hidden, true);
+  assert.equal(f.button.focused, 1);
+});
+
+test("an empty blur returns focus to the button unless focus moved to another control", () => {
+  const f = fieldRoot();
+  wireToolbar(f.root, {});
+  f.fire(f.root, "focusout", { target: f.field, relatedTarget: {} });
+  assert.equal(f.field.hidden, true);
+  assert.equal(f.button.focused, 0);
+  f.field.hidden = false;
+  f.fire(f.root, "focusout", { target: f.field, relatedTarget: null });
+  assert.equal(f.field.hidden, true);
+  assert.equal(f.button.focused, 1);
+});
+
+test("a tab with no sort and no search has neither button, field nor slot", () => {
+  const html = toolbarHtml(
+    { query: "", filtered: 0, sortLabel: null, info: false, search: false },
+    escapeHtml
+  );
+  assert.ok(html.includes('data-tb="filter"'));
+  for (const gone of ['data-tb="sort"', 'data-tb="search"', 'data-tb="field"', 'data-tb="info"']) {
+    assert.ok(!html.includes(gone), gone);
+  }
+  assert.ok(html.includes('data-tb-menu="filter"'));
+  assert.ok(!html.includes('data-tb-menu="sort"'));
+});
+
+test("the info slot exists only with the info button", () => {
+  assert.ok(toolbarHtml(base, escapeHtml).includes('data-tb-menu="info"'));
+  assert.ok(!toolbarHtml({ ...base, info: false }, escapeHtml).includes('data-tb-menu="info"'));
+});
+
+test("a checks section can offer Select all and Deselect all", () => {
+  const section = (actions) => ({
+    kind: "checks",
+    key: "types",
+    title: "Types",
+    options: [{ value: "a", label: "A", checked: true }],
+    actions,
+  });
+  const html = menuHtml([section(true)], escapeHtml);
+  assert.ok(html.includes('data-tb-all="types"'));
+  assert.ok(html.includes('data-tb-none="types"'));
+  assert.ok(!menuHtml([section(false)], escapeHtml).includes("data-tb-all"));
+  const empty = menuHtml([{ ...section(false), options: [] }], escapeHtml);
+  assert.ok(empty.includes("No options"));
+});
+
+test("infoHtml lists lines, skips empty ones, escapes, and offers a button", () => {
+  const html = infoHtml(
+    ["Last checked 3 minutes ago", "", "<b>"],
+    { label: "Check again", key: "recheck" },
+    escapeHtml
+  );
+  assert.equal(html.split("cu-tb-line").length - 1, 2);
+  assert.ok(html.includes("&lt;b&gt;") && !html.includes("<b>"));
+  assert.match(html, /data-tb-act="recheck"[^>]*>Check again</);
+  assert.doesNotMatch(html, /data-tb-act="recheck"[^>]* disabled/);
+  assert.match(
+    infoHtml([], { label: "Go", key: "go", disabled: true }, escapeHtml),
+    /data-tb-act="go" disabled/
+  );
+  assert.ok(!infoHtml(["x"], null, escapeHtml).includes("<button"));
+});
+
+test("updateToolbar leaves the field and menus and patches the labels", () => {
+  const made = [];
+  const node = (html) => {
+    const attrs = {};
+    const parts = {};
+    const el = {
+      innerHTML: html || "",
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      setAttribute: (k, v) => (attrs[k] = v),
+      hasAttribute: (k) => k in attrs,
+      toggleAttribute(k, on) {
+        if (on) attrs[k] = "";
+        else delete attrs[k];
+      },
+      parts,
+      attrs,
+    };
+    made.push(el);
+    return el;
+  };
+  const live = { search: node("🔍"), filter: node("Filter ▾"), sort: node("Sort · Name ▾") };
+  const root = {
+    ownerDocument: {
+      createElement: () => {
+        const holder = {
+          set innerHTML(html) {
+            const hasSearch = html.includes('data-tb="search"');
+            holder.next = {
+              search: hasSearch ? node(html.includes("cu-tb-query") ? "🔍glow" : "🔍") : null,
+              filter: node(html.match(/data-tb="filter"[^>]*>([^<]*)</)[1]),
+              sort: html.includes('data-tb="sort"')
+                ? node(html.match(/data-tb="sort"[^>]*>([^<]*)</)[1])
+                : null,
+            };
+            if (hasSearch && html.includes("data-active"))
+              holder.next.search.attrs["data-active"] = "";
+            if (hasSearch) {
+              holder.next.search.attrs["aria-label"] = html.match(
+                /data-tb="search"[^>]*aria-label="([^"]*)"/
+              )[1];
+            }
+          },
+          querySelector: (sel) => holder.next[sel.match(/data-tb="(\w+)"/)[1]],
+        };
+        return holder;
+      },
+    },
+    querySelector: (sel) => live[sel.match(/data-tb="(\w+)"/)[1]],
+  };
+  updateToolbar(root, { query: "glow", filtered: 2, sortLabel: "Newest", info: true }, escapeHtml);
+  assert.equal(live.search.innerHTML, "🔍glow");
+  assert.ok("data-active" in live.search.attrs);
+  assert.equal(live.search.attrs["aria-label"], "Search: glow");
+  assert.equal(live.filter.innerHTML, "Filter · 2 ▾");
+  assert.equal(live.sort.innerHTML, "Sort · Newest ▾");
+  updateToolbar(root, { query: "", filtered: 0, sortLabel: "Newest", info: true }, escapeHtml);
+  assert.ok(!("data-active" in live.search.attrs));
+  assert.equal(live.search.innerHTML, "🔍");
+});
+
+test("the info button opens its popover like Filter and Sort", () => {
+  const f = fakeRoot();
+  const infoMenu = { hidden: true, attrs: {}, dataset: { tbMenu: "info" }, setAttribute() {} };
+  const opened = [];
+  f.root.querySelector = (sel) => (sel === '[data-tb-menu="info"]' ? infoMenu : null);
+  f.root.querySelectorAll = () => [infoMenu];
+  wireToolbar(f.root, { onOpen: (name) => opened.push(name) });
+  f.click("info");
+  assert.equal(infoMenu.hidden, false);
+  assert.deepEqual(opened, ["info"]);
 });
