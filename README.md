@@ -148,7 +148,7 @@ node a click adds to: the selected one, or else the last one you used. Click a
 card and its tag is added to that node's LoRA list, on a line of its own, and
 the card says **Added**.
 
-**Not on this drive** lists LoRAs whose `.civitai.info` and preview are in your
+**Not on this drive** lists LoRAs whose `.civitai.info` is in your
 LoRA folders but whose weights are not. Their cards are dimmed and can't be added
 to a prompt. **Download** on one fetches the version its info file describes and
 puts it next to that file, under the same name. On the other cards, **Delete**

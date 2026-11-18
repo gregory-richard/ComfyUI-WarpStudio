@@ -543,27 +543,29 @@ The server refuses such a download too, with `This release is in early access.`
 
 #### Download and Replace
 
-A `New` row has **Download**. A card whose current version has its weights on
+A `New` or `Hidden` row has **Download**. A card whose current version has its weights on
 this drive also gives the row **Replace**. Both start a download of that release
 on the server.
 
 - Downloads run one at a time, in a queue. A click while one runs shows `Waiting`
   with **Cancel**. The running one shows its percentage (`Downloading` while the
   size is unknown) with **Stop**; Stop deletes its partial file. A finished one
-  shows `Downloaded`. The job bar follows the run, and ends with
+  shows `Downloaded`. A stopped one shows no note, and **Download** comes back. The job bar follows the run, and ends with
   `Done — 2 downloaded`, plus `, 1 failed` and `, 1 stopped` when they are not
   zero. A reloaded panel finds the running job and paints every row again.
 - The file is written as `<name>.part`, checked against the SHA-256 Civitai lists
   for it, and only then renamed into place. A wrong hash or an early stop deletes
   the `.part` and the row says so. An existing file is never overwritten.
 - The new file is named as a rename dry run would name it, with the AI naming
-  model, and goes into its base model's folder. With no naming model, or a name
-  that fails the checks, it keeps Civitai's file name, and the next dry run offers
-  a proper one. A name already taken is refused. Its `.civitai.info` and preview
+  model, and goes into its base model's folder when that base has one; otherwise it
+  stays beside the old version. With no naming model, a name that fails the checks,
+  or a name already taken, it keeps Civitai's file name, and the next dry run offers
+  a proper one. The download is refused only when Civitai's name is taken too. Its `.civitai.info` and preview
   are written the way a scan writes them.
 - **Replace** adds one step: once the new file is checked and in place, the old
   version's weights go to the Recycle Bin, then its sidecars. If the weights can't
-  go, nothing else of the old version is touched, and the row says so. The new
+  go, nothing else of the old version is touched, and the row says so. If the new
+  version's info file can't be written, the old version is kept and the row says so. The new
   version is never the one sent away. Tags in prompts that name the old file go red,
   as after a rename. Replace needs the `send2trash` package, and a file can have one
   Replace queued at a time.
@@ -571,8 +573,8 @@ on the server.
   while any other job runs, and the other way round, Check, Fetch Missing Metadata,
   dry runs and applies are refused while a download runs.
 - Most adult models need a Civitai API key. Without one the row shows `Civitai needs an API key for this download: Settings → Warp Studio → Civitai Network → API Key`.
-  The key goes to Civitai hosts over https only, and never follows a redirect to
-  the storage host.
+  The key goes to Civitai hosts over https only. A redirect to the storage host is
+  followed, without the key.
 - After a restart of ComfyUI the queue is gone. A `.part` left behind is not
   listed as a model, and the next try replaces it.
 
@@ -1596,7 +1598,7 @@ POST /warp-studio/updater/downloads/{request_id}/stop
 POST /warp-studio/updater/delete-model
 ```
 
-- `GET downloads` returns `{jobId, requests, canTrash}`: the running download job's id (or `null`) and every request with its state (`waiting`, `downloading`, `done` or `error`), progress and message. A reloaded panel reads it to paint its cards.
+- `GET downloads` returns `{jobId, requests, canTrash}`: the running download job's id (or `null`) and every request with its state (`waiting`, `downloading`, `done`, `stopped` or `error`), progress and message. A reloaded panel reads it to paint its cards.
 - `POST downloads` takes `{source: "updates", jobId, modelId, versionId, modelPath, replace}` for a release in a check job's results, or `{source: "gallery", name}` for a LoRA that is not on this drive. It answers `{request, jobId}`. A release in early access, a file not in the results, or a second Replace of the same file is refused; so is a start while another kind of job runs (HTTP 409, `Another job is running. Try again when it's done.`).
 - `POST downloads/{request_id}/stop` cancels a waiting request or stops the running one. `404` for an unknown id.
 - `POST delete-model` takes `{name}`, a LoRA's `id` from the index, and sends its weights and sidecars to the Recycle Bin. It answers `{removed, warnings}`. It is refused (409) without `send2trash`, while another kind of job runs, or while that file is waiting to be replaced, and answers 404 when the LoRA is gone.
