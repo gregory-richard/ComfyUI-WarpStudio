@@ -2,9 +2,12 @@
 
 The order keeps the library safe. The weights come through a ``.part`` file
 checked against Civitai's SHA-256 (``download_to``). Only once they are in
-place, with their info file and preview, does a Replace send the old version's
-files to the Recycle Bin, and never one of the new files. A failure or a Stop
-before that leaves the old version as it was. Once the new weights are in
+place with their info file (and the preview, when Civitai has one) does a
+Replace send the old version's files to the Recycle Bin, never one of the new
+files: the old weights first, and their sidecars only once the weights are
+gone. When the new info file can't be written, the old version is kept, so an
+identified version is never swapped for an unidentified one. A failure or a
+Stop before that leaves the old version as it was. Once the new weights are in
 place, Stop no longer applies: what is left is quick, and stopping half-way
 through the Replace would leave both versions half there.
 """
@@ -43,6 +46,11 @@ NO_FILE_ERROR = "Civitai lists no model file for this release."
 FILE_GONE_ERROR = "Civitai no longer has this file."
 INFO_GONE_ERROR = "Its info file is gone, or its weights are already there."
 OLD_FILE_GONE_WARNING = "The old version's file was already gone."
+KEPT_WITHOUT_INFO_WARNING = (
+    "The old version was kept because the new version's info file could not be written."
+)
+# The reason when sending the old weights raised nothing but left them in place.
+WEIGHTS_STILL_THERE = "it is still there"
 _INFO_SOURCE = "comfy-civitai-updater"
 
 
@@ -139,10 +147,13 @@ def _updates(request: DownloadRequest, report, should_stop, ctx: DownloadContext
     # The new weights are in place and checked; nothing below raises.
     info_path = target.folder / (target.stem + INFO_SIDECAR_SUFFIX)
     preview_path = target.folder / (target.stem + PREVIEW_SIDECAR_SUFFIX)
-    _write_info(info_path, version, file, request)
+    info_written = _write_info(info_path, version, file, request)
     _fetch_preview(client, preview_path, version)
     remove: list[str] = []
-    if request.replace_path:
+    if request.replace_path and not info_written:
+        # An identified old version is never swapped for an unidentified new one.
+        request.warnings.append(KEPT_WITHOUT_INFO_WARNING)
+    elif request.replace_path:
         report(seen[0], seen[1], "Sending the old version to the Recycle Bin")
         old = Path(request.replace_path)
         _trash_old(old, [target.path, info_path, preview_path], request, ctx)
@@ -289,13 +300,16 @@ def _download(client, target: Path, file: dict, sha: str, report, should_stop, c
     return seen[0], seen[1]
 
 
-def _write_info(info_path: Path, version: dict, file: dict, request: DownloadRequest) -> None:
+def _write_info(info_path: Path, version: dict, file: dict, request: DownloadRequest) -> bool:
+    """Write the new info file; False (with a warning) when it could not be written."""
     try:
         if info_path.exists():  # Never overwritten, even one that turned up meanwhile.
             raise FileExistsError(errno.EEXIST, "a file of that name is already there")
         write_json(info_path, info_payload(version, file))
     except OSError as exc:
         request.warnings.append(f"Could not write {info_path.name}: {_reason(exc)}")
+        return False
+    return True
 
 
 def _fetch_preview(client, preview_path: Path, version: dict) -> None:
@@ -307,13 +321,31 @@ def _fetch_preview(client, preview_path: Path, version: dict) -> None:
 
 
 def _trash_old(old: Path, new_files: list, request: DownloadRequest, ctx: DownloadContext) -> None:
-    """Send the old version's files to the Recycle Bin, never one of the new files."""
+    """Send the old version's files to the Recycle Bin, never one of the new files.
+
+    The weights go first and on their own. Their sidecars follow only once
+    they are gone, so weights the Recycle Bin refused (a file ComfyUI holds
+    open) keep their info file and preview.
+    """
     files = stem_files(old)
     if not files:
         request.warnings.append(OLD_FILE_GONE_WARNING)
         return
     keep = {_norm(path) for path in new_files}
-    for path in files:
+    weights, sidecars = files[0], files[1:]
+    if _norm(weights) in keep:
+        return  # Never the case (the new name was free); nothing of it is touched.
+    try:
+        ctx.trash(str(weights))
+    except Exception as exc:  # noqa: BLE001 - a warning; the old version stays whole
+        request.warnings.append(f"Could not send {weights.name} to the Recycle Bin: {_reason(exc)}")
+        return
+    if os.path.lexists(weights):
+        request.warnings.append(
+            f"Could not send {weights.name} to the Recycle Bin: {WEIGHTS_STILL_THERE}"
+        )
+        return
+    for path in sidecars:
         if _norm(path) in keep:
             continue
         try:

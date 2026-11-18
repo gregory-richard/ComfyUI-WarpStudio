@@ -583,17 +583,53 @@ class ModelActionsTests(unittest.TestCase):
             request.warnings,
             [f"Could not send {V1_STEM}.safetensors to the Recycle Bin: in use"],
         )
-        self.assertEqual(
-            sorted(self.trashed),
-            sorted(V1_STEM + s for s in (".civitai.info", ".preview.png", ".json")),
-        )
-        self.assertEqual(self.v1.read_bytes(), V1_BODY)
+        # The weights stayed, so their sidecars stay with them.
+        self.assertEqual(self.trashed, [])
+        self.assert_v1_intact()
         self.assertEqual((self.ill / "glowV2.safetensors").read_bytes(), BODY)
         # The old weights are still there, so their record stays beside the new one.
+        both = [str(self.v1), str(self.ill / "glowV2.safetensors")]
+        self.assertEqual([item["modelPath"] for item in self.saved_items()], both)
+        self.assertEqual([item["modelPath"] for item in self.job.items], both)
+
+    def test_weights_the_recycle_bin_left_in_place_keep_their_sidecars(self) -> None:
+        calls = []
+
+        request = self.run_one(self.updates_request(replace=True), trash=calls.append)
+
+        self.assertEqual(calls, [str(self.v1)])
         self.assertEqual(
-            [item["modelPath"] for item in self.saved_items()],
-            [str(self.v1), str(self.ill / "glowV2.safetensors")],
+            request.warnings,
+            [f"Could not send {V1_STEM}.safetensors to the Recycle Bin: it is still there"],
         )
+        self.assert_v1_intact()
+        both = [str(self.v1), str(self.ill / "glowV2.safetensors")]
+        self.assertEqual([item["modelPath"] for item in self.saved_items()], both)
+
+    def test_a_failed_info_write_keeps_the_old_version(self) -> None:
+        with mock.patch.object(
+            model_actions, "write_json", side_effect=OSError(28, "No space left")
+        ):
+            request = self.run_one(self.updates_request(replace=True))
+
+        self.assertEqual(self.trashed, [])
+        self.assert_v1_intact()
+        self.assertEqual((self.ill / "glowV2.safetensors").read_bytes(), BODY)
+        self.assertEqual(
+            request.warnings,
+            [
+                "Could not write glowV2.civitai.info: No space left",
+                "The old version was kept because the new version's info file could not be"
+                " written.",
+            ],
+        )
+        self.assertNotIn(
+            "Sending the old version to the Recycle Bin",
+            [message for _w, _t, message in self.reports],
+        )
+        # The new file has no info yet, so it gets no record until the next check.
+        self.assertEqual([item["modelPath"] for item in self.saved_items()], [str(self.v1)])
+        self.assertEqual(self.job.items, [self.v1_item])
 
     def test_old_weights_already_gone_is_a_warning(self) -> None:
         self.v1.unlink()
