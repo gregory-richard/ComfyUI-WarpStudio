@@ -873,16 +873,52 @@ class DownloadRouteTests(_Dirs):
         self.assertEqual("glow.safetensors", body["request"]["name"])
         self.assertEqual(MODEL_DOWNLOAD_JOB, self.jobs.get(body["jobId"]).type)
 
-    def delete(self, name: str):
+    def delete(self, name: str, kind=None, roots=None):
         bin_folder = self.root / "bin"
         bin_folder.mkdir(exist_ok=True)
 
         def fake_trash(path: str) -> None:
             os.replace(path, bin_folder / Path(path).name)
 
-        with mock.patch("comfy_updater.routes.lora_roots", return_value=[self.folder]):
+        by_kind = roots if roots is not None else {"loras": [self.folder]}
+        payload = {"name": name} if kind is None else {"name": name, "kind": kind}
+        with mock.patch(
+            "comfy_updater.routes.folder_roots", side_effect=lambda k: by_kind.get(k, [])
+        ):
             with mock.patch("comfy_updater.routes.send_to_trash", fake_trash):
-                return self.call("POST", "/warp-studio/updater/delete-model", {"name": name})
+                return self.call("POST", "/warp-studio/updater/delete-model", payload)
+
+    def test_delete_resolves_in_the_kind_folder(self) -> None:
+        diffusion = self.root / "diffusion_models"
+        diffusion.mkdir()
+        name = "maker - base (zit).safetensors"
+        (diffusion / name).write_bytes(b"x")
+        (self.folder / name).write_bytes(b"x")
+
+        status, body = self.delete(
+            name, kind="diffusion_models", roots={"diffusion_models": [diffusion]}
+        )
+
+        self.assertEqual(200, status, body)
+        self.assertEqual([name], body["removed"])
+        self.assertFalse((diffusion / name).exists())
+        self.assertTrue((self.folder / name).exists())
+
+    def test_delete_refuses_an_unknown_kind(self) -> None:
+        (self.folder / "glow.safetensors").write_bytes(b"x")
+        for kind in ("vae", "missing", 5):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    (
+                        400,
+                        {
+                            "error": "kind must be one of loras, embeddings, "
+                            "checkpoints, diffusion_models"
+                        },
+                    ),
+                    self.delete("glow.safetensors", kind=kind),
+                )
+        self.assertTrue((self.folder / "glow.safetensors").exists())
 
     def test_the_delete_route_sends_a_lora_to_the_recycle_bin(self) -> None:
         sub = self.folder / "studio-k"
@@ -925,7 +961,7 @@ class DownloadRouteTests(_Dirs):
         def refuse(path: str) -> None:
             raise OSError("in use")
 
-        with mock.patch("comfy_updater.routes.lora_roots", return_value=[self.folder]):
+        with mock.patch("comfy_updater.routes.folder_roots", return_value=[self.folder]):
             with mock.patch("comfy_updater.routes.send_to_trash", refuse):
                 status, body = self.call(
                     "POST", "/warp-studio/updater/delete-model", {"name": "glow.safetensors"}

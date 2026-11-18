@@ -8,6 +8,8 @@ from pathlib import Path
 
 from comfy_updater import path_resolver
 from comfy_updater.model_files import (
+    folder_roots,
+    lora_roots,
     missing_info,
     missing_loras,
     resolve_name,
@@ -75,6 +77,18 @@ class ModelFilesTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in missing_loras([self.root])], ["glow.safetensors"])
         listed = path_resolver.list_model_files({"lora": [self.root]})
         self.assertFalse([f for f in listed if str(f["path"]).endswith(".part")])
+
+    def test_folder_roots_per_kind(self):
+        import sys
+        import types
+        from unittest import mock
+
+        module = types.ModuleType("folder_paths")
+        module.get_folder_paths = lambda kind: [str(self.root / kind)]
+        with mock.patch.dict(sys.modules, {"folder_paths": module}):
+            self.assertEqual([self.root / "embeddings"], folder_roots("embeddings"))
+            self.assertEqual(folder_roots("loras"), lora_roots())
+            self.assertEqual([], folder_roots("vae"))
 
     def test_resolve_name_stays_inside_the_roots(self):
         (self.root / "sub").mkdir()

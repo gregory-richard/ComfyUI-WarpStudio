@@ -1949,3 +1949,79 @@ def test_the_hash_cache_is_written_into_the_warp_studio_folder(warp_pipe, tmp_pa
     monkeypatch.setattr(warp_pipe, "_hash_cache", {"a": "b"})
     warp_pipe._persist_hash_cache()
     assert (tmp_path / "warp-studio" / "hashes.json").is_file()
+
+
+def _index_folder(monkeypatch, files):
+    """A fake folder_paths over {folder key: {name: real path}}."""
+    module = types.ModuleType("folder_paths")
+    module.get_filename_list = lambda kind: list(files.get(kind, {}))
+    module.get_full_path = lambda kind, name: files.get(kind, {}).get(name)
+    monkeypatch.setitem(sys.modules, "folder_paths", module)
+
+
+def test_index_entry_carries_civitai_ids_and_dates(warp_pipe, monkeypatch, tmp_path):
+    known = tmp_path / "maker - glow - v2 (krea2).safetensors"
+    known.write_bytes(b"w")
+    (tmp_path / "maker - glow - v2 (krea2).civitai.info").write_text(
+        json.dumps({"modelId": 11, "id": 22, "publishedAt": "2026-01-02T03:04:05.000Z"}),
+        encoding="utf-8",
+    )
+    bare = tmp_path / "plain.safetensors"
+    bare.write_bytes(b"w")
+    _index_folder(monkeypatch, {"loras": {known.name: str(known), bare.name: str(bare)}})
+
+    entries = {e["id"]: e for e in warp_pipe.lora_index()}
+
+    one = entries[known.name]
+    assert (one["model_id"], one["version_id"]) == (11, 22)
+    assert one["published"] == "2026-01-02T03:04:05.000Z"
+    assert one["added"].endswith("+00:00")
+    none = entries["plain.safetensors"]
+    assert (none["model_id"], none["version_id"], none["published"]) == (None, None, None)
+    assert none["added"].endswith("+00:00")
+
+
+def test_published_falls_back_to_created(warp_pipe, monkeypatch, tmp_path):
+    weights = tmp_path / "glow.safetensors"
+    weights.write_bytes(b"w")
+    (tmp_path / "glow.civitai.info").write_text(
+        json.dumps({"createdAt": "2025-05-06T07:08:09.000Z"}), encoding="utf-8"
+    )
+    _index_folder(monkeypatch, {"loras": {weights.name: str(weights)}})
+
+    assert warp_pipe.lora_index()[0]["published"] == "2025-05-06T07:08:09.000Z"
+
+
+def test_a_missing_entry_has_no_added_date(warp_pipe):
+    entry = warp_pipe._index_entry(
+        "glow.safetensors", "/nowhere/glow.safetensors", {"id": 5}, "loras", "missing"
+    )
+
+    assert entry["version_id"] == 5
+    assert entry["added"] is None
+
+
+def test_models_index_lists_checkpoints_and_diffusion_models(warp_pipe, monkeypatch, tmp_path):
+    ckpt = tmp_path / "maker - base - v1 (sdxl).safetensors"
+    unet = tmp_path / "maker - base - v1 (zit).safetensors"
+    ckpt.write_bytes(b"w")
+    unet.write_bytes(b"w")
+    _index_folder(
+        monkeypatch,
+        {"checkpoints": {ckpt.name: str(ckpt)}, "diffusion_models": {unet.name: str(unet)}},
+    )
+
+    entries = warp_pipe.models_index()
+
+    assert sorted(e["kind"] for e in entries) == ["checkpoints", "diffusion_models"]
+
+
+def test_thumbnail_source_for_model_kinds(warp_pipe, monkeypatch, tmp_path):
+    unet = tmp_path / "maker - base - v1 (zit).safetensors"
+    unet.write_bytes(b"w")
+    preview = tmp_path / "maker - base - v1 (zit).preview.png"
+    preview.write_bytes(b"png")
+    _index_folder(monkeypatch, {"diffusion_models": {unet.name: str(unet)}})
+
+    assert warp_pipe.thumbnail_source(unet.name, "diffusion_models") == str(preview)
+    assert warp_pipe.thumbnail_source(unet.name, "vae") is None
