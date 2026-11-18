@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
 - A **Gallery** tab, first in the sidebar panel: your LoRAs as cards with previews, search, and filters by type and base model.
 - A target node. A line above the search says which Prompt + LoRAs node a click adds to: the selected one, or else the last one you used. A click adds the tag to that node's LoRA list, on a line of its own.
 - **Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with that node as the target.
+- **Download** and **Replace** on the Updates cards. Downloads run on the server, one at a time, with a queue, **Stop**, progress in the job bar and a SHA-256 check. Replace sends the old version to the Recycle Bin only after the new file is checked and in place. A release in early access shows **Early access**. Most adult models need the Civitai API key.
+- **Not on this drive** in the Gallery: LoRAs whose info file is here but whose weights are not, as dimmed cards with **Download**, which puts the file next to the info file under the same name.
+- **Delete** on Gallery cards: **Delete?** for four seconds, then the weights and their sidecars go to the Recycle Bin, weights first.
 
 ### Changed
 

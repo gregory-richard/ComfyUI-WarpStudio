@@ -443,11 +443,17 @@ on a line of its own, and the card says **Added**.
 
 **Browse LoRAs** on a Prompt + LoRAs node opens the panel on this tab with that node as the target: it selects the node, then sends the `warpstudio:open-gallery` window event with the node and its id.
 
-The tab only reads the library the Prompt + LoRAs node already uses, so it needs no new route and writes no file.
+The tab lists the library the Prompt + LoRAs node already uses, and changes nothing until you press **Delete** or **Download**.
+
+**Not on this drive** is a filter, off by default and kept for the session, not across a reload. It lists the LoRAs whose `.civitai.info` is in a LoRA folder but whose weights are not, from `GET /warp-studio/loras/missing`. Their cards are dimmed, show their previews, and can't be added to a prompt. If the list can't be loaded, the tab says `Could not load the LoRAs that are not on this drive:` and the reason.
+
+**Download** on one of these cards fetches the version its info file names, and writes it next to the info file under the same name, so no naming is needed. While it waits, **Cancel** is offered; while it runs, the card shows the percentage and **Stop**. An error is shown on the card as the server sent it.
+
+**Delete** is on the cards whose weights are here. The first click turns it into **Delete?**; if you don't click again within four seconds it turns back. The second click shows **Deleting…** and sends the weights, then every sidecar that shares their name (info, preview and the rest), to the Recycle Bin. The weights go first: if they can't, nothing else is touched. A sidecar that can't go is a warning. Without the `send2trash` package, Delete is not offered. It is refused while a LoRA is waiting to be replaced by a download, and while a job other than a download runs.
 
 ### Updates, Issues and Rename
 
-The Updates tab checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models.
+The Updates tab checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models. A download starts only when you click **Download** or **Replace** on a card, as described under [Reading a result card](#6-reading-a-result-card).
 
 Base models are grouped by family, because Civitai records one per version and the spellings multiply: `Flux.1 D`, `Flux.2 Klein 9B` and `Flux.2 Klein 9B-base` all file under **Flux**, while every row still prints its exact base. A version counts as **new** when its `publishedAt` date (or `createdAt`, when `publishedAt` is missing) is later than the newest local version you have of that model, not by version number.
 
@@ -531,6 +537,44 @@ A `Buzz` badge on a `New` or `Hidden` row means downloading it costs Buzz:
 - `Buzz · always` (solid) has no free date.
 
 Civitai's public API does not give the price.
+
+A paid or early-access release shows `Early access` in place of the buttons below.
+The server refuses such a download too, with `This release is in early access.`
+
+#### Download and Replace
+
+A `New` row has **Download**. A card whose current version has its weights on
+this drive also gives the row **Replace**. Both start a download of that release
+on the server.
+
+- Downloads run one at a time, in a queue. A click while one runs shows `Waiting`
+  with **Cancel**. The running one shows its percentage (`Downloading` while the
+  size is unknown) with **Stop**; Stop deletes its partial file. A finished one
+  shows `Downloaded`. The job bar follows the run, and ends with
+  `Done — 2 downloaded`, plus `, 1 failed` and `, 1 stopped` when they are not
+  zero. A reloaded panel finds the running job and paints every row again.
+- The file is written as `<name>.part`, checked against the SHA-256 Civitai lists
+  for it, and only then renamed into place. A wrong hash or an early stop deletes
+  the `.part` and the row says so. An existing file is never overwritten.
+- The new file is named as a rename dry run would name it, with the AI naming
+  model, and goes into its base model's folder. With no naming model, or a name
+  that fails the checks, it keeps Civitai's file name, and the next dry run offers
+  a proper one. A name already taken is refused. Its `.civitai.info` and preview
+  are written the way a scan writes them.
+- **Replace** adds one step: once the new file is checked and in place, the old
+  version's weights go to the Recycle Bin, then its sidecars. If the weights can't
+  go, nothing else of the old version is touched, and the row says so. The new
+  version is never the one sent away. Tags in prompts that name the old file go red,
+  as after a rename. Replace needs the `send2trash` package, and a file can have one
+  Replace queued at a time.
+- A download or a delete is refused with `Another job is running. Try again when it's done.`
+  while any other job runs, and the other way round, Check, Fetch Missing Metadata,
+  dry runs and applies are refused while a download runs.
+- Most adult models need a Civitai API key. Without one the row shows `Civitai needs an API key for this download: Settings → Warp Studio → Civitai Network → API Key`.
+  The key goes to Civitai hosts over https only, and never follows a redirect to
+  the storage host.
+- After a restart of ComfyUI the queue is gone. A `.part` left behind is not
+  listed as a model, and the next try replaces it.
 
 `Version` means a specific Civitai release.
 `New` uses Civitai release dates: `publishedAt` first, then `createdAt` when `publishedAt` is missing.
@@ -1183,7 +1227,8 @@ not load.
 GET /warp-studio/loras
 GET /warp-studio/embeddings
 GET /warp-studio/model/base?name=<name>
-GET /warp-studio/lora/thumbnail?name=<name>&kind=<loras|embeddings>[&full=1]
+GET /warp-studio/lora/thumbnail?name=<name>&kind=<loras|embeddings|missing>[&full=1]
+GET /warp-studio/loras/missing
 GET  /warp-studio/llm/models?base_url=<url>[&refresh=1]
 GET  /warp-studio/llm/system_prompts
 GET  /warp-studio/llm/system_prompt?name=<name>
@@ -1259,6 +1304,16 @@ hundred kilobytes of JSON.
 
 ---
 
+### `GET /warp-studio/loras/missing`
+
+The LoRAs whose `.civitai.info` is in a LoRA folder but whose weights are not,
+for the Gallery's **Not on this drive** filter. The same entries as
+`GET /warp-studio/loras`, keyed `loras`, each with `"missing": true`. Their
+`thumbnail` uses `kind=missing`. It reads the folders on each call, off the
+event loop.
+
+---
+
 ### `GET /warp-studio/embeddings`
 
 Identical, keyed `embeddings`. Every entry carries `"kind": "embeddings"`, which
@@ -1293,7 +1348,7 @@ The preview image beside a model.
 | Parameter | |
 | --- | --- |
 | `name` | the model's `id` from the index |
-| `kind` | `loras` or `embeddings`; anything else is a 400 |
+| `kind` | `loras`, `embeddings` or `missing` (the preview of a LoRA that is not on this drive); anything else is a 400 |
 | `full` | `1` to serve the original instead of the thumbnail |
 
 Without `full`, a WebP capped at 320px on the long side, built on first request
@@ -1531,6 +1586,20 @@ POST /warp-studio/updater/jobs/download-naming-model
 - `rename/recover` finishes or undoes an interrupted rename.
 - `rename/reveal` and `reveal` show a file in its folder; `local-preview` returns a local preview image to the panel.
 - `jobs/download-naming-model` downloads the default naming model into the first `text_encoders` folder, unless it is already in one.
+
+#### Downloads and Delete
+
+```
+GET  /warp-studio/updater/downloads
+POST /warp-studio/updater/downloads
+POST /warp-studio/updater/downloads/{request_id}/stop
+POST /warp-studio/updater/delete-model
+```
+
+- `GET downloads` returns `{jobId, requests, canTrash}`: the running download job's id (or `null`) and every request with its state (`waiting`, `downloading`, `done` or `error`), progress and message. A reloaded panel reads it to paint its cards.
+- `POST downloads` takes `{source: "updates", jobId, modelId, versionId, modelPath, replace}` for a release in a check job's results, or `{source: "gallery", name}` for a LoRA that is not on this drive. It answers `{request, jobId}`. A release in early access, a file not in the results, or a second Replace of the same file is refused; so is a start while another kind of job runs (HTTP 409, `Another job is running. Try again when it's done.`).
+- `POST downloads/{request_id}/stop` cancels a waiting request or stops the running one. `404` for an unknown id.
+- `POST delete-model` takes `{name}`, a LoRA's `id` from the index, and sends its weights and sidecars to the Recycle Bin. It answers `{removed, warnings}`. It is refused (409) without `send2trash`, while another kind of job runs, or while that file is waiting to be replaced, and answers 404 when the LoRA is gone.
 
 ---
 

@@ -148,6 +148,13 @@ node a click adds to: the selected one, or else the last one you used. Click a
 card and its tag is added to that node's LoRA list, on a line of its own, and
 the card says **Added**.
 
+**Not on this drive** lists LoRAs whose `.civitai.info` and preview are in your
+LoRA folders but whose weights are not. Their cards are dimmed and can't be added
+to a prompt. **Download** on one fetches the version its info file describes and
+puts it next to that file, under the same name. On the other cards, **Delete**
+turns into **Delete?** for four seconds; click again and the weights and their
+info and preview go to the Recycle Bin. Without `send2trash`, Delete is not offered.
+
 **Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with
 that node as the target.
 
@@ -158,13 +165,31 @@ list the ones that have moved on without you.
 
 It identifies each file by its SHA256 hash, reads the `.civitai.info` files you
 already have, and writes only `.civitai.info` and `.preview.png` files next to
-your models. Checking downloads no model; a card links you to the release page.
+your models. Checking downloads no model; a download starts only when you click **Download**.
 
 Three more views sit above the list:
 
 - **Updates**: models with a release newer than your newest local version. A card is a ledger of that model's releases, one row per version. Red means one thing: a release exists that you do not have. A **Buzz** badge marks a release that costs Buzz.
 - **Issues**: files Civitai had no release for (a merge, a conversion, a file never uploaded) or could not be asked about (removed, needs an API key). The reason is under each row.
 - **Rename**: see below.
+
+Each newer release has a **Download** button. When the version you have is on
+this drive, there is also **Replace**: it downloads the new release, checks it,
+and only then sends the old weights and their info and preview to the Recycle
+Bin. If the old weights can't be sent, nothing else of the old version is
+touched. A release that costs Buzz or is in early access shows **Early access**
+instead of the buttons.
+
+Downloads run on the ComfyUI server, one at a time, so they carry on if you close
+the tab. A click while one runs says **Waiting**, and **Cancel** takes it out of
+the queue. A running one shows its percentage and **Stop**; the job bar shows the
+progress and ends with a line like "Done — 2 downloaded". Each file is checked
+against Civitai's SHA-256 before it is renamed into place, and nothing already
+there is overwritten. A new file gets the name the renamer would give it, in its
+base model's folder; when no naming model is set, it keeps Civitai's file name.
+
+Most adult models need a Civitai API key to download. Set it under **Warp Studio**
+→ **Civitai Network** → **API Key**; it is sent only to Civitai, over https.
 
 **Check for Updates** scans and compares. **Fetch Missing Metadata** only
 downloads sidecars and previews for models that lack them. Both can be paused,
