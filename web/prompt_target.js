@@ -18,11 +18,15 @@ export function lastUsed() {
   return lastUsedNode;
 }
 
-/** Selection first, then the last one used, then the only one there is. */
-export function pickTarget(promptNodes, selectedIds, lastUsedNode) {
+/** Selection first, then the last one used, then the only one there is.
+ *
+ * Every argument is node objects, matched by identity: a subgraph's node 3 is
+ * not the root's node 3, and neither is the 3 of a workflow opened since.
+ */
+export function pickTarget(promptNodes, selectedNodes, lastUsedNode) {
   const nodes = promptNodes || [];
-  const selected = new Set(selectedIds || []);
-  const picked = nodes.find((n) => selected.has(n.id));
+  const selected = new Set(selectedNodes || []);
+  const picked = nodes.find((n) => selected.has(n));
   if (picked) return picked;
   if (lastUsedNode && nodes.includes(lastUsedNode)) return lastUsedNode;
   return nodes.length === 1 ? nodes[0] : null;
@@ -30,12 +34,39 @@ export function pickTarget(promptNodes, selectedIds, lastUsedNode) {
 
 const isPrompt = (n) => n && (n.type === PROMPT_NODE || n.comfyClass === PROMPT_NODE);
 
-export function currentTarget(app) {
-  const graph = app?.graph;
+/** The Prompt + LoRAs nodes of the graph on screen: an open subgraph's, else
+ *  the workflow's. A node in a graph that is not shown is out of reach. */
+export function promptNodesOf(app) {
+  const graph = app?.canvas?.graph ?? app?.graph;
   const all = graph?._nodes ?? graph?.nodes ?? [];
-  const nodes = Array.from(all).filter(isPrompt);
-  const selection = Object.values(app?.canvas?.selected_nodes || {}).map((n) => n?.id);
-  return pickTarget(nodes, selection, lastUsed());
+  return Array.from(all).filter(isPrompt);
+}
+
+/* The selected nodes themselves. selectedItems is the current API; the
+   deprecated selected_nodes is read only on a frontend without it. */
+function selectionOf(app) {
+  const canvas = app?.canvas;
+  if (!canvas) return [];
+  if (canvas.selectedItems) return [...canvas.selectedItems];
+  return Object.values(canvas.selected_nodes || {});
+}
+
+export function currentTarget(app) {
+  return pickTarget(promptNodesOf(app), selectionOf(app), lastUsed());
+}
+
+export const OPEN_GALLERY = "warpstudio:open-gallery";
+
+/** The Browse LoRAs button: select its node, then ask the panel for the Gallery.
+ *
+ * A button click does not select its node on the canvas, so another prompt
+ * node that was being typed in would stay selected and win the target. Selecting
+ * it here also counts it as used (its onSelected) and moves the Gallery's line
+ * (the canvas's onSelectionChange). The event carries the node itself.
+ */
+export function requestGallery(app, node, events = globalThis.window) {
+  app?.canvas?.selectNode?.(node);
+  events?.dispatchEvent(new CustomEvent(OPEN_GALLERY, { detail: { node, nodeId: node.id } }));
 }
 
 export function insertIntoNode(node, stem) {
@@ -68,6 +99,12 @@ export function insertIntoNode(node, stem) {
   return true;
 }
 
-export function targetLabel(node) {
-  return node?.title || "Prompt + LoRAs";
+const titleOf = (node) => node?.title || "Prompt + LoRAs";
+
+/** What the target line calls a node: its title, and its id as well when
+ *  another of promptNodes has the same title, so the line tells them apart. */
+export function targetLabel(node, promptNodes = []) {
+  const title = titleOf(node);
+  const twin = node && (promptNodes || []).some((n) => n !== node && titleOf(n) === title);
+  return twin ? `${title} · #${node.id}` : title;
 }

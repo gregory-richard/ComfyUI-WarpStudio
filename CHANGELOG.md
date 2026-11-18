@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - A **Gallery** tab, first in the sidebar panel: your LoRAs as cards with previews, search, and filters by type and base model.
-- A target node. A line under the search says which Prompt + LoRAs node a click adds to: the selected one, or else the last one you used.
+- A target node. A line above the search says which Prompt + LoRAs node a click adds to: the selected one, or else the last one you used. A click adds the tag to that node's LoRA list, on a line of its own.
 - **Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with that node as the target.
 
 ### Changed

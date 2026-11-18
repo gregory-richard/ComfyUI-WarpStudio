@@ -13,13 +13,32 @@ export function groupOf(entry) {
   return entry.base_model || entry.folder || "Unsorted";
 }
 
-// "Flux.2 Klein 9B" and "flux2 klein 9b" are the same base written twice.
-const key = (name) => (name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+/** A base name the way the server files it: warp_pipe.normalise_base_model.
+ *
+ * The index's base_model has been through that already, but the panel's other
+ * views list Civitai's own spelling, so "ZImageTurbo" there is "ZImage" here.
+ * Same rules: whitespace collapsed, a trailing "base" or "turbo" dropped with
+ * the dash or space before it, and null for nothing left.
+ */
+export function normaliseBase(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const cleaned = value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[-\s]*(?:base|turbo)$/i, "");
+  return cleaned || null;
+}
+
+/** "Flux.2 Klein 9B" and "flux2 klein 9b" are the same base written twice:
+ *  this is what they share. Empty for an unknown base. */
+export function baseKey(name) {
+  return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
 
 /** Do these two name the same base model? Unknown never matches anything. */
 export function sameBase(a, b) {
-  const left = key(a);
-  return left !== "" && left === key(b);
+  const left = baseKey(a);
+  return left !== "" && left === baseKey(b);
 }
 
 /** Is this LoRA made for the connected model? True, false, or null for "can't

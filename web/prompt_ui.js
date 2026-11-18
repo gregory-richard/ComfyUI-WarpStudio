@@ -1497,9 +1497,13 @@ app.registerExtension({
   // because the library is cached in the browser and went on describing the
   // folder as it was when the tab was opened. A LoRA added since then read as
   // red, and completion never offered it.
+  //
+  // The Gallery in the panel lists the same cache, so it is told as well. It
+  // asks again at once, and the nodes below share that one fetch.
   async refreshComboInNodes() {
     forget();
     forgetBases();
+    window.dispatchEvent(new CustomEvent("warpstudio:library-changed"));
     await Promise.all([...live].map((node) => node._warppipeRefresh?.()));
   },
   async nodeCreated(node) {
@@ -2455,8 +2459,9 @@ app.registerExtension({
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commit();
     };
-    // The browser hands over a stem; it lands like anything typed would, in
-    // the box that was last being worked in - the list, until it is not.
+    // The Gallery hands over a stem; it lands like anything typed would, in
+    // the box being typed in, else the list. From the sidebar nothing here has
+    // focus, so a card click goes into the list.
     node._warppipeAddLora = (stem) => {
       const el = tagBox()?.el;
       if (!el) return false;

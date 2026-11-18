@@ -114,13 +114,24 @@ test("bandHtml always has the fit marker, so marking never moves the band", () =
 });
 
 test("targetHtml names the node, or says why there is none", () => {
-  const html = targetHtml({ title: "<i>Main</i>" }, 1, escapeHtml);
+  const main = { id: 1, title: "<i>Main</i>" };
+  const html = targetHtml(main, [main], escapeHtml);
   assert.equal(html, 'Adds to: <span class="cu-g-node">&lt;i&gt;Main&lt;/i&gt;</span>');
+  const untitled = { id: 2 };
   assert.equal(
-    targetHtml({}, 1, escapeHtml),
+    targetHtml(untitled, [untitled], escapeHtml),
     'Adds to: <span class="cu-g-node">Prompt + LoRAs</span>'
   );
-  assert.equal(targetHtml(null, 0, escapeHtml), COPY.noNode);
-  assert.equal(targetHtml(null, 2, escapeHtml), COPY.noChoice);
+  assert.equal(targetHtml(null, [], escapeHtml), COPY.noNode);
+  assert.equal(targetHtml(null, [{ id: 1 }, { id: 2 }], escapeHtml), COPY.noChoice);
   assert.equal(COPY.noNode, "No Prompt + LoRAs node in this workflow");
+});
+
+test("targetHtml tells two untitled nodes apart", () => {
+  const pair = [{ id: 4 }, { id: 7 }];
+  assert.equal(
+    targetHtml(pair[1], pair, escapeHtml),
+    'Adds to: <span class="cu-g-node">Prompt + LoRAs · #7</span>'
+  );
+  assert.notEqual(targetHtml(pair[0], pair, escapeHtml), targetHtml(pair[1], pair, escapeHtml));
 });

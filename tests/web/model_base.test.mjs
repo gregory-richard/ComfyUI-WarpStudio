@@ -6,6 +6,7 @@ import {
   fitsBase,
   fittingFamilies,
   folderBase,
+  normaliseBase,
   sameBase,
 } from "../../web/model_base.js";
 
@@ -84,4 +85,27 @@ test("the browser's families follow the same rule, largest first", () => {
 test("the warning names a folder as a folder", () => {
   assert.equal(describeBase(folderBase(KROMOSS)), "a model filed under moss");
   assert.equal(describeBase({ name: "Krea 2", fromFolder: false }), "Krea 2");
+});
+
+// The same rules as warp_pipe.normalise_base_model, on its own examples.
+test("normaliseBase folds only trivial variants, like the server", () => {
+  assert.equal(normaliseBase("Flux.2 Klein 9B-base"), "Flux.2 Klein 9B");
+  assert.equal(normaliseBase("  Krea 2 "), "Krea 2");
+  assert.notEqual(normaliseBase("Flux.2 Klein 4B"), normaliseBase("Flux.2 Klein 9B"));
+  assert.equal(normaliseBase("Flux.1   D"), "Flux.1 D");
+  assert.equal(normaliseBase(null), null);
+  assert.equal(normaliseBase(""), null);
+  assert.equal(normaliseBase("   "), null);
+  assert.equal(normaliseBase(42), null);
+});
+
+test("normaliseBase folds a Turbo into the base it was distilled from", () => {
+  assert.equal(normaliseBase("Krea 2 Turbo"), "Krea 2");
+  assert.equal(normaliseBase("Krea 2"), "Krea 2");
+  assert.equal(normaliseBase("ZImageTurbo"), "ZImage");
+  assert.equal(normaliseBase("ZImageBase"), "ZImage");
+  assert.equal(normaliseBase("Krea 2 turbo"), "Krea 2");
+  // Only as the last word: anything else is a different name, not a variant.
+  assert.equal(normaliseBase("Turbo Diffusion XL"), "Turbo Diffusion XL");
+  assert.equal(normaliseBase("Turbo"), null);
 });

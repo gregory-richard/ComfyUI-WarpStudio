@@ -29,7 +29,7 @@ Or clone `https://github.com/gregory-richard/ComfyUI-WarpStudio` into `ComfyUI/c
 
 Don't uninstall Civitai Updater until Warp Studio has started once: your updater data lives in its folder and is copied on that first start.
 
-Nothing looks different: the nodes, the Prompt Writer, the LoRA browser and the updater panel work as before. The panel is now called **Warp Studio**. Settings now sit under **Warp Studio** in ComfyUI's settings, and the updater's groups read "Civitai Network", "Civitai General" and so on. The HTTP routes start with `/warp-studio/`.
+The nodes, the Prompt Writer and the updater work as before. **Browse LoRAs** now opens the Gallery in the sidebar panel instead of a pop-up, and the panel is now called **Warp Studio**. Settings now sit under **Warp Studio** in ComfyUI's settings, and the updater's groups read "Civitai Network", "Civitai General" and so on. The HTTP routes start with `/warp-studio/`.
 
 ## Prompt + LoRAs
 
@@ -143,9 +143,10 @@ and a rename for your files.
 ### Gallery
 
 Your LoRAs as cards with their previews. Search by name, creator or version, and
-filter by type or base model. A line under the search says which Prompt + LoRAs
+filter by type or base model. A line above the search says which Prompt + LoRAs
 node a click adds to: the selected one, or else the last one you used. Click a
-card and its tag is written into that node, and the card says **Added**.
+card and its tag is added to that node's LoRA list, on a line of its own, and
+the card says **Added**.
 
 **Browse LoRAs** on a Prompt + LoRAs node opens the panel on the Gallery with
 that node as the target.

@@ -2,7 +2,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 import { renderGalleryView } from "./gallery_view.js";
-import { noteUsed } from "./prompt_target.js";
+import { galleryOnlyBases } from "./gallery_core.js";
+import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
 
 const TAB_ID = "warp-studio-updater";
@@ -228,7 +229,12 @@ app.registerExtension({
       type: "custom",
       render: (el) => renderTab(el),
     });
-    window.addEventListener("warpstudio:open-gallery", (ev) => openGallery(ev?.detail?.nodeId));
+    window.addEventListener("warpstudio:open-gallery", (ev) => openGallery(ev?.detail));
+    // Refresh Node Definitions dropped the shared library: a Gallery on screen
+    // reads it again, so a LoRA added since shows up without a page reload.
+    window.addEventListener("warpstudio:library-changed", () => {
+      if (state.galleryLoaded) state.galleryView?.refresh().catch(() => {});
+    });
   },
 });
 
@@ -396,7 +402,7 @@ async function renderTab(el) {
   state.pendingGallery = null;
   if (pending) state.resultMode = "gallery";
   applyResultMode();
-  if (pending) openedGallery(pending.nodeId);
+  if (pending) openedGallery(pending);
   // The saved dry run loads in the background, so the Rename tab shows its count.
   if (state.resultMode !== "rename") state.renameView.refresh().catch(() => {});
 
@@ -1500,22 +1506,25 @@ function showGallery() {
 }
 
 /* A Prompt + LoRAs node asked for the gallery: note it as used, show the
-   Gallery (opening the sidebar if needed) and reorder for that node. */
-function openGallery(nodeId) {
+   Gallery (opening the sidebar if needed) and reorder for that node.
+   request is the event's detail: { node, nodeId }. */
+function openGallery(request) {
   const sidebar = app.extensionManager?.sidebarTab;
   const drawn = Boolean(state.rootEl?.isConnected && state.galleryView);
-  if (!drawn) state.pendingGallery = { nodeId };
+  if (!drawn) state.pendingGallery = { node: request?.node ?? null, nodeId: request?.nodeId };
   if (sidebar && sidebar.activeSidebarTabId !== TAB_ID) sidebar.toggleSidebarTab(TAB_ID);
   if (!drawn) return; // renderTab applies the request when it draws
   state.pendingGallery = null;
   state.resultMode = "gallery";
   applyResultMode();
-  openedGallery(nodeId);
+  openedGallery(request);
 }
 
-function openedGallery(nodeId) {
-  const nodes = app.graph?._nodes ?? app.graph?.nodes ?? [];
-  const node = Array.from(nodes).find((n) => n && String(n.id) === String(nodeId));
+/* The node itself when the event carries it; by id, in the graph on screen,
+   only for a sender that gives an id alone. */
+function openedGallery(request) {
+  const node = request?.node
+    ?? (request?.nodeId == null ? null : promptNodesOf(app).find((n) => String(n.id) === String(request.nodeId)));
   if (node) noteUsed(node);
   const view = state.galleryView;
   if (!view) return;
@@ -1661,15 +1670,18 @@ function setLoading(kind, on) {
   state.loadingBarEl?.classList.toggle("is-on", loadingNow.size > 0);
 }
 
-/* The filter menus serve every view: the check's models, the dry run's and the gallery's. */
+/* The filter menus serve every view: the check's models, the dry run's and the gallery's.
+   The gallery files "ZImageTurbo" under "ZImage", and ticking the check's spelling
+   shows those LoRAs too, so a gallery base the others already name is not listed twice. */
 function mergedFacets() {
   const check = state.checkFacets || {};
   const rename = state.renameFacets || {};
   const gallery = state.galleryFacets || {};
   const union = (...lists) => [...new Set(lists.flatMap((list) => list || []))].sort();
+  const others = union(check.baseModels, rename.baseModels);
   return {
     modelTypes: union(check.modelTypes, rename.modelTypes, gallery.modelTypes),
-    baseModels: union(check.baseModels, rename.baseModels, gallery.baseModels),
+    baseModels: union(others, galleryOnlyBases(gallery.baseModels, others)),
   };
 }
 

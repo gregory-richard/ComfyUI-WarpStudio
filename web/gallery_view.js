@@ -9,10 +9,10 @@ import { cardModel, filterEntries, galleryFacets, groupEntries } from "./gallery
 import { forget, loras } from "./library.js";
 import { connectedBase, describeBase, fittingFamilies } from "./model_base.js";
 import {
-  PROMPT_NODE,
   currentTarget,
   insertIntoNode,
   noteUsed,
+  promptNodesOf,
   targetLabel,
 } from "./prompt_target.js";
 
@@ -87,12 +87,14 @@ export function bandHtml(band, { fits = false, quiet = false, fitTitle = "" }, e
   );
 }
 
-/** The target line: the node a click adds to, or why there is none. */
+/** The target line: the node a click adds to, or why there is none.
+ *  promptNodes are the Prompt + LoRAs nodes of the graph on screen. */
 export function targetHtml(node, promptNodes, escapeHtml) {
   if (node) {
-    return `Adds to: <span class="cu-g-node">${escaper(escapeHtml)(targetLabel(node))}</span>`;
+    const label = targetLabel(node, promptNodes);
+    return `Adds to: <span class="cu-g-node">${escaper(escapeHtml)(label)}</span>`;
   }
-  return promptNodes > 0 ? COPY.noChoice : COPY.noNode;
+  return (promptNodes || []).length > 0 ? COPY.noChoice : COPY.noNode;
 }
 
 /* ---------------------------------------------------------------- canvas */
@@ -113,14 +115,6 @@ function hookSelection(app) {
     onSelection?.();
     return result;
   };
-}
-
-function promptNodeCount(app) {
-  const graph = app?.graph;
-  const all = graph?._nodes ?? graph?.nodes ?? [];
-  return Array.from(all).filter(
-    (n) => n && (n.type === PROMPT_NODE || n.comfyClass === PROMPT_NODE)
-  ).length;
 }
 
 /* ---------------------------------------------------------------- the view */
@@ -167,12 +161,13 @@ export function renderGalleryView(el, options) {
   }
 
   function drawTarget() {
-    const html = targetHtml(target, target ? 1 : promptNodeCount(app), options.escapeHtml);
+    const nodes = promptNodesOf(app);
+    const html = targetHtml(target, nodes, options.escapeHtml);
     if (html !== targetShown) {
       targetEl.innerHTML = html;
       targetShown = html;
     }
-    targetEl.title = target ? targetLabel(target) : "";
+    targetEl.title = target ? targetLabel(target, nodes) : "";
     const has = Boolean(target);
     if (has !== hadTarget) {
       hadTarget = has;
@@ -375,6 +370,9 @@ export function renderGalleryView(el, options) {
     if (!node || !insertIntoNode(node, hit.model.stem)) return;
     noteUsed(node);
     flashAdded(card);
+    // Adding moved focus into the node's box. A press from the keyboard (no
+    // pointer, so detail 0) gets it back, so the reader keeps their place.
+    if (ev.detail === 0) pick.focus({ preventScroll: true });
   });
 
   // A thumbnail that fails to load becomes the quiet stem box, in the same space.

@@ -219,7 +219,7 @@ Matching is tried in this order, ignoring case and slash direction:
 3. every word, in any order — `sdxl detail tweaker` finds the above
 4. a unique fragment — `detail tweaker`
 
-Option 2 always works and is what the browser inserts. Option 3 is usually the
+Option 2 always works and is what the Gallery inserts. Option 3 is usually the
 shortest thing worth typing.
 
 **A tag that matches nothing, or matches several files, stops the run** and says
@@ -297,8 +297,7 @@ where the other went.
 this node as the target. The Gallery is described under
 [The Gallery tab](#the-gallery-tab); there is no separate pop-up.
 
-A click on a card writes its tag on a line of its own, at the caret of the
-box you last worked in.
+A click on a card adds its tag to the node's LoRA list, on a line of its own.
 
 ### Bundling a generation
 
@@ -435,13 +434,14 @@ The sidebar tab **Warp Studio** has four tabs: **Gallery**, **Updates**, **Issue
 
 Your LoRAs as cards with their previews, grouped by base model. Search matches name, creator and version, and the filters narrow by type and base model. Nothing matching shows an empty state, not the whole library.
 
-A line under the search says where a click goes: **Adds to:** and the title of
-a Prompt + LoRAs node. That is the selected node; with none selected, the last
-one you used. If the workflow has none, the line says so. A click on a card
-writes its tag on a line of its own, at the caret of the box you last worked in,
-and the card says **Added**.
+A line above the search says where a click goes: **Adds to:** and the title of
+a Prompt + LoRAs node, with its id after it when another one has the same title.
+That is the selected node; with none selected, the last one you used. Inside an
+open subgraph it is one of that subgraph's nodes. If the graph on screen has
+none, the line says so. A click on a card adds its tag to the node's LoRA list,
+on a line of its own, and the card says **Added**.
 
-**Browse LoRAs** on a Prompt + LoRAs node opens the panel on this tab with that node as the target (it sends the `warpstudio:open-gallery` window event, with the node id).
+**Browse LoRAs** on a Prompt + LoRAs node opens the panel on this tab with that node as the target: it selects the node, then sends the `warpstudio:open-gallery` window event with the node and its id.
 
 The tab only reads the library the Prompt + LoRAs node already uses, so it needs no new route and writes no file.
 
@@ -1176,8 +1176,8 @@ Writer. The Warp Studio panel's routes, under `/warp-studio/updater/`, are
 
 If `aiohttp` or `server` cannot be imported — running the module outside
 ComfyUI, for tests or a lint — registration is skipped and the nodes still work.
-The frontend degrades with it: tags go uncoloured and the browser says the
-library is unavailable.
+The frontend degrades with it: tags go uncoloured and the Gallery says it could
+not load.
 
 ```
 GET /warp-studio/loras
@@ -1213,7 +1213,7 @@ stops the request at the provider.
 
 ### `GET /warp-studio/loras`
 
-Every LoRA in the configured folders, with everything the browser needs and no
+Every LoRA in the configured folders, with everything the Gallery needs and no
 image data.
 
 ```json
@@ -1546,6 +1546,10 @@ __init__.py           starts both halves, or stands down for an old package
 web/
   civitai_updater.js  the Warp Studio sidebar panel
   rename_view.js      its Rename view
+  gallery_view.js     its Gallery view: the cards, the bands, the target line
+  gallery_core.js     the Gallery's search, filters, bands and card data, without markup
+  prompt_target.js    which Prompt + LoRAs node a Gallery click adds to
+  scroll_memory.js    each panel view's own scroll offset
   storage_migration.js  carries the Rename view's saved choices over
   prompt_ui.js        the coloured prompt box, the strip, inline completion
   lora_browser.js     the Browse LoRAs button, which opens the panel's Gallery
@@ -1685,7 +1689,7 @@ all torn down on `onRemoved`.
 
 ### Refreshing
 
-The library index is fetched once and shared by the prompt box and the browser,
+The library index is fetched once and shared by the prompt box and the Gallery,
 because reading a sidecar per file is the expensive call on the server. A cache
 that is never dropped goes stale, though: a LoRA added after the tab was opened
 would keep reading as unknown.
@@ -1695,7 +1699,9 @@ are reloaded - the `r` key, or the menu - which is the same moment every other
 node's model lists update. Warp Studio uses it to drop three things: the shared
 library, the base model asked of the server per checkpoint, and each node's own
 memo of what it had resolved. Nodes register themselves in a set while they
-live, because walking the root graph would miss any inside a subgraph.
+live, because walking the root graph would miss any inside a subgraph. It also
+sends the `warpstudio:library-changed` window event, and a Gallery that has
+loaded reads the library again.
 
 ### Widget values
 
@@ -1969,7 +1975,9 @@ picture *and* wrong metadata, so an unresolvable tag fails the run rather than
 being skipped with a warning nobody reads. Fix the tag, or comment it out with
 `//`.
 
-### No previews in the browser
+<a id="no-previews-in-the-browser"></a>
+
+### No previews in the Gallery
 
 Previews are read off the disk: an image beside the model file named
 `<model>.preview.png`, `.preview.jpg`, `.preview.webp`, or just `<model>.png`.
@@ -1984,7 +1992,7 @@ that Pillow is importable in ComfyUI's Python.
 The library is read once and cached in the browser, so a file added since the
 tab was opened is not there yet. Press `r`, or pick **Refresh Node Definitions**
 from the menu — the same thing that reloads every other node's model lists now
-drops Warp Studio's cache as well. The prompt box recolours and the browser lists
+drops Warp Studio's cache as well. The prompt box recolours and the Gallery lists
 it without a page reload.
 
 The same applies to a `.civitai.info` written since: refresh and the trigger

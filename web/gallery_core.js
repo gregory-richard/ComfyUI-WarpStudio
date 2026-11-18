@@ -2,23 +2,42 @@
 // leave, how they fall into bands, and what a card shows for each.
 //
 // Pure on purpose, so node can test it and the panel only has to draw.
-import { groupOf } from "./model_base.js";
+import { baseKey, groupOf, normaliseBase } from "./model_base.js";
 import { stemOf } from "./text.js";
 
 const TYPE = "lora";
 const label = (entry) => entry.title || entry.name || "";
 const fold = (text) => String(text ?? "").toLowerCase();
 
+/* The keys a selected base stands for: as written, and as the server files it.
+   The first keeps a folder name that ends in "turbo" matching its own LoRAs;
+   the second lets the check's "ZImageTurbo" find the LoRAs filed as "ZImage". */
+function wantedKeys(bases) {
+  const keys = new Set();
+  for (const base of bases) {
+    for (const name of [base, normaliseBase(base)]) {
+      const key = baseKey(name);
+      if (key) keys.add(key);
+    }
+  }
+  return keys;
+}
+
 /** The entries that match the search and the selected types and bases.
  *
  * null for types or bases means no filter; an empty array means nothing is
- * selected, so nothing matches.
+ * selected, so nothing matches. A base matches spelling aside, and a Turbo or
+ * Base spelling matches the base it is filed under.
  */
 export function filterEntries(entries, { query = "", types = null, bases = null } = {}) {
   const terms = fold(query).split(/\s+/).filter(Boolean);
+  const wanted = bases ? wantedKeys(bases) : null;
   return entries.filter((entry) => {
     if (types && !types.includes(TYPE)) return false;
-    if (bases && !bases.includes(groupOf(entry))) return false;
+    if (bases) {
+      const group = groupOf(entry);
+      if (!bases.includes(group) && !wanted.has(baseKey(group))) return false;
+    }
     if (!terms.length) return true;
     const hay = [entry.creator, label(entry), entry.version, groupOf(entry)].map(fold).join(" ");
     return terms.every((term) => hay.includes(term));
@@ -32,6 +51,18 @@ export function galleryFacets(entries) {
     modelTypes: entries.length ? [TYPE] : [],
     baseModels: [...bases].sort((x, y) => fold(x).localeCompare(fold(y)) || x.localeCompare(y)),
   };
+}
+
+/** The gallery's bases that no other view's base already stands for.
+ *
+ * The panel's Bases menu is one list for every view. The check and the dry run
+ * name Civitai's spelling ("ZImageTurbo"); the gallery names it the way the
+ * server filed it ("ZImage"). Listing both would offer the same base twice.
+ * A gallery base goes when ticking one of the others shows its LoRAs anyway.
+ */
+export function galleryOnlyBases(galleryBases, otherBases) {
+  const taken = wantedKeys((otherBases || []).filter((base) => typeof base === "string"));
+  return (galleryBases || []).filter((base) => !taken.has(baseKey(base)));
 }
 
 /** Entries as bands by base: the ones that fit first, then the biggest. */
