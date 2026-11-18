@@ -297,7 +297,8 @@ where the other went.
 this node as the target. The Gallery is described under
 [The Gallery tab](#the-gallery-tab); there is no separate pop-up.
 
-Clicking a card writes its tag on a line of its own, at the caret of the box you last worked in (the LoRAs list, until you click into another).
+A click on a card writes its tag on a line of its own, at the caret of the
+box you last worked in.
 
 ### Bundling a generation
 
@@ -434,7 +435,11 @@ The sidebar tab **Warp Studio** has four tabs: **Gallery**, **Updates**, **Issue
 
 Your LoRAs as cards with their previews, grouped by base model. Search matches name, creator and version, and the filters narrow by type and base model. Nothing matching shows an empty state, not the whole library.
 
-A line under the search says where a click goes: **Adds to:** and the title of a Prompt + LoRAs node. That is the selected node; with none selected, the last one you used. If the workflow has none, the line says so. Clicking a card writes the LoRA's tag on a line of its own, at the caret of the box you last worked in in that node (the LoRAs list, until you click into another), and the card says **Added**.
+A line under the search says where a click goes: **Adds to:** and the title of
+a Prompt + LoRAs node. That is the selected node; with none selected, the last
+one you used. If the workflow has none, the line says so. A click on a card
+writes its tag on a line of its own, at the caret of the box you last worked in,
+and the card says **Added**.
 
 **Browse LoRAs** on a Prompt + LoRAs node opens the panel on this tab with that node as the target (it sends the `warpstudio:open-gallery` window event, with the node id).
 
@@ -1311,6 +1316,8 @@ These routes are unauthenticated, exactly as the rest of ComfyUI's are. Anyone
 who can reach your ComfyUI can list your model library through them, which is
 worth knowing if you have bound the server to something other than localhost.
 
+<a id="civitai-panel-routes"></a>
+
 ### Warp Studio panel routes
 
 The panel's routes all start with `/warp-studio/updater/`, and return JSON.
@@ -1721,6 +1728,8 @@ other packs accept a workflow built around RES4LYF's schedulers even when
 RES4LYF has not loaded. Startup logs which names it stood in for.
 
 
+<a id="the-civitai-panel"></a>
+
 ### The Warp Studio panel
 
 The panel has two layers: a backend service (`comfy_updater/`) and a frontend sidebar tab (`web/civitai_updater.js`). Both are started from `__init__.py`.
@@ -2062,7 +2071,11 @@ it into the Warp — or check that the Warp you are unpacking is the one you
 think, since a chained Warp only carries what it was given plus what it was told.
 
 
+<a id="the-civitai-panel-1"></a>
+
 ### The Warp Studio panel
+
+<a id="the-civitai-tab-is-not-in-the-sidebar"></a>
 
 #### The Warp Studio tab is not in the sidebar
 
