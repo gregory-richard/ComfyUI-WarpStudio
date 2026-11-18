@@ -211,3 +211,15 @@ test("galleryStateText shows Waiting, the percentage and the error, and Download
   assert.equal(galleryStateText(dlrec({ state: "error", error: "Nope." }), {}), "Nope.");
   assert.equal(galleryStateText(dlrec({ state: "waiting" }), { justDone: true }), "Waiting");
 });
+
+test("a waiting record names the job it waits for", () => {
+  const waiting = (waitingFor) => rec({ state: "waiting", waitingFor });
+  assert.equal(recordMessage(waiting("check-updates")), "Waiting for the check");
+  assert.equal(galleryStateText(waiting("check-updates"), {}), "Waiting for the check");
+  assert.equal(recordMessage(waiting("rename-apply")), "Waiting for the rename");
+  assert.equal(recordMessage(waiting("something-new")), "Waiting for another job");
+  assert.equal(galleryStateText(waiting("something-new"), {}), "Waiting for another job");
+  // Without a waitingFor, today's text.
+  assert.equal(recordMessage(rec({ state: "waiting" })), "");
+  assert.equal(galleryStateText(rec({ state: "waiting" }), {}), "Waiting");
+});

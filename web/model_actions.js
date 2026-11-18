@@ -53,9 +53,22 @@ export function slotState(record) {
   return "idle";
 }
 
+/* The job a waiting download is held behind, as a short phrase. */
+export const WAITING_FOR = {
+  "check-updates": "the check",
+  scan: "the metadata fetch",
+  "rename-dry-run": "the dry run",
+  "rename-apply": "the rename",
+  "naming-model-download": "the naming model download",
+};
+
+const waitingText = (record) =>
+  record.waitingFor ? `Waiting for ${WAITING_FOR[record.waitingFor] ?? "another job"}` : "";
+
 export function recordMessage(record) {
   if (!record) return "";
   if (record.error) return String(record.error);
+  if (record.state === "waiting" && record.waitingFor) return waitingText(record);
   return (record.warnings || []).join(" ");
 }
 
@@ -114,7 +127,7 @@ export function galleryActionHtml(card, record, ui, escapeHtml) {
 /* The Gallery card's state overlay: Waiting, the percentage, the error; Downloaded only just after. */
 export function galleryStateText(record, { justDone = false } = {}) {
   const state = slotState(record);
-  if (state === "waiting") return COPY.waiting;
+  if (state === "waiting") return waitingText(record) || COPY.waiting;
   if (state === "downloading") {
     const pct = percent(record);
     return pct === null ? COPY.downloading : `${pct}%`;
