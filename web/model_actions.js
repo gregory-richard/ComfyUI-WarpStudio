@@ -18,6 +18,7 @@ export const COPY = {
   deleteAsk: "Delete?",
   deleting: "Deleting…",
   deleteTitle: "Send this LoRA and its sidecars to the Recycle Bin",
+  deleteTitleFor: (noun) => `Send this ${noun} and its sidecars to the Recycle Bin`,
   replaceTitle: "Download this release, then send the version you have to the Recycle Bin",
 };
 
@@ -86,7 +87,14 @@ export function finishedText(summary) {
   return text;
 }
 
-/* The Gallery card's action slot. card = { missing }, ui = { canTrash, confirming, deleting }. */
+const NOUNS = {
+  loras: "LoRA",
+  checkpoints: "checkpoint",
+  diffusion_models: "diffusion model",
+  embeddings: "embedding",
+};
+
+/* The Gallery card's action slot. card = { missing, kind }, ui = { canTrash, confirming, deleting }. */
 export function galleryActionHtml(card, record, ui, escapeHtml) {
   const button = (action, label, extra = "") =>
     `<button type="button" class="cu-inline-btn cu-g-btn" data-g-action="${action}"${extra}>${label}</button>`;
@@ -100,7 +108,8 @@ export function galleryActionHtml(card, record, ui, escapeHtml) {
     return button("download", COPY.download, ` title="${COPY.downloadTitle}"`);
   }
   if (!ui?.canTrash) return "";
-  const title = ` title="${COPY.deleteTitle}"`;
+  const noun = NOUNS[card?.kind];
+  const title = ` title="${noun ? COPY.deleteTitleFor(noun) : COPY.deleteTitle}"`;
   const mark = `class="cu-inline-btn cu-g-btn cu-g-del"`;
   if (ui.deleting) {
     return `<button type="button" ${mark} data-g-action="delete" data-deleting disabled${title}>${COPY.deleting}</button>`;
