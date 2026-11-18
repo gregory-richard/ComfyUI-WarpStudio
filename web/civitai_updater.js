@@ -1711,7 +1711,8 @@ async function deleteModel(name) {
 // After a download finished: the check results and the gallery read the library again.
 async function refreshAfterAction() {
   if (state.checkJobId) await loadResultPage(true);
-  if (state.galleryLoaded) state.galleryView?.refresh();
+  // Forced: a load already in flight may predate what just changed. Resolves once the cards are drawn.
+  if (state.galleryLoaded) await state.galleryView?.refresh(true);
 }
 
 function setNamingModels(list) {

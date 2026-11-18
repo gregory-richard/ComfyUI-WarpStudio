@@ -29,36 +29,39 @@ export function everything() {
   if (cached) return Promise.resolve(cached);
   if (pending) return pending;
 
-  pending = Promise.all([
+  const mine = Promise.all([
     ask("/warp-studio/loras", "loras"),
     // An installation may have no embeddings folder configured, and that is not
     // a reason for the LoRAs to be unavailable too.
     ask("/warp-studio/embeddings", "embeddings").catch(() => []),
   ])
     .then(([lora, embedding]) => {
-      cached = [...lora, ...embedding];
-      return cached;
+      // forget() may have run since: a stale list must not become the cache.
+      const list = [...lora, ...embedding];
+      if (pending === mine) cached = list;
+      return list;
     })
     .finally(() => {
-      pending = null;
+      if (pending === mine) pending = null;
     });
-
-  return pending;
+  pending = mine;
+  return mine;
 }
 
 /** The LoRAs Civitai knows of that are not on this drive, with one shared request. */
 export function missingLoras() {
   if (missingCached) return Promise.resolve(missingCached);
   if (missingPending) return missingPending;
-  missingPending = ask("/warp-studio/loras/missing", "loras")
+  const mine = ask("/warp-studio/loras/missing", "loras")
     .then((list) => {
-      missingCached = list;
+      if (missingPending === mine) missingCached = list;
       return list;
     })
     .finally(() => {
-      missingPending = null;
+      if (missingPending === mine) missingPending = null;
     });
-  return missingPending;
+  missingPending = mine;
+  return mine;
 }
 
 /** Forget it, so a model added since is picked up on the next ask. */

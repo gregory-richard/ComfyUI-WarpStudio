@@ -160,6 +160,7 @@ export function renderGalleryView(el, options) {
   let query = "";
   let shown = 0;
   let loading = null;
+  let generation = 0;
 
   let target = null;
   let connected = null;
@@ -285,15 +286,19 @@ export function renderGalleryView(el, options) {
   /* Loads the LoRA index. The first load takes the shared cache (the prompt may
      have filled it); every later one asks the server again, so a model added
      since shows up. The cards on screen stay until the new list is in. */
-  function refresh() {
-    if (loading) return loading;
-    loading = (async () => {
+  function refresh(force = false) {
+    // A forced refresh (after a delete) never takes an in-flight load: its list may predate the change.
+    if (loading && !force) return loading;
+    const seq = ++generation;
+    const run = (async () => {
       try {
         if (entries) forget();
         const list = await loras();
+        if (seq !== generation) return; // a newer load has the answer
         entries = list;
         error = "";
         await loadAbsent();
+        if (seq !== generation) return;
         const keys = new Set(listed().map((entry) => entry.id));
         for (const key of cards.keys()) if (!keys.has(key)) cards.delete(key);
         options.onFacets?.(galleryFacets(listed()));
@@ -303,11 +308,13 @@ export function renderGalleryView(el, options) {
         else console.warn("[Warp Studio] Could not reload the gallery:", err);
       }
       await retarget();
+      if (seq !== generation) return;
       render();
     })().finally(() => {
-      loading = null;
+      if (loading === run) loading = null;
     });
-    return loading;
+    loading = run;
+    return run;
   }
 
   /* ---- rendering ---- */
@@ -406,7 +413,10 @@ export function renderGalleryView(el, options) {
       setAsking(key, "deleting");
       const failure = await options.onDelete?.(key);
       if (failure) notes.set(key, failure);
-      setAsking(key, null);
+      // Success: the refresh has run and removed the card. Never repaint Delete under the
+      // cursor in between; only an error, or a card the server kept, turns it back.
+      if (failure || cards.has(key)) setAsking(key, null);
+      else asking.delete(key);
     }
     paintDownloads();
   }
