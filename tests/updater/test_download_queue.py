@@ -88,6 +88,18 @@ class DownloadQueueTests(unittest.TestCase):
         self.assertTrue(needs_job)
         self.assertEqual(again.state, "waiting")
 
+    def test_abandon_fails_every_waiting_request(self):
+        queue = DownloadQueue()
+        a, first = queue.submit(_request("a"))
+        b, second = queue.submit(_request("b"))
+        self.assertEqual((first, second), (True, False))
+        queue.abandon(a, "busy")
+        self.assertEqual(("error", "busy"), (a.state, a.error))
+        self.assertEqual(("error", "busy"), (b.state, b.error))
+        self.assertEqual(0, queue.waiting())
+        _c, needs_job = queue.submit(_request("c"))
+        self.assertTrue(needs_job)
+
     def test_cancelling_a_waiting_request_drops_it(self):
         queue = DownloadQueue()
         queue.submit(_request("a"))

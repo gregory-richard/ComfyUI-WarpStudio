@@ -481,6 +481,50 @@ class DownloadHelperTests(_Dirs):
         _next, needs_job = queue.submit(_request("203"))
         self.assertTrue(needs_job)
 
+    def test_a_request_waiting_behind_an_abandoned_retry_is_failed_too(self) -> None:
+        queue = DownloadQueue()
+
+        class _Manager:
+            def __init__(self):
+                self.starts = 0
+                self.active = JobRecord(id="closing", type=MODEL_DOWNLOAD_JOB)
+
+            def start(self, job_type, runner, **kwargs):
+                self.starts += 1
+                return None
+
+            def get_active(self):
+                return self.active
+
+        manager = _Manager()
+        outcome: list = []
+
+        def first_click():
+            outcome.append(
+                asyncio.run(
+                    submit_download(queue, manager, _request("202"), None, attempts=500, delay=0.01)
+                )
+            )
+
+        thread = threading.Thread(target=first_click)
+        thread.start()
+        try:
+            end = time.monotonic() + 5
+            while manager.starts < 2 and time.monotonic() < end:
+                time.sleep(0.005)
+            self.assertGreaterEqual(manager.starts, 2)  # the first click is retrying
+            second, _second_id = asyncio.run(submit_download(queue, manager, _request("203"), None))
+            manager.active = JobRecord(id="other", type="check-updates")
+        finally:
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        first, first_id = outcome[0]
+        self.assertIsNone(first_id)
+        self.assertEqual(("error", DOWNLOAD_BUSY_ERROR), (first.state, first.error))
+        self.assertEqual(("error", DOWNLOAD_BUSY_ERROR), (second.state, second.error))
+        _next, needs_job = queue.submit(_request("204"))
+        self.assertTrue(needs_job)
+
     def test_downloads_cannot_be_paused(self) -> None:
         self.assertTrue(_unpausable(JobRecord(id="a", type=MODEL_DOWNLOAD_JOB)))
         self.assertTrue(_unpausable(JobRecord(id="b", type=NAMING_MODEL_DOWNLOAD_JOB)))

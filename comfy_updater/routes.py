@@ -1204,7 +1204,7 @@ def _register_model_action_routes(
     return queue
 
 
-REVEAL_REMOTE_ERROR ="Show in folder works only on the computer ComfyUI runs on."
+REVEAL_REMOTE_ERROR = "Show in folder works only on the computer ComfyUI runs on."
 
 
 def is_loopback(remote: Any) -> bool:

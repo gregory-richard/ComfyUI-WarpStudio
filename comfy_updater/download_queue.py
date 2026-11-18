@@ -134,9 +134,15 @@ class DownloadQueue:
             return stopped
 
     def abandon(self, request: DownloadRequest, error: str) -> None:
+        """Fail the request whose job never started, and every request waiting behind it.
+
+        No runner exists when this is called, so a waiting request would never run.
+        """
         with self._lock:
-            request.state = "error"
-            request.error = error
+            for held in self._requests:
+                if held is request or held.state == "waiting":
+                    held.state = "error"
+                    held.error = error
             self._busy = False
             self._prune_locked()
 
