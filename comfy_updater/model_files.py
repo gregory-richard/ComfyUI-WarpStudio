@@ -11,14 +11,24 @@ from .rename_apply import assign_siblings
 from .sidecar import model_file_path, read_json, sidecar_identifies_model
 
 
-def lora_roots() -> list[Path]:
-    """ComfyUI's ``loras`` folders; empty outside ComfyUI or when they can't be read."""
+MODEL_FOLDER_KEYS = ("loras", "embeddings", "checkpoints", "diffusion_models")
+
+
+def folder_roots(kind: str) -> list[Path]:
+    """ComfyUI's folders for a model kind; empty for any other kind, outside ComfyUI or when unreadable."""
+    if kind not in MODEL_FOLDER_KEYS:
+        return []
     try:
         import folder_paths
 
-        return [Path(str(path)) for path in folder_paths.get_folder_paths("loras")]
+        return [Path(str(path)) for path in folder_paths.get_folder_paths(kind)]
     except Exception:
         return []
+
+
+def lora_roots() -> list[Path]:
+    """ComfyUI's ``loras`` folders; empty outside ComfyUI or when they can't be read."""
+    return folder_roots("loras")
 
 
 def _norm(path: object) -> str:

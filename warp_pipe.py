@@ -10,6 +10,7 @@ import time
 import urllib.parse
 import uuid
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any, ClassVar, Optional
 
 try:
@@ -2270,6 +2271,29 @@ def lora_index() -> list[dict[str, Any]]:
     return model_index("loras")
 
 
+def _int_or_none(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _sidecar_published(payload: dict[str, Any]) -> Optional[str]:
+    """When Civitai published the version, as written; its creation time when that is all there is."""
+    for key in ("publishedAt", "createdAt"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _added_time(path: Optional[str]) -> Optional[str]:
+    """The weights file's modification time as ISO-8601 UTC; None when there is no file."""
+    if not path:
+        return None
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 def _index_entry(
     name: str,
     path: Optional[str],
@@ -2280,6 +2304,7 @@ def _index_entry(
     """One library entry. ``path`` is where the weights are, or would be."""
     parsed = parse_lora_filename(name)
     has_preview = lora_preview_path(path) is not None
+    payload = payload or {}
     return {
         # The exact string a tag must contain.
         "id": name,
@@ -2299,6 +2324,12 @@ def _index_entry(
         # filename convention is not.
         "title": _sidecar_title(payload),
         "url": _civitai_url(payload),
+        # Civitai's ids and dates, so a client can stack versions of one model
+        # and sort by when each was published or arrived here.
+        "model_id": _int_or_none(payload.get("modelId")),
+        "version_id": _int_or_none(payload.get("id")),
+        "published": _sidecar_published(payload),
+        "added": _added_time(path),
         # Read from the payload already in hand. Calling
         # civitai_trigger_words here re-opened and re-parsed the same
         # sidecar, doubling the file reads for the whole library.
@@ -2327,6 +2358,11 @@ def model_index(folder_key: str = "loras") -> list[dict[str, Any]]:
     return entries
 
 
+def models_index() -> list[dict[str, Any]]:
+    """Checkpoints and diffusion models, in the same shape as the LoRA index."""
+    return model_index("checkpoints") + model_index("diffusion_models")
+
+
 def missing_lora_index() -> list[dict[str, Any]]:
     """LoRAs whose info file is here but whose weights are not, in the LoRA index shape."""
     entries: list[dict[str, Any]] = []
@@ -2347,7 +2383,7 @@ def missing_lora_index() -> list[dict[str, Any]]:
 
 def thumbnail_source(name: str, kind: str) -> Optional[str]:
     """The preview image a thumbnail request names, or None."""
-    if kind in {"loras", "embeddings"}:
+    if kind in {"loras", "embeddings", "checkpoints", "diffusion_models"}:
         return lora_preview_path(_resolve_model_path(kind, name))
     if kind == "missing":
         found = model_files.missing_info(model_files.lora_roots(), name)
@@ -2375,6 +2411,10 @@ def _register_routes() -> None:
     async def _loras(request):
         return web.json_response({"loras": lora_index()})
 
+    @routes.get("/warp-studio/models")
+    async def _models(request):
+        return web.json_response({"models": await asyncio.to_thread(models_index)})
+
     @routes.get("/warp-studio/loras/missing")
     async def _missing_loras(request):
         return web.json_response({"loras": await asyncio.to_thread(missing_lora_index)})
@@ -2396,7 +2436,7 @@ def _register_routes() -> None:
     async def _thumbnail(request):
         name = request.query.get("name", "")
         kind = request.query.get("kind", "loras")
-        if kind not in {"loras", "embeddings", "missing"}:
+        if kind not in {"loras", "embeddings", "checkpoints", "diffusion_models", "missing"}:
             return web.Response(status=400, text="unknown kind")
         # Resolving through folder_paths (or the configured loras roots) is what
         # keeps this to model folders; an arbitrary path can never be requested.

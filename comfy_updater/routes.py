@@ -42,7 +42,13 @@ from .model_actions import (
     release_is_paid,
 )
 from .model_download import DownloadError
-from .model_files import lora_roots, missing_info, resolve_name
+from .model_files import (
+    MODEL_FOLDER_KEYS,
+    folder_roots,
+    lora_roots,
+    missing_info,
+    resolve_name,
+)
 from .naming_ai import SYSTEM_PROMPT
 from .naming_check import base_named_by, base_vocabulary, name_check_flags, needs_review, users_own_words, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
@@ -1235,13 +1241,19 @@ def _register_model_action_routes(
     @routes.post("/warp-studio/updater/delete-model")
     @_guarded
     async def delete_lora(request):
-        payload = _normalize_download_payload(await _read_json(request))
+        raw = await _read_json(request)
+        payload = _normalize_download_payload(raw)
         name = payload["name"]
+        kind = raw.get("kind", "loras")
+        if kind not in MODEL_FOLDER_KEYS:
+            return web.json_response(
+                {"error": "kind must be one of " + ", ".join(MODEL_FOLDER_KEYS)}, status=400
+            )
 
         def find():
             if not any(name.lower().endswith(ext) for ext in SUPPORTED_MODEL_EXTENSIONS):
                 return None
-            return resolve_name(lora_roots(), name)
+            return resolve_name(folder_roots(kind), name)
 
         weights = await asyncio.to_thread(find)
         problem = delete_problem(
