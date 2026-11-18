@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { loras } from "./library.js";
 import { connectedBase, fittingFamilies, groupOf } from "./model_base.js";
+import { insertIntoNode } from "./prompt_target.js";
 import { escapeHTML, stemOf } from "./text.js";
 
 // The library browser for the Prompt + LoRAs node.
@@ -10,7 +11,6 @@ import { escapeHTML, stemOf } from "./text.js";
 // reads far better in a prompt than a full path.
 
 const NODE_ID = "Warp Lora Prompt";
-const TEXT_WIDGET = "text";
 
 const STYLE = `
 .wp-backdrop {
@@ -171,38 +171,6 @@ const PAGE = 400;
 // be listing different libraries - and the server indexes the folder once.
 const loadIndex = () => loras();
 
-function insertTag(node, entry) {
-  const widget = (node.widgets || []).find((w) => w.name === TEXT_WIDGET);
-  if (!widget) return;
-
-  // The bare filename resolves uniquely and keeps the prompt readable.
-  const stem = stemOf(entry.id);
-  // The prompt owns it: this lands on a line of its own, like typing would.
-  // This is the path taken whenever the prompt UI is loaded, which is always;
-  // everything below is the fallback for a browser opened without it.
-  if (typeof node._warppipeAddLora === "function") {
-    node._warppipeAddLora(stem);
-    node.setDirtyCanvas?.(true, true);
-    return;
-  }
-
-  const tag = `<lora:${stem}:1.0>`;
-  const el = widget.inputEl;
-  const current = widget.value || "";
-  if (el && typeof el.selectionStart === "number") {
-    const at = el.selectionStart;
-    const next = `${current.slice(0, at)}${tag}${current.slice(el.selectionEnd)}`;
-    widget.value = next;
-    el.value = next;
-    const caret = at + tag.length;
-    el.setSelectionRange(caret, caret);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  } else {
-    widget.value = current ? `${current} ${tag}` : tag;
-  }
-  node.setDirtyCanvas?.(true, true);
-}
-
 function openBrowser(node) {
   const backdrop = document.createElement("div");
   backdrop.className = "wp-backdrop";
@@ -317,7 +285,7 @@ function openBrowser(node) {
 
       pick.appendChild(meta);
       pick.addEventListener("click", () => {
-        insertTag(node, entry);
+        insertIntoNode(node, stemOf(entry.id));
         close();
       });
       card.appendChild(pick);

@@ -15,6 +15,7 @@ import {
   loadCodeEditor,
   mountCodeEditor,
 } from "./prompt_editor.js";
+import { noteUsed } from "./prompt_target.js";
 import { writeBarFor } from "./prompt_writer.js";
 import { escapeAttr, escapeHTML, stemOf, toggleCommentLines } from "./text.js";
 import { keepWidgetValuesByName } from "./widget_values.js";
@@ -1922,6 +1923,7 @@ app.registerExtension({
       for (const event of ["keyup", "click", "select", "focus"]) {
         el.addEventListener(event, moved, { signal });
       }
+      el.addEventListener("focus", () => noteUsed(node), { signal });
       const onBlur = (e) => {
         // Focus moving into the strip is still work on this tag - its trigger
         // words and its preview are buttons in there, and clearing on the way
@@ -2436,6 +2438,13 @@ app.registerExtension({
         box.el = el;
         wire(box);
       }
+    };
+
+    // Picking the node counts as using it, for the gallery's target.
+    const previousOnSelected = node.onSelected;
+    node.onSelected = function (...args) {
+      noteUsed(node);
+      return previousOnSelected?.apply(this, args);
     };
 
     node._warppipeGetText = () => getEl()?.value || "";
