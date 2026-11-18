@@ -71,3 +71,69 @@ test("embeddings are added once, as whole tokens", () => {
   assert.equal(hasEmbedding("embedding:fine2", "fine"), false);
   assert.equal(hasEmbedding("a, Embedding:FINE", "fine"), true);
 });
+
+test("cycleLora returns the state of the new text", () => {
+  const text = "<lora:a:0.40>\n<lora:a:0.50>";
+  const got = cycleLora(text, "a");
+  assert.equal(got.text, "// <lora:a:0.40>\n<lora:a:0.50>");
+  assert.equal(got.state, "on");
+});
+
+test("hasEmbedding finds weighted and sentence-final forms, not comments", () => {
+  assert.equal(hasEmbedding("a, (embedding:fine:1.2)", "fine"), true);
+  assert.equal(hasEmbedding("a cat with embedding:fine.", "fine"), true);
+  assert.equal(hasEmbedding("embedding:fine.v2", "fine"), false);
+  assert.equal(hasEmbedding("// embedding:fine\nx", "fine"), false);
+  assert.equal(hasEmbedding("//// embedding:fine", "fine"), false);
+});
+
+test("addEmbedding avoids comment lines and double commas", () => {
+  assert.equal(addEmbedding("a cat,", "fine"), "a cat, embedding:fine");
+  assert.equal(addEmbedding("a cat\n// note", "fine"), "a cat\n// note\nembedding:fine");
+  assert.equal(addEmbedding("a cat\r\n// note", "fine"), "a cat\r\n// note\r\nembedding:fine");
+});
+
+test("appending uses the text's own line ending", () => {
+  assert.equal(cycleLora("one\r\ntwo", "a").text, "one\r\ntwo\r\n<lora:a:1.00>");
+  assert.equal(cycleLora("one\r\n", "a").text, "one\r\n<lora:a:1.00>");
+});
+
+test("CRLF text cycles one line and keeps the line endings", () => {
+  const text = "x\r\n<lora:a:0.40>\r\ny";
+  const parked = cycleLora(text, "a");
+  assert.equal(parked.text, "x\r\n// <lora:a:0.40>\r\ny");
+  assert.equal(cycleLora(parked.text, "a").text, text);
+  const [l] = loraLines(text);
+  assert.equal(text.slice(l.start, l.end), "<lora:a:0.40>");
+});
+
+test("a /// parked line restores cleanly", () => {
+  assert.equal(cycleLora("/// <lora:a:0.40>", "a").text, "<lora:a:0.40>");
+});
+
+test("an indented parked line restores with its indent", () => {
+  assert.equal(cycleLora("x\n  // <lora:a:0.40>", "a").text, "x\n  <lora:a:0.40>");
+});
+
+test("weights of every shape and extra fields are recognised", () => {
+  for (const w of ["1", "-0.40", ".5", "0.4:0.3"]) {
+    assert.equal(loraState(`<lora:a:${w}>`, "a"), "on", w);
+  }
+});
+
+test("loraLines offsets on a multi-line text", () => {
+  const text = "one\n<lora:a:1>\n\n// <lora:b:.5>\nlast";
+  const got = loraLines(text);
+  assert.deepEqual(
+    got.map((l) => text.slice(l.start, l.end)),
+    ["<lora:a:1>", "// <lora:b:.5>"]
+  );
+});
+
+test("undefined input never throws", () => {
+  assert.deepEqual(loraLines(undefined), []);
+  assert.equal(loraState(undefined, "a"), null);
+  assert.equal(cycleLora(undefined, "a").text, "<lora:a:1.00>");
+  assert.equal(hasEmbedding(undefined, "a"), false);
+  assert.equal(addEmbedding(undefined, "a"), "embedding:a");
+});
