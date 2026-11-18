@@ -40,6 +40,8 @@ class DownloadRequest:
     total: int = 0
     file_name: str = ""
     error: str = ""
+    # The type of the job this request waits for, while it waits; else "".
+    waiting_for: str = ""
     warnings: list = field(default_factory=list)
     stop_event: threading.Event = field(default_factory=threading.Event)
 
@@ -53,6 +55,7 @@ class DownloadRequest:
             "name": self.name,
             "replace": bool(self.replace_path),
             "state": self.state,
+            "waitingFor": self.waiting_for,
             "written": self.written,
             "total": self.total,
             "fileName": self.file_name,
@@ -71,6 +74,22 @@ class DownloadQueue:
         # left (or the queue is stopped or abandoned), so a runner always exists
         # for a waiting request.
         self._busy = False
+        self._listener_claimed = False
+
+    def claim_listener(self) -> bool:
+        """True for the first caller only: one finish listener serves this queue."""
+        with self._lock:
+            if self._listener_claimed:
+                return False
+            self._listener_claimed = True
+            return True
+
+    def wait_for(self, job_type: str) -> None:
+        """Mark every waiting request as waiting for a job of this type."""
+        with self._lock:
+            for request in self._requests:
+                if request.state == "waiting":
+                    request.waiting_for = job_type
 
     def submit(self, request: DownloadRequest) -> tuple[DownloadRequest, bool]:
         with self._lock:
@@ -88,6 +107,7 @@ class DownloadQueue:
             for request in self._requests:
                 if request.state == "waiting":
                     request.state = "downloading"
+                    request.waiting_for = ""
                     return request
             self._busy = False
             return None
@@ -110,6 +130,10 @@ class DownloadQueue:
                     continue
                 if request.state == "waiting":
                     request.state = "stopped"
+                    request.waiting_for = ""
+                    if not any(r.state in _ACTIVE_STATES for r in self._requests):
+                        # No runner exists for requests waiting on another job: none is left.
+                        self._busy = False
                     self._prune_locked()
                 elif request.state == "downloading":
                     request.stop_event.set()
@@ -126,6 +150,7 @@ class DownloadQueue:
             for request in self._requests:
                 if request.state == "waiting":
                     request.state = "stopped"
+                    request.waiting_for = ""
                     stopped.append(request)
                 elif request.state == "downloading":
                     request.stop_event.set()
@@ -142,6 +167,7 @@ class DownloadQueue:
             for held in self._requests:
                 if held is request or held.state == "waiting":
                     held.state = "error"
+                    held.waiting_for = ""
                     held.error = error
             self._busy = False
             self._prune_locked()

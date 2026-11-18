@@ -963,6 +963,7 @@ def _register_rename_routes(
 
 DOWNLOAD_BUSY_ERROR = "Another job is running. Try again when it's done."
 MODEL_DOWNLOAD_PAUSE_ERROR = "Downloads cannot be paused. Stop cancels them."
+REPLACE_MOVED_ERROR = "The old version is no longer where it was. Check for updates again."
 REPLACE_HELD_ERROR = "That version is already being replaced."
 DOWNLOAD_SOURCE_ERROR = 'source must be "updates" or "gallery"'
 _DOWNLOAD_SOURCES = ("updates", "gallery")
@@ -995,15 +996,21 @@ def _normalize_download_payload(payload: dict) -> dict:
 def download_problem(active_job, *, journal_pending: bool) -> Optional[tuple]:
     """Why no download may be queued now, as (HTTP status, message), or None.
 
-    Only the download job may run beside a download. ``check_records`` holds a
-    lock around its edits, so a delete beside a download never interleaves.
+    A job of another kind doesn't refuse: the download waits for it. Only an
+    interrupted rename, still in the journal, does.
     """
-    if active_job is not None and not _is_model_download(active_job):
-        # A rename apply holds the journal while it runs: the job is the reason then.
-        return 409, DOWNLOAD_BUSY_ERROR
     if journal_pending:
         return 409, JOURNAL_PENDING_ERROR
     return None
+
+
+def recheck(request: DownloadRequest, *, journal_pending: bool) -> str:
+    """Why a request that waited may no longer run, as the error text, or "" when it may."""
+    if journal_pending:
+        return JOURNAL_PENDING_ERROR
+    if request.replace_path and not Path(request.replace_path).is_file():
+        return REPLACE_MOVED_ERROR
+    return ""
 
 
 NO_TRASH_DELETE_ERROR = "Delete needs the send2trash package."
@@ -1114,13 +1121,17 @@ async def submit_download(
     Returns the request held (one already queued for the same release wins)
     and the download job's id. A job that has drained the queue is still
     active for a moment while it closes, so its successor's start is tried
-    again meanwhile, up to ``attempts`` times ``delay`` apart. When no job
-    starts (a job of another kind is running), the request is abandoned with
-    ``DOWNLOAD_BUSY_ERROR`` and the id is None.
+    again meanwhile, up to ``attempts`` times ``delay`` apart. When a job of
+    another kind is running, the request waits (``waitingFor`` names the job)
+    and a finish listener starts the download job when that job ends; the id
+    is None until then.
     """
     held, needs_job = queue.submit(request)
     if not needs_job:
         active = job_manager.get_active()
+        if active is not None and not _is_model_download(active):
+            queue.wait_for(active.type)
+            _ensure_finish_listener(queue, job_manager, runner)
         return held, active.id if _is_model_download(active) else None
     for attempt in range(max(1, attempts)):
         job = job_manager.start(MODEL_DOWNLOAD_JOB, runner)
@@ -1128,11 +1139,43 @@ async def submit_download(
             return held, job.id
         active = job_manager.get_active()
         if active is not None and not _is_model_download(active):
-            break
+            queue.wait_for(active.type)
+            _ensure_finish_listener(queue, job_manager, runner)
+            # That job may have ended before the listener was there to hear it.
+            job = _start_waiting(queue, job_manager, runner)
+            return held, job.id if job is not None else None
         if attempt + 1 < attempts:
             await asyncio.sleep(delay)
     queue.abandon(held, DOWNLOAD_BUSY_ERROR)
     return held, None
+
+
+def _start_waiting(queue, job_manager, runner):
+    """Start the download job for waiting requests; None when nothing waits or the slot is taken.
+
+    A different kind of job holding the slot becomes what the requests wait for.
+    """
+    if queue.waiting() == 0:
+        return None
+    job = job_manager.start(MODEL_DOWNLOAD_JOB, runner)
+    if job is not None:
+        return job
+    active = job_manager.get_active()
+    if active is not None and not _is_model_download(active):
+        queue.wait_for(active.type)
+    return None
+
+
+def _ensure_finish_listener(queue, job_manager, runner) -> None:
+    """Register, once per queue, the listener that starts waiting downloads after another job."""
+    if not queue.claim_listener():
+        return
+
+    def listener(record) -> None:
+        if getattr(record, "type", None) != MODEL_DOWNLOAD_JOB:
+            _start_waiting(queue, job_manager, runner)
+
+    job_manager.add_finish_listener(listener)
 
 
 def download_context(
@@ -1181,6 +1224,9 @@ def _register_model_action_routes(
     queue = DownloadQueue()
 
     def work(request, report, should_stop):
+        problem = recheck(request, journal_pending=journal.pending() is not None)
+        if problem:
+            raise DownloadError(problem)
         ctx = download_context(
             config_store, job_manager, decisions, base_codes, answer_cache, journal
         )
@@ -1206,8 +1252,7 @@ def _register_model_action_routes(
             job = job_manager.get(payload["jobId"]) if payload["jobId"] else None
             made = updates_request(payload, job, can_trash=send2trash_available(), queue=queue)
         elif payload["source"] == "gallery":
-            # Looks in the LoRA folders: off the event loop. A job of another kind
-            # started meanwhile still refuses the download job's start below.
+            # Looks in the LoRA folders: off the event loop.
             made = await asyncio.to_thread(lambda: gallery_request(payload, lora_roots()))
         else:
             return web.json_response({"error": DOWNLOAD_SOURCE_ERROR}, status=400)

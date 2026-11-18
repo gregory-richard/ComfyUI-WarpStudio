@@ -31,6 +31,7 @@ from comfy_updater.routes import (
     MODEL_DOWNLOAD_PAUSE_ERROR,
     NAMING_MODEL_DOWNLOAD_JOB,
     REPLACE_HELD_ERROR,
+    REPLACE_MOVED_ERROR,
     _normalize_download_payload,
     _register_model_action_routes,
     _unpausable,
@@ -38,6 +39,7 @@ from comfy_updater.routes import (
     delete_problem,
     download_problem,
     gallery_request,
+    recheck,
     submit_download,
     updates_request,
 )
@@ -144,19 +146,16 @@ class DownloadHelperTests(_Dirs):
     def tearDown(self) -> None:
         _join_job_threads()
 
-    def test_a_download_waits_for_another_kind_of_job(self) -> None:
-        self.assertEqual("Another job is running. Try again when it's done.", DOWNLOAD_BUSY_ERROR)
+    def test_a_job_of_another_kind_no_longer_refuses_a_download(self) -> None:
         manager = JobManager()
         release = threading.Event()
         try:
             manager.start("check-updates", _blocking_runner(release))
             active = manager.get_active()
+            self.assertIsNone(download_problem(active, journal_pending=False))
+            # An interrupted rename still refuses, whatever job runs.
             self.assertEqual(
-                (409, DOWNLOAD_BUSY_ERROR), download_problem(active, journal_pending=False)
-            )
-            # A rename apply holds the journal while it runs: the job is the reason.
-            self.assertEqual(
-                (409, DOWNLOAD_BUSY_ERROR), download_problem(active, journal_pending=True)
+                (409, JOURNAL_PENDING_ERROR), download_problem(active, journal_pending=True)
             )
         finally:
             release.set()
@@ -459,7 +458,7 @@ class DownloadHelperTests(_Dirs):
         self.assertEqual("done", second.state)
         self.assertEqual("completed", manager.get(second_id).status)
 
-    def test_a_click_while_another_kind_of_job_runs_is_abandoned(self) -> None:
+    def test_a_click_while_another_kind_of_job_runs_waits(self) -> None:
         queue = DownloadQueue()
         manager = _CountingJobManager()
         release = threading.Event()
@@ -476,13 +475,75 @@ class DownloadHelperTests(_Dirs):
             release.set()
             _join_job_threads()
         self.assertIsNone(job_id)
-        self.assertEqual(("error", DOWNLOAD_BUSY_ERROR), (request.state, request.error))
-        self.assertLess(elapsed, 0.5)  # no waiting: only a closing download job is waited for
-        self.assertEqual(["check-updates", MODEL_DOWNLOAD_JOB], manager.asked)
-        _next, needs_job = queue.submit(_request("203"))
-        self.assertTrue(needs_job)
+        self.assertEqual(("waiting", "check-updates"), (request.state, request.waiting_for))
+        self.assertLess(elapsed, 0.5)  # no polling: only a closing download job is waited for
 
-    def test_a_request_waiting_behind_an_abandoned_retry_is_failed_too(self) -> None:
+    def test_one_listener_serves_every_waiting_download(self) -> None:
+        queue = DownloadQueue()
+        manager = _CountingJobManager()
+        release = threading.Event()
+        ran: list = []
+
+        def work(request, report, should_stop):
+            ran.append(request.key)
+
+        def runner(progress, emit, control):
+            return run_queue(queue, work, progress=progress, control=control)
+
+        try:
+            manager.start("check-updates", _blocking_runner(release))
+            first, _ = asyncio.run(submit_download(queue, manager, _request("202"), runner))
+            second, _ = asyncio.run(submit_download(queue, manager, _request("203"), runner))
+            self.assertEqual(1, len(manager._finish_listeners))
+            self.assertEqual("check-updates", second.waiting_for)
+        finally:
+            release.set()
+            _join_job_threads()
+        _join_job_threads()
+        self.assertEqual(["version:202", "version:203"], ran)
+        self.assertEqual(("done", "done"), (first.state, second.state))
+
+    def test_a_listener_firing_during_a_download_does_nothing(self) -> None:
+        queue = DownloadQueue()
+        manager = _CountingJobManager()
+        check = threading.Event()
+        download = threading.Event()
+        try:
+            manager.start("check-updates", _blocking_runner(check))
+            asyncio.run(
+                submit_download(queue, manager, _request("202"), _blocking_runner(download))
+            )
+            listener = manager._finish_listeners[0]
+            check.set()
+            end = time.monotonic() + 5
+            while len(manager.started) < 2 and time.monotonic() < end:
+                time.sleep(0.005)
+            self.assertEqual(2, len(manager.started))  # the check, then the download job
+            queue.submit(_request("204"))
+            listener(JobRecord(id="x", type="scan", status="completed"))
+            self.assertEqual(2, len(manager.started))  # the running download job was left alone
+        finally:
+            check.set()
+            download.set()
+            _join_job_threads()
+
+    def test_a_click_that_outlasts_a_closing_download_job_is_abandoned(self) -> None:
+        queue = DownloadQueue()
+
+        class _Manager:
+            def start(self, job_type, runner, **kwargs):
+                return None
+
+            def get_active(self):
+                return JobRecord(id="closing", type=MODEL_DOWNLOAD_JOB)
+
+        request, job_id = asyncio.run(
+            submit_download(queue, _Manager(), _request("202"), None, attempts=3, delay=0.001)
+        )
+        self.assertIsNone(job_id)
+        self.assertEqual(("error", DOWNLOAD_BUSY_ERROR), (request.state, request.error))
+
+    def test_a_request_waiting_behind_a_retrying_click_waits_too(self) -> None:
         queue = DownloadQueue()
 
         class _Manager:
@@ -496,6 +557,9 @@ class DownloadHelperTests(_Dirs):
 
             def get_active(self):
                 return self.active
+
+            def add_finish_listener(self, listener):
+                pass
 
         manager = _Manager()
         outcome: list = []
@@ -521,10 +585,21 @@ class DownloadHelperTests(_Dirs):
         self.assertFalse(thread.is_alive())
         first, first_id = outcome[0]
         self.assertIsNone(first_id)
-        self.assertEqual(("error", DOWNLOAD_BUSY_ERROR), (first.state, first.error))
-        self.assertEqual(("error", DOWNLOAD_BUSY_ERROR), (second.state, second.error))
-        _next, needs_job = queue.submit(_request("204"))
-        self.assertTrue(needs_job)
+        self.assertEqual(("waiting", "check-updates"), (first.state, first.waiting_for))
+        self.assertEqual("waiting", second.state)
+
+    def test_recheck_reports_a_moved_old_version(self) -> None:
+        moved = _request("202")
+        moved.replace_path = str(self.folder / "gone.safetensors")
+        self.assertEqual(REPLACE_MOVED_ERROR, recheck(moved, journal_pending=False))
+        self.assertEqual(
+            "The old version is no longer where it was. Check for updates again.",
+            REPLACE_MOVED_ERROR,
+        )
+        (self.folder / "gone.safetensors").write_bytes(b"x")
+        self.assertEqual("", recheck(moved, journal_pending=False))
+        self.assertEqual(JOURNAL_PENDING_ERROR, recheck(moved, journal_pending=True))
+        self.assertEqual("", recheck(_request("203"), journal_pending=False))
 
     def test_downloads_cannot_be_paused(self) -> None:
         self.assertTrue(_unpausable(JobRecord(id="a", type=MODEL_DOWNLOAD_JOB)))
@@ -765,6 +840,7 @@ class DownloadRouteTests(_Dirs):
             (200, {"jobId": None, "requests": [], "canTrash": True}),
             self.call("GET", "/warp-studio/updater/downloads"),
         )
+        Path(self.v1).write_bytes(b"old")  # a request that waited re-checks its old version
         status, body = self.post_download(replace=True)
         self.assertEqual(200, status, body)
         job_id = body["jobId"]
@@ -838,6 +914,67 @@ class DownloadRouteTests(_Dirs):
                     delete_problem(job, queue=held_queue, weights=path, can_trash=can_trash),
                 )
 
+    def test_a_download_during_a_check_waits(self) -> None:
+        self.jobs.start("check-updates", _blocking_runner(self.release))
+        status, body = self.post_download()
+        self.assertEqual(200, status, body)
+        self.assertIsNone(body["jobId"])
+        self.assertEqual("waiting", body["request"]["state"])
+        self.assertEqual("check-updates", body["request"]["waitingFor"])
+        status, body = self.call("GET", "/warp-studio/updater/downloads")
+        self.assertEqual("check-updates", body["requests"][0]["waitingFor"])
+
+    def test_waiting_download_starts_after_the_check(self) -> None:
+        self.jobs.start("check-updates", _blocking_runner(self.release))
+        self.post_download()
+        self.release.set()
+        _join_job_threads()
+        _join_job_threads()  # the job the listener started
+        downloads = [j for j in self.jobs._jobs.values() if j.type == MODEL_DOWNLOAD_JOB]
+        self.assertEqual(1, len(downloads))
+        (record,) = self.queue.snapshot()
+        self.assertEqual(("done", ""), (record["state"], record["waitingFor"]))
+        self.assertEqual(1, len(self.contexts))
+
+    def test_waiting_download_starts_after_a_cancelled_job(self) -> None:
+        job = self.jobs.start("check-updates", _blocking_runner(self.release))
+        self.post_download()
+        self.jobs.cancel(job.id)
+        self.release.set()
+        _join_job_threads()
+        _join_job_threads()
+        self.assertEqual("cancelled", self.jobs.get(job.id).status)
+        downloads = [j for j in self.jobs._jobs.values() if j.type == MODEL_DOWNLOAD_JOB]
+        self.assertEqual(1, len(downloads))
+        self.assertEqual("done", self.queue.snapshot()[0]["state"])
+
+    def test_waiting_download_starts_after_a_failed_job(self) -> None:
+        def failing(progress, emit, control):
+            self.release.wait(5)
+            raise RuntimeError("boom")
+
+        job = self.jobs.start("check-updates", failing)
+        self.post_download()
+        self.release.set()
+        _join_job_threads()
+        _join_job_threads()
+        self.assertEqual("failed", self.jobs.get(job.id).status)
+        self.assertEqual("done", self.queue.snapshot()[0]["state"])
+
+    def test_journal_pending_still_refuses(self) -> None:
+        self.journal.begin([{"kind": "rename", "from": "a", "to": "b", "entry": "a"}])
+        self.assertEqual((409, {"error": JOURNAL_PENDING_ERROR}), self.post_download())
+
+    def test_a_request_that_waited_ends_in_error_when_the_journal_became_pending(self) -> None:
+        self.jobs.start("check-updates", _blocking_runner(self.release))
+        self.post_download()
+        self.journal.begin([{"kind": "rename", "from": "a", "to": "b", "entry": "a"}])
+        self.release.set()
+        _join_job_threads()
+        _join_job_threads()
+        (record,) = self.queue.snapshot()
+        self.assertEqual(("error", JOURNAL_PENDING_ERROR), (record["state"], record["error"]))
+
     def test_the_download_route_answers_the_helpers_refusals(self) -> None:
         self.assertEqual(
             (400, {"error": 'source must be "updates" or "gallery"'}),
@@ -855,7 +992,6 @@ class DownloadRouteTests(_Dirs):
             )
         try:
             self.jobs.start("check-updates", _blocking_runner(self.release))
-            self.assertEqual((409, {"error": DOWNLOAD_BUSY_ERROR}), self.post_download())
         finally:
             self.release.set()
             _join_job_threads()
@@ -981,17 +1117,6 @@ class DownloadRouteTests(_Dirs):
             self.release.set()
             _join_job_threads()
         self.assertTrue((self.folder / "glow.safetensors").exists())
-
-    def test_a_refused_start_answers_409_with_the_requests_error(self) -> None:
-        with mock.patch("comfy_updater.routes.download_problem", return_value=None):
-            try:
-                self.jobs.start("scan", _blocking_runner(self.release))
-                status, body = self.post_download()
-            finally:
-                self.release.set()
-                _join_job_threads()
-        self.assertEqual((409, {"error": DOWNLOAD_BUSY_ERROR}), (status, body))
-        self.assertEqual(["error"], [record["state"] for record in self.queue.snapshot()])
 
 
 if __name__ == "__main__":
