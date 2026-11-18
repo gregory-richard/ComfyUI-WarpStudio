@@ -4003,6 +4003,302 @@ function injectStyles() {
       opacity: 0.4;
     }
 
+    /* ---- Gallery ----
+       The Updates look: the summary line, one control, the group bands. Every
+       box has a fixed size, so a card without a preview or a creator is as tall
+       as the rest, and a thumbnail arriving late moves nothing. */
+
+    .cu-g-top {
+      margin-bottom: 9px;
+    }
+
+    .cu-g .cu-g-target {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cu-g-node {
+      color: var(--cu-bone);
+    }
+
+    .cu-g-search {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      height: var(--cu-h-ctl);
+      margin: 0;
+      padding: 0 9px 0 8px;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: var(--cu-radius);
+      background: var(--cu-raise);
+      color: var(--cu-bone);
+      font-family: var(--cu-body);
+      font-size: 11px;
+      transition: border-color 0.15s ease;
+    }
+
+    .cu-g-search::placeholder {
+      color: var(--cu-dust);
+    }
+
+    .cu-g-search:hover {
+      border-color: var(--cu-dust);
+    }
+
+    .cu-g .cu-g-search:focus {
+      outline: none;
+      border-color: var(--cu-dust);
+    }
+
+    .cu-g-error {
+      padding: 6px 9px;
+      border-left: 2px solid var(--cu-amber);
+      color: var(--cu-amber);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .cu-g-band {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .cu-g-bands > .cu-g-band:first-child > .cu-group-head-wrap {
+      margin-top: 1px;
+    }
+
+    /* A band head here is a label, not a toggle. */
+    .cu-g .cu-g-band-head {
+      cursor: default;
+    }
+
+    .cu-g .cu-g-band-head .cu-group-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--cu-bone);
+    }
+
+    /* With a connected model, the bases that don't fit it step back. */
+    .cu-g .cu-g-band[data-quiet] .cu-group-name {
+      color: var(--cu-ash);
+    }
+
+    .cu-g-fit {
+      flex: 0 0 auto;
+      font-family: var(--cu-mono);
+      font-size: 8.5px;
+      letter-spacing: 0.08em;
+      color: var(--cu-moss);
+      border: 1px solid rgba(147, 181, 120, 0.35);
+      border-radius: 3px;
+      background: rgba(147, 181, 120, 0.07);
+      padding: 0 4px;
+      line-height: 1.5;
+    }
+
+    /* Hidden, not removed: the head keeps its height either way. */
+    .cu-g-band[data-fits="false"] .cu-g-fit {
+      visibility: hidden;
+    }
+
+    .cu-g-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 6px;
+      align-items: start;
+    }
+
+    .cu-g-card {
+      position: relative;
+      min-width: 0;
+    }
+
+    /* The whole face is the button that adds the LoRA. */
+    .cu-g-pick {
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--cu-seam);
+      border-radius: 5px;
+      background: rgba(0, 0, 0, 0.18);
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      transition: border-color 0.15s ease;
+    }
+
+    .cu-g-pick:hover {
+      border-color: var(--cu-seam-strong);
+    }
+
+    .cu-g-pick[aria-disabled="true"] {
+      cursor: default;
+    }
+
+    .cu-g-pick[aria-disabled="true"]:hover {
+      border-color: var(--cu-seam);
+    }
+
+    .cu-g-card[data-added] .cu-g-pick {
+      border-color: rgba(147, 181, 120, 0.55);
+    }
+
+    .cu-g-thumb {
+      position: relative;
+      display: block;
+      aspect-ratio: 3 / 4;
+      overflow: hidden;
+      background: var(--cu-raise);
+      border-bottom: 1px solid var(--cu-seam);
+    }
+
+    .cu-g-thumb img {
+      position: absolute;
+      inset: 0;
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .cu-g-noimg {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      padding: 10px;
+      overflow: hidden;
+      color: var(--cu-dust);
+      font-family: var(--cu-mono);
+      font-size: 9px;
+      line-height: 1.4;
+      text-align: center;
+      overflow-wrap: anywhere;
+    }
+
+    /* Green, as trigger words are in the prompt. */
+    .cu-g-badge {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      display: inline-flex;
+      align-items: center;
+      height: 16px;
+      padding: 0 5px;
+      border-radius: 3px;
+      border: 1px solid rgba(147, 181, 120, 0.35);
+      background: rgba(19, 19, 22, 0.8);
+      color: var(--cu-moss);
+      font-family: var(--cu-mono);
+      font-size: 9px;
+      line-height: 1;
+    }
+
+    /* Over the thumbnail, so confirming a click moves nothing. */
+    .cu-g-added {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 5px 10px;
+      border-radius: var(--cu-radius);
+      border: 1px solid rgba(147, 181, 120, 0.55);
+      background: rgba(19, 19, 22, 0.88);
+      color: var(--cu-moss);
+      font-family: var(--cu-disp);
+      font-size: 11.5px;
+      font-weight: 600;
+      line-height: 1;
+      pointer-events: none;
+      animation: cu-fade-in 0.12s ease-out;
+    }
+
+    .cu-g-added:empty {
+      display: none;
+    }
+
+    .cu-g-creator,
+    .cu-g-detail {
+      display: block;
+      height: 13px;
+      margin: 0 7px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      line-height: 13px;
+      color: var(--cu-dust);
+    }
+
+    .cu-g-creator {
+      margin-top: 6px;
+      font-size: 10px;
+    }
+
+    .cu-g-title {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      height: 30px;
+      margin: 1px 7px 2px;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      font-family: var(--cu-disp);
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 15px;
+      letter-spacing: 0.01em;
+      color: var(--cu-bone);
+    }
+
+    .cu-g-detail {
+      margin-bottom: 7px;
+      font-family: var(--cu-mono);
+      font-size: 9.5px;
+    }
+
+    /* The link out sits on the card, beside its button rather than inside it. */
+    .cu-g-open {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      width: 22px;
+      height: 22px;
+      border-radius: 3px;
+      border: 1px solid var(--cu-seam-strong);
+      background: rgba(19, 19, 22, 0.72);
+      color: var(--cu-bone);
+      font-size: 12px;
+      line-height: 1;
+      text-decoration: none;
+      opacity: 0.62;
+      transition: opacity 0.12s ease, border-color 0.12s ease;
+    }
+
+    .cu-g-card:hover .cu-g-open {
+      opacity: 0.9;
+    }
+
+    .cu-g-open:hover,
+    .cu-g-open:focus-visible {
+      opacity: 1;
+      border-color: var(--cu-dust);
+    }
+
     /* ---- Motion ----
        Three moments only: results arriving, a card settling from provisional
        to checked, and a caret turning. Nothing else moves. */
