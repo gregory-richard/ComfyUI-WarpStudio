@@ -587,6 +587,21 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(self.row(rows, "m1")["newStem"], "maker - glow 1 - v1 (krea2)")
         self.assertEqual(len(self.cache._answers), 3)
 
+    def test_models_are_asked_in_file_name_order_whatever_order_the_folder_lists_them(self) -> None:
+        # ext4, exFAT and network shares don't list a folder by name the way NTFS does.
+        models = self.three_models()
+        generator = FakeGenerator(self.glow_script())
+        real_rglob = Path.rglob
+
+        def backwards_rglob(path, pattern):
+            return iter(sorted(real_rglob(path, pattern), key=lambda item: str(item).lower(), reverse=True))
+
+        with mock.patch.object(Path, "rglob", backwards_rglob):
+            self.dry_run(models, generator, group_size=3)
+        message = generator.calls[0][0]
+        positions = [message.index(f"Model title: Glow {n}\n") for n in range(3)]
+        self.assertEqual(positions, sorted(positions))
+
     def test_grouped_answer_missing_a_section_retries_that_model_alone(self) -> None:
         models = self.three_models()
         generator = FakeGenerator(self.glow_script())

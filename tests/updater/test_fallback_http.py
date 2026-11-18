@@ -3,10 +3,11 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import requests
 from PIL import Image
@@ -24,6 +25,19 @@ def _jpeg_bytes(color: str = "blue") -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (4, 4), color).save(buf, format="JPEG")
     return buf.getvalue()
+
+
+# The Windows-only branch of save_preview_png relies on Windows' rename, which raises
+# FileExistsError when the target exists. POSIX rename silently replaces the target (the code
+# never takes that branch there), so off Windows the tests stand in for Windows' rename.
+_REAL_WINDOWS_RENAME = os.name == "nt"
+
+
+def _windows_rename(src, dst):
+    """os.rename with Windows semantics on any platform: never replaces an existing target."""
+    if os.path.lexists(dst):
+        raise FileExistsError(errno.EEXIST, "Cannot create a file when that file already exists", str(dst))
+    os.replace(src, dst)
 
 
 def _resp(status=200, json_data=None, links=None, chunks=None, json_error=False):
@@ -270,7 +284,9 @@ class SavePreviewTests(unittest.TestCase):
     def test_save_preview_png_without_hard_links_uses_exclusive_create(self):
         with tempfile.TemporaryDirectory() as d:
             target = Path(d) / "m.preview.png"
-            with patch("comfy_updater.fallback_http.os.link", side_effect=OSError(errno.EPERM, "no links")):
+            # The non-Windows branch, on every platform (on Windows it would otherwise rename).
+            with patch("comfy_updater.fallback_http.os.link", side_effect=OSError(errno.EPERM, "no links")), \
+                    patch("comfy_updater.fallback_http._is_windows", return_value=False):
                 self.assertTrue(save_preview_png(_jpeg_bytes(), target))
                 with Image.open(target) as im:
                     self.assertEqual(im.format, "PNG")
@@ -307,9 +323,13 @@ class SavePreviewTests(unittest.TestCase):
             self.assertEqual(list(Path(d).iterdir()), [])
 
     def test_windows_fallback_renames_atomically_and_never_overwrites(self):
+        # On Windows the real rename is checked; elsewhere a stand-in with Windows' semantics.
+        rename = Mock(wraps=os.rename if _REAL_WINDOWS_RENAME else _windows_rename)
         with tempfile.TemporaryDirectory() as d:
             target = Path(d) / "m.preview.png"
-            with patch("comfy_updater.fallback_http.os.link", side_effect=OSError(errno.EPERM, "no links")),                     patch("comfy_updater.fallback_http._is_windows", return_value=True):
+            with patch("comfy_updater.fallback_http.os.link", side_effect=OSError(errno.EPERM, "no links")), \
+                    patch("comfy_updater.fallback_http._is_windows", return_value=True), \
+                    patch("comfy_updater.fallback_http.os.rename", rename):
                 self.assertTrue(save_preview_png(_jpeg_bytes(), target))
                 with Image.open(target) as im:
                     self.assertEqual(im.format, "PNG")
@@ -318,6 +338,8 @@ class SavePreviewTests(unittest.TestCase):
                 self.assertFalse(save_preview_png(_jpeg_bytes(color="red"), target))
                 self.assertEqual(target.read_bytes(), before)
                 self.assertEqual([p.name for p in Path(d).iterdir()], ["m.preview.png"])
+            # Both saves went through the rename branch.
+            self.assertEqual(rename.call_count, 2)
 
 
 if __name__ == "__main__":

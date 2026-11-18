@@ -179,6 +179,33 @@ class SidecarDiscoveryTests(unittest.TestCase):
             self.assertEqual(info_path, files[0]["infoPath"])
             self.assertFalse(files[0]["metadataOnly"])
 
+    def test_files_are_listed_in_name_order_whatever_order_the_folder_lists_them(self) -> None:
+        # Only NTFS lists a folder by name: ext4 lists it in hash order, exFAT and network
+        # shares in their own. The listing must not depend on it.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "sub").mkdir()
+            (root / "Sub2").mkdir()
+            for name in ("b.safetensors", "A.safetensors", "c.safetensors", "sub/a.safetensors", "Sub2/z.safetensors"):
+                (root / name).write_bytes(b"weights")
+            write_json(root / "x.civitai.info", {"id": 2, "modelId": 1})
+            write_json(root / "sub" / "y.civitai.info", {"id": 4, "modelId": 3})
+            real_rglob = Path.rglob
+
+            def backwards_rglob(self, pattern):
+                return iter(sorted(real_rglob(self, pattern), key=lambda path: str(path).lower(), reverse=True))
+
+            with patch.object(Path, "rglob", backwards_rglob):
+                files = list_model_files({"lora": [root]}, include_sidecar_only=True)
+
+            self.assertEqual(
+                [entry["path"].relative_to(root).as_posix() for entry in files],
+                [
+                    "A.safetensors", "b.safetensors", "c.safetensors", "sub/a.safetensors", "Sub2/z.safetensors",
+                    "x.civitai.info", "sub/y.civitai.info",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -105,7 +105,7 @@ def list_model_files(
         for root in model_roots:
             if not root.is_dir():
                 continue
-            for file_path in root.rglob("*"):
+            for file_path in sorted(root.rglob("*"), key=_listing_order):
                 if not file_path.is_file():
                     continue
                 if file_path.suffix.lower() in SUPPORTED_MODEL_EXTENSIONS:
@@ -142,6 +142,16 @@ def list_model_files(
             )
 
     return files
+
+
+def _listing_order(path: Path) -> tuple:
+    """Folder by folder (a folder's files before its subfolders'), names A to Z whatever their case.
+
+    The order a folder lists in is the filesystem's: by name on NTFS, but hash order on
+    ext4 and the drive's own on exFAT or a network share. Sorted, a scan or a dry run goes
+    through the files, and asks the AI about them, in the same order on every drive.
+    """
+    return (tuple(part.casefold() for part in path.parent.parts), path.name.casefold(), str(path))
 
 
 def _weight_stem_key(model_path: Path) -> str:

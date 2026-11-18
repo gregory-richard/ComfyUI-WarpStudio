@@ -203,7 +203,8 @@ def save_preview_png(data: bytes, target: Path) -> bool:
             pass
         # Hard links unsupported here.
         if _is_windows():
-            # Atomic; raises FileExistsError when the target exists.
+            # Atomic; on Windows it raises FileExistsError when the target exists
+            # (POSIX rename would replace it, hence the exclusive create below).
             os.rename(tmp_path, target)
             return True
         # Exclusive create never overwrites; remove a partial target on any failure.
