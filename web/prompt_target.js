@@ -167,7 +167,7 @@ export function currentLoader(app, kind) {
 
 /** Put a model name in a loader's widget the way picking it from the list does.
  *  False when the node has no such widget or the name is not one of its options. */
-export function setLoaderModel(node, name) {
+export function setLoaderModel(node, name, canvas = node?.graph?.canvas) {
   const type = loaderTypeOf(node);
   const widget = type ? widgetOf(node, LOADERS[type].widget) : null;
   if (!widget) return false;
@@ -175,8 +175,11 @@ export function setLoaderModel(node, name) {
   const list = typeof values === "function" ? values() : values;
   if (!Array.isArray(list) || !list.includes(name)) return false;
   widget.value = name;
-  widget.callback?.(name);
-  node.setDirtyCanvas?.(true, true);
+  try {
+    widget.callback?.(name, canvas, node);
+  } finally {
+    node.setDirtyCanvas?.(true, true);
+  }
   return true;
 }
 

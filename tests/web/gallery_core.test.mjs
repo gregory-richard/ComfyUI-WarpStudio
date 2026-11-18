@@ -133,7 +133,7 @@ const v = (id, version_id, published, extra = {}) => ({
   name: "glow",
   base_model: "Pony",
   structured: true,
-  kind: "lora",
+  kind: "loras",
   model_id: 7,
   version_id,
   published,
@@ -144,11 +144,11 @@ const v2 = v("pony/maker - glow - v2 (pony).safetensors", 12, "2026-02-01T00:00:
 const v3 = v("pony/maker - glow - v3 (pony).safetensors", 13, "2026-03-01T00:00:00Z");
 
 test("cardModel shows the parsed file name over Civitai's title", () => {
-  const model = cardModel({ ...a, title: "Glow Of The Night", kind: "lora" });
+  const model = cardModel({ ...a, title: "Glow Of The Night", kind: "loras" });
   assert.equal(model.title, "glow");
   assert.equal(model.creator, "maker");
   assert.equal(model.detail, "v1 · Pony");
-  assert.equal(model.kind, "lora");
+  assert.equal(model.kind, "loras");
   assert.equal(cardModel({ id: "x/y.safetensors", title: "Civ", name: "n" }).title, "Civ");
 });
 
@@ -160,7 +160,7 @@ test("filterEntries finds an entry by a word only Civitai's title has", () => {
 test("stackEntries stacks versions of one model and base, newest first", () => {
   const stacks = stackEntries([v1, v3, v2]);
   assert.equal(stacks.length, 1);
-  assert.equal(stacks[0].key, "stack:lora:7:Pony");
+  assert.equal(stacks[0].key, "stack:loras:7:Pony");
   assert.deepEqual(stacks[0].members, [v3, v2, v1]);
 });
 
@@ -175,7 +175,7 @@ test("stackEntries splits one model across two bases", () => {
   const stacks = stackEntries([v1, sdxl]);
   assert.deepEqual(
     stacks.map((s) => s.key),
-    ["stack:lora:7:Pony", "stack:lora:7:sdxl"]
+    ["stack:loras:7:Pony", "stack:loras:7:sdxl"]
   );
 });
 
@@ -184,7 +184,7 @@ test("stackEntries leaves an entry without a model id alone", () => {
   assert.deepEqual(
     stacks.map((s) => [s.key, s.members.length]),
     [
-      ["stack:lora:7:Pony", 1],
+      ["stack:loras:7:Pony", 1],
       [`file:${c.id}`, 1],
     ]
   );
@@ -213,7 +213,7 @@ test("cardModel fills gaps", () => {
     thumbnail: null,
     stem: "amber",
     missing: false,
-    kind: "lora",
+    kind: "loras",
   });
   assert.equal(cardModel(a).detail, "v1 · Pony");
   assert.equal(cardModel(a).thumbnail, "/t?a");
@@ -259,4 +259,44 @@ test("galleryOnlyBases drops a gallery base another view already names", () => {
   assert.deepEqual(galleryOnlyBases(["Flux.2 Klein 9B"], ["Flux.2 Klein 4B"]), ["Flux.2 Klein 9B"]);
   assert.deepEqual(galleryOnlyBases(["ZImage"], []), ["ZImage"]);
   assert.deepEqual(galleryOnlyBases(["ZImage"], [null, "", "Turbo"]), ["ZImage"]);
+});
+
+test("foldedIn treats anything but an array as nothing folded", () => {
+  assert.equal(foldedIn("Pony", ["Pony"]).size, 0);
+  assert.equal(foldedIn({ Pony: true }, ["Pony"]).size, 0);
+  assert.equal(foldedIn(7, ["Pony"]).size, 0);
+});
+
+test("stackEntries keeps one model id under two kinds as two stacks", () => {
+  const model = { ...v1, kind: "checkpoints" };
+  const stacks = stackEntries([v1, model]);
+  assert.deepEqual(
+    stacks.map((s) => s.key),
+    ["stack:loras:7:Pony", "stack:checkpoints:7:Pony"]
+  );
+});
+
+test("stackEntries puts a member with no publish date after dated ones", () => {
+  const undated = v("pony/undated.safetensors", 99, null);
+  const [stack] = stackEntries([undated, v1, v2]);
+  assert.deepEqual(stack.members, [v2, v1, undated]);
+  assert.equal(stackEntries([undated, v("pony/also.safetensors", 100, null)])[0].members.length, 2);
+});
+
+test("arrange orders a stack by its newest member's title", () => {
+  const old = v("pony/old.safetensors", 1, "2026-01-01T00:00:00Z", { name: "zzz" });
+  const fresh = v("pony/fresh.safetensors", 2, "2026-02-01T00:00:00Z", { name: "aaa" });
+  const mid = { ...b, base_model: "Pony", model_id: null, name: "mmm" };
+  const stacks = [...stackEntries([old, fresh]), ...stackEntries([mid])];
+  const [band] = arrange(stacks, { groupBy: "none", sort: "name" });
+  // The stack shows "aaa", so it sorts before "mmm" although its older member is "zzz".
+  assert.deepEqual(
+    band.stacks.map((s) => s.members[0].name),
+    ["aaa", "mmm"]
+  );
+});
+
+test("removing every member of a list leaves no stack", () => {
+  const list = [v1, v2];
+  assert.deepEqual(stackEntries(list.filter((e) => !list.includes(e))), []);
 });

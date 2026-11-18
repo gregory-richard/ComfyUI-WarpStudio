@@ -5,7 +5,8 @@
 import { baseKey, groupOf, normaliseBase } from "./model_base.js";
 import { stemOf } from "./text.js";
 
-const TYPE = "lora";
+const TYPE = "lora"; // the type the panel's shared Types menu calls a LoRA
+const KIND = "loras"; // the folder key an entry carries as its kind
 const fold = (text) => String(text ?? "").toLowerCase();
 
 /* The keys a selected base stands for: as written, and as the server files it.
@@ -73,6 +74,12 @@ const time = (iso) => {
 };
 const byId = (x, y) => String(x.id).localeCompare(String(y.id));
 
+/** The name a card shows: the file's own when it follows the naming scheme. */
+function cardTitle(entry) {
+  const name = entry.structured ? entry.name : entry.title || entry.name;
+  return name || stemOf(entry.id);
+}
+
 /** Entries of one Civitai model and base as a stack, newest version first.
  *
  * An entry without a model id stands alone. Stacks keep the order in which
@@ -82,7 +89,7 @@ export function stackEntries(entries) {
   const stacks = new Map();
   for (const entry of entries) {
     const key = entry.model_id
-      ? `stack:${entry.kind || TYPE}:${entry.model_id}:${groupOf(entry)}`
+      ? `stack:${entry.kind || KIND}:${entry.model_id}:${groupOf(entry)}`
       : `file:${entry.id}`;
     if (!stacks.has(key)) stacks.set(key, { key, members: [] });
     stacks.get(key).members.push(entry);
@@ -122,13 +129,7 @@ export function arrange(stacks, { groupBy = "base", sort = "name", fitting = new
 /** The folded bases that still exist; a remembered one that is gone is dropped. */
 export function foldedIn(stored, bases) {
   const present = new Set(bases);
-  return new Set((stored || []).filter((base) => present.has(base)));
-}
-
-/** The name a card shows: the file's own when it follows the naming scheme. */
-function cardTitle(entry) {
-  const name = entry.structured ? entry.name : entry.title || entry.name;
-  return name || entry.title || stemOf(entry.id);
+  return new Set((Array.isArray(stored) ? stored : []).filter((base) => present.has(base)));
 }
 
 /** What one card shows. Text is raw; escaping is the view's job. */
@@ -138,7 +139,7 @@ export function cardModel(entry) {
   return {
     key: entry.id,
     title: cardTitle(entry),
-    kind: entry.kind || TYPE,
+    kind: entry.kind || KIND,
     creator: entry.creator || "",
     detail: entry.structured && entry.version ? `${entry.version} · ${base}` : base,
     triggers: (entry.triggers || []).length,

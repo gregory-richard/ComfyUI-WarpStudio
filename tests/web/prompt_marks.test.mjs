@@ -137,3 +137,10 @@ test("undefined input never throws", () => {
   assert.equal(hasEmbedding(undefined, "a"), false);
   assert.equal(addEmbedding(undefined, "a"), "embedding:a");
 });
+
+test("cycleLora leaves the text alone for a stem the tag cannot hold", () => {
+  for (const stem of ["a:b", "a>b", "x:1.0>"]) {
+    assert.deepEqual(cycleLora("one", stem), { text: "one", state: null });
+    assert.deepEqual(cycleLora("", stem), { text: "", state: null });
+  }
+});

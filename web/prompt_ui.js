@@ -2474,8 +2474,14 @@ app.registerExtension({
     // What the Gallery reads and does. Each click reads the text as it is now,
     // so a list edited by hand stays in step, and lands as one undoable edit of
     // only the range that changed.
-    const boxText = (box) => box?.el?.value ?? "";
+    // A box whose element is not built yet (the node is off screen, or still
+    // opening) holds its text in its widget; read and write that instead.
+    const boxText = (box) => (box?.el ? (box.el.value ?? "") : String(box?.widget?.value ?? ""));
     const apply = (box, next) => {
+      if (!box.el) {
+        if (box.widget) box.widget.value = next;
+        return;
+      }
       const el = box.el;
       const change = diffText(el.value || "", next);
       if (!change) return;
@@ -2486,13 +2492,13 @@ app.registerExtension({
     node._warppipePromptText = () => boxText(prompt);
     node._warppipeCycleLora = (stem) => {
       const box = targetList();
-      if (!box?.el) return null;
+      if (!box) return null;
       const got = cycleLora(boxText(box), stem);
       apply(box, got.text);
       return got.state;
     };
     node._warppipeAddEmbedding = (stem) => {
-      if (!prompt?.el) return false;
+      if (!prompt) return false;
       const before = boxText(prompt);
       const next = addEmbedding(before, stem);
       if (next === before) return false;

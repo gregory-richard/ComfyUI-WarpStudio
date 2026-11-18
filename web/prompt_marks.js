@@ -38,9 +38,16 @@ export function loraState(text, stem) {
   return line ? line.state : null;
 }
 
+/* The tag grammar cannot hold a name with ":" or ">" in it, so no line for it could
+   be recognised again; such a stem leaves the text alone and has no state. */
+const holdable = (stem) => !/[:>]/.test(stem);
+
+/** One click: absent -> on, on -> parked, parked -> on. Returns the new text and
+ *  the state it holds, or the same text and a null state for a stem it cannot hold. */
 export function cycleLora(text, stem) {
   text = str(text);
   stem = str(stem);
+  if (!holdable(stem)) return { text, state: null };
   const line = findLine(text, stem);
   if (!line) {
     const lead = text && !text.endsWith("\n") ? eolOf(text) : "";

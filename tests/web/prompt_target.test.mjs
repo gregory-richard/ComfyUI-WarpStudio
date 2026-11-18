@@ -225,3 +225,29 @@ test("setLoaderModel refuses a name that is not an option", () => {
   assert.equal(loadedModel(node), "b.safetensors");
   assert.equal(setLoaderModel({ type: "KSampler", widgets: [] }, "x"), false);
 });
+
+test("setLoaderModel marks the canvas dirty even when the callback throws", () => {
+  const node = loader(1, "UNETLoader", "unet_name", ["a.safetensors", "b.safetensors"]);
+  const canvas = { id: "canvas" };
+  let dirty = 0;
+  let args = null;
+  node.setDirtyCanvas = () => dirty++;
+  node.widgets[0].callback = (...got) => {
+    args = got;
+    throw new Error("boom");
+  };
+  assert.throws(() => setLoaderModel(node, "b.safetensors", canvas), /boom/);
+  assert.equal(dirty, 1);
+  assert.deepEqual(args, ["b.safetensors", canvas, node]);
+  assert.equal(node.widgets[0].value, "b.safetensors");
+});
+
+test("setLoaderModel reads the canvas from the node's graph when none is passed", () => {
+  const node = loader(1, "UNETLoader", "unet_name", ["a.safetensors"]);
+  const canvas = {};
+  node.graph = { canvas };
+  let got = null;
+  node.widgets[0].callback = (_name, c) => (got = c);
+  setLoaderModel(node, "a.safetensors");
+  assert.equal(got, canvas);
+});
