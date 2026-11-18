@@ -13,6 +13,7 @@ import {
   versionKey,
 } from "./model_actions.js";
 import { galleryOnlyBases } from "./gallery_core.js";
+import { infoHtml, menuHtml, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
 
@@ -63,6 +64,38 @@ const GROUP_OPTIONS = [
   { value: "type", label: "Model type", short: "Type" },
   { value: "baseFamily", label: "Base model", short: "Base" },
 ];
+
+const GALLERY_ARRANGE_KEY = "warpstudio.gallery.arrange";
+const GALLERY_GROUPS = [
+  { value: "base", label: "Base" },
+  { value: "none", label: "None" },
+];
+const GALLERY_SORTS = [
+  { value: "name", label: "Name" },
+  { value: "newest", label: "Newest on disk" },
+];
+
+/* The Gallery's Group by and Sort, remembered across reloads. */
+function readGalleryArrange() {
+  const fallback = { groupBy: "base", sort: "name" };
+  try {
+    const saved = JSON.parse(globalThis.localStorage?.getItem(GALLERY_ARRANGE_KEY) ?? "null");
+    return {
+      groupBy: GALLERY_GROUPS.some((o) => o.value === saved?.groupBy) ? saved.groupBy : fallback.groupBy,
+      sort: GALLERY_SORTS.some((o) => o.value === saved?.sort) ? saved.sort : fallback.sort,
+    };
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function writeGalleryArrange(value) {
+  try {
+    globalThis.localStorage?.setItem(GALLERY_ARRANGE_KEY, JSON.stringify(value));
+  } catch (_) {
+    // not remembered; the Gallery works the same
+  }
+}
 
 const SORT_OPTIONS = [
   { value: "name", label: "Name A\u2013Z" },
@@ -127,24 +160,29 @@ const state = {
   forceRehash: false,
   refetchMetadata: false,
   statusText: "",
+  // Errors stay on screen under the job bar; routine text is the job bar's label while a job runs.
+  errorText: "",
+  jobText: "",
   resultMode: "gallery",
   modeCounts: { updates: 0, issues: 0 },
   stopRequested: false,
 
   rootEl: null,
-  cacheInfoEl: null,
   sidecarWarningsEl: null,
   statusEl: null,
   progressWrapEl: null,
   progressFillEl: null,
   progressTextEl: null,
   scanReportEl: null,
-  checkSummaryEl: null,
   viewSwitchEl: null,
-  filterTypeEl: null,
-  filterBaseEl: null,
-  arrangeEl: null,
-  showHiddenEl: null,
+  jobBarEl: null,
+  jobTextEl: null,
+  gearEl: null,
+  settingsEl: null,
+  settingsOpen: false,
+  // One toolbar per tab: its element and its wiring.
+  toolbarEls: {},
+  toolbarWiring: {},
   resultsEl: null,
   pageInfoEl: null,
   prevEl: null,
@@ -177,8 +215,12 @@ const state = {
   galleryPaneEl: null,
   galleryFacets: { modelTypes: [], baseModels: [] },
   galleryLoaded: false,
-  // "Not on this drive" lasts the session, not a reload.
-  galleryShowMissing: false,
+  galleryTabEl: null,
+  renameTabEl: null,
+  // The Gallery's search lasts the session; "Include downloadable" too, the arrangement is stored.
+  galleryQuery: "",
+  includeDownloadable: false,
+  galleryArrange: readGalleryArrange(),
   // An "open the gallery" request that arrived while the panel was not drawn.
   pendingGallery: null,
   // Scroll offset per view, and the view whose pane is showing.
@@ -265,107 +307,92 @@ async function renderTab(el) {
   root.innerHTML = `
     <header class="cu-hero">
       <div class="cu-hero-title">Warp Studio</div>
-      <p class="cu-hero-sub">Your models, ready to use and kept up to date</p>
+      <button type="button" id="cu-gear" class="cu-gear" title="Settings" aria-label="Settings" aria-controls="cu-settings" aria-expanded="${state.settingsOpen}">⚙︎</button>
     </header>
 
-    <section class="cu-card">
-      <details class="cu-settings">
-        <summary>Settings</summary>
-        <div class="cu-settings-body">
-          <div class="cu-label">Model Scope</div>
-          <div class="cu-row">${MODEL_TYPES.map((t) => `<label class="cu-chip" title="Include ${t} in jobs"><input type="checkbox" data-type="${t}"${state.scopeTypes.includes(t) ? " checked" : ""}><span>${t.charAt(0).toUpperCase() + t.slice(1)}</span></label>`).join("")}</div>
-          <div class="cu-label">Options</div>
-          <label class="cu-option">
-            <input id="cu-rehash" type="checkbox"${state.forceRehash ? " checked" : ""}>
-            <span>Force rehash</span>
-            <span class="cu-info-trigger cu-tooltip" data-tooltip="Re-identify every model by recomputing its SHA256 hash. Use this after manually replacing model files — the cache won't know the file changed otherwise.">ⓘ</span>
-          </label>
-          <p class="cu-option-hint">Re-identify models from scratch. Use after replacing files.</p>
-          <label class="cu-option">
-            <input id="cu-refetch" type="checkbox"${state.refetchMetadata ? " checked" : ""}>
-            <span>Refetch metadata that already exists</span>
-            <span class="cu-info-trigger cu-tooltip" data-tooltip="Makes Fetch Missing Metadata re-pull info from Civitai for models that already have a .civitai.info file, instead of skipping them. Uses sidecar version IDs, so no re-hashing.">ⓘ</span>
-          </label>
-          <div class="cu-divider"></div>
-          <div class="cu-head">
-            <div class="cu-label">Resolved Roots</div>
-            <button id="cu-roots-toggle" class="cu-text-btn">Show</button>
-          </div>
-          <div id="cu-roots-summary" class="cu-roots-sum"></div>
-          <div id="cu-roots" class="cu-roots" style="display:none"></div>
+    <section id="cu-settings" class="cu-card cu-settings-card"${state.settingsOpen ? "" : " hidden"}>
+      <div class="cu-settings-body">
+        <div class="cu-label">Model Scope</div>
+        <div class="cu-row">${MODEL_TYPES.map((t) => `<label class="cu-chip" title="Include ${t} in jobs"><input type="checkbox" data-type="${t}"${state.scopeTypes.includes(t) ? " checked" : ""}><span>${t.charAt(0).toUpperCase() + t.slice(1)}</span></label>`).join("")}</div>
+        <div class="cu-label">Options</div>
+        <label class="cu-option">
+          <input id="cu-rehash" type="checkbox"${state.forceRehash ? " checked" : ""}>
+          <span>Force rehash</span>
+          <span class="cu-info-trigger cu-tooltip" data-tooltip="Re-identify every model by recomputing its SHA256 hash. Use this after manually replacing model files — the cache won't know the file changed otherwise.">ⓘ</span>
+        </label>
+        <label class="cu-option">
+          <input id="cu-refetch" type="checkbox"${state.refetchMetadata ? " checked" : ""}>
+          <span>Refetch metadata that already exists</span>
+          <span class="cu-info-trigger cu-tooltip" data-tooltip="Makes Fetch Missing Metadata re-pull info from Civitai for models that already have a .civitai.info file, instead of skipping them. Uses sidecar version IDs, so no re-hashing.">ⓘ</span>
+        </label>
+        <div class="cu-divider"></div>
+        <div class="cu-head">
+          <div class="cu-label">Resolved Roots</div>
+          <button id="cu-roots-toggle" class="cu-text-btn">Show</button>
         </div>
-      </details>
-    </section>
-
-    <section class="cu-card">
-      <div class="cu-action-bar">
-        <button id="cu-check" class="cu-btn cu-btn-primary cu-btn-lead cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
-        <button id="cu-scan" class="cu-btn cu-btn-ghost cu-tooltip" data-tooltip="Download missing .civitai.info sidecars and preview images. Files Civitai can't serve are looked up on the sources set under Preview Fallback in the settings. Files that already have metadata and a preview are skipped, and nothing is compared for updates.">Fetch Missing Metadata</button>
-      </div>
-      <div id="cu-cache-info" class="cu-cache-info"></div>
-      <div id="cu-sidecar-warnings" class="cu-sidecar-warnings"></div>
-      <div id="cu-progress-wrap" class="cu-progress-wrap" style="display:none">
-        <div class="cu-progress"><div id="cu-progress-fill" class="cu-progress-fill"></div></div>
-        <span id="cu-progress-text" class="cu-progress-pct"></span>
-        <span id="cu-progress-eta" class="cu-progress-eta"></span>
-      </div>
-      <div id="cu-status" class="cu-status"></div>
-      <div id="cu-job-controls" class="cu-job-controls" style="display:none">
-        <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
-        <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
+        <div id="cu-roots-summary" class="cu-roots-sum"></div>
+        <div id="cu-roots" class="cu-roots" style="display:none"></div>
       </div>
     </section>
 
     <section class="cu-card">
-      <div class="cu-head">
-        <h3>Results</h3>
-        <select id="cu-size" title="Results per page">${PAGE_SIZES.map((v) => `<option value="${v}">${v}</option>`).join("")}</select>
-      </div>
-      <div id="cu-shared-filters" class="cu-filters">
-        <div id="cu-filter-type" class="cu-filter-slot"></div>
-        <div id="cu-filter-base" class="cu-filter-slot"></div>
-      </div>
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
       <div id="cu-loading-bar" class="cu-loading-bar" aria-hidden="true"></div>
-      <div id="cu-gallery-pane"></div>
-      <div id="cu-rename-pane" style="display:none"></div>
+      <div id="cu-job-bar" class="cu-job-bar" hidden>
+        <div id="cu-progress-wrap" class="cu-progress-wrap">
+          <div class="cu-progress"><div id="cu-progress-fill" class="cu-progress-fill"></div></div>
+          <span id="cu-progress-text" class="cu-progress-pct"></span>
+          <span id="cu-progress-eta" class="cu-progress-eta"></span>
+        </div>
+        <div class="cu-job-row">
+          <span id="cu-job-text" class="cu-job-text"></span>
+          <div id="cu-job-controls" class="cu-job-controls" style="display:none">
+            <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
+            <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
+          </div>
+        </div>
+      </div>
+      <div id="cu-status" class="cu-status" role="alert"></div>
+      <div id="cu-gallery-tab">
+        <div id="cu-tb-gallery" data-tb-tab="gallery"></div>
+        <div id="cu-gallery-pane"></div>
+      </div>
+      <div id="cu-rename-tab" style="display:none">
+        <div id="cu-tb-rename" data-tb-tab="rename"></div>
+        <div id="cu-rename-pane"></div>
+      </div>
       <div id="cu-updates-pane">
-      <div id="cu-scan-report" class="cu-scan-report"></div>
-      <div id="cu-check-summary" class="cu-summary">No update check has run yet.</div>
-      <div class="cu-filters">
-        <div id="cu-arrange-slot" class="cu-filter-slot"></div>
-        <label class="cu-toggle" title="Show versions you previously hid">
-          <input id="cu-show-hidden" type="checkbox">
-          <span>Show hidden</span>
-        </label>
-      </div>
-      <div id="cu-results" class="cu-results"></div>
-      <div class="cu-pagination">
-        <button id="cu-prev" class="cu-page-btn" disabled title="Previous page">&lsaquo;</button>
-        <span id="cu-page" class="cu-page-info">1 / 1</span>
-        <button id="cu-next" class="cu-page-btn" disabled title="Next page">&rsaquo;</button>
-      </div>
+        <div class="cu-action-bar">
+          <button id="cu-check" class="cu-btn cu-btn-primary cu-btn-lead cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
+          <button id="cu-scan" class="cu-btn cu-btn-ghost cu-tooltip" data-tooltip="Download missing .civitai.info sidecars and preview images. Files Civitai can't serve are looked up on the sources set under Preview Fallback in the settings. Files that already have metadata and a preview are skipped, and nothing is compared for updates.">Fetch Missing Metadata</button>
+        </div>
+        <div id="cu-tb-updates" data-tb-tab="updates"></div>
+        <div id="cu-sidecar-warnings" class="cu-sidecar-warnings"></div>
+        <div id="cu-scan-report" class="cu-scan-report"></div>
+        <div id="cu-results" class="cu-results"></div>
+        <div class="cu-pagination">
+          <button id="cu-prev" class="cu-page-btn" disabled title="Previous page">&lsaquo;</button>
+          <span id="cu-page" class="cu-page-info">1 / 1</span>
+          <button id="cu-next" class="cu-page-btn" disabled title="Next page">&rsaquo;</button>
+        </div>
       </div>
     </section>
   `;
 
   state.rootEl = root;
-  state.cacheInfoEl = root.querySelector("#cu-cache-info");
   state.sidecarWarningsEl = root.querySelector("#cu-sidecar-warnings");
   state.statusEl = root.querySelector("#cu-status");
+  state.jobBarEl = root.querySelector("#cu-job-bar");
+  state.jobTextEl = root.querySelector("#cu-job-text");
+  state.gearEl = root.querySelector("#cu-gear");
+  state.settingsEl = root.querySelector("#cu-settings");
   state.progressWrapEl = root.querySelector("#cu-progress-wrap");
   state.progressFillEl = root.querySelector("#cu-progress-fill");
   state.progressTextEl = root.querySelector("#cu-progress-text");
   state.progressEtaEl = root.querySelector("#cu-progress-eta");
   state.scanReportEl = root.querySelector("#cu-scan-report");
-  state.checkSummaryEl = root.querySelector("#cu-check-summary");
   state.viewSwitchEl = root.querySelector("#cu-view-switch");
   state.loadingBarEl = root.querySelector("#cu-loading-bar");
-  state.sharedFiltersEl = root.querySelector("#cu-shared-filters");
-  state.filterTypeEl = root.querySelector("#cu-filter-type");
-  state.filterBaseEl = root.querySelector("#cu-filter-base");
-  state.arrangeEl = root.querySelector("#cu-arrange-slot");
-  state.showHiddenEl = root.querySelector("#cu-show-hidden");
   state.resultsEl = root.querySelector("#cu-results");
   state.pageInfoEl = root.querySelector("#cu-page");
   state.prevEl = root.querySelector("#cu-prev");
@@ -375,7 +402,9 @@ async function renderTab(el) {
   state.pauseEl = root.querySelector("#cu-pause");
   state.stopEl = root.querySelector("#cu-stop");
   state.jobControlsEl = root.querySelector("#cu-job-controls");
+  state.galleryTabEl = root.querySelector("#cu-gallery-tab");
   state.galleryPaneEl = root.querySelector("#cu-gallery-pane");
+  state.renameTabEl = root.querySelector("#cu-rename-tab");
   state.renamePaneEl = root.querySelector("#cu-rename-pane");
   state.updatesPaneEl = root.querySelector("#cu-updates-pane");
   state.renameView = renderRenameView(state.renamePaneEl, {
@@ -405,27 +434,25 @@ async function renderTab(el) {
     onFacets: onGalleryFacets,
     onCount: () => renderViewSwitch(),
     app,
-    showMissing: () => state.galleryShowMissing,
-    onShowMissing: (on) => {
-      state.galleryShowMissing = Boolean(on);
-    },
+    query: () => state.galleryQuery,
+    arrange: () => state.galleryArrange,
+    includeDownloadable: () => state.includeDownloadable,
     downloads: () => state.downloads,
     canTrash: () => state.canTrash,
     onDownload: (name) => startDownload({ source: "gallery", name }, galleryKey(name)),
     onStop: (requestId) => stopDownload(requestId),
-    onDelete: (name) => deleteModel(name),
+    onDelete: (name, kind) => deleteModel(name, kind),
   });
   bindEvents(root);
-  state.statusEl.textContent = state.statusText;
+  setupToolbars();
+  paintStatus();
   renderCacheInfo();
   renderRoots();
-  renderArrange();
   renderSidecarWarnings();
   renderScanReport();
   renderFilters();
   renderResults();
   updateControlButtons();
-  root.querySelector("#cu-size").value = String(state.pageSize);
   el.appendChild(root);
   const pending = state.pendingGallery;
   state.pendingGallery = null;
@@ -486,7 +513,7 @@ async function loadCachedResults() {
     renderSidecarWarnings();
     if (!resp.data) {
       if (resp.cacheInvalid) {
-        setStatus("Cached results are from an older format. Run Check for Updates again.");
+        setStatus("Cached results are from an older format. Run Check for Updates again.", "error");
       }
       return;
     }
@@ -587,7 +614,7 @@ async function recoverFromLostJob() {
     updateControlButtons();
     renderCacheInfo();
     renderResults();
-    setStatus("The server was restarted \u2014 reloading the last saved results.");
+    setStatus("The server was restarted \u2014 reloading the last saved results.", "error");
     // A dry run the panel was following is gone too: unlock the Rename view.
     if (state.renameView) state.renameView.refresh();
     await loadCachedResults();
@@ -607,9 +634,16 @@ function bindEvents(root) {
   });
   // ComfyUI rebuilds the tab each time it is opened, so the job options are
   // kept in state rather than read back from the checkboxes.
-  root.addEventListener("change", (ev) => {
+  root.addEventListener("change", async (ev) => {
     const target = ev.target;
     if (!(target instanceof HTMLInputElement)) return;
+    // A choice in a toolbar menu (Filter, Sort).
+    const menu = target.closest("[data-tb-menu]");
+    if (menu) {
+      const tab = menu.closest("[data-tb-tab]")?.dataset.tbTab;
+      if (tab) await onToolbarChange(tab, target);
+      return;
+    }
     if (target.dataset.type) {
       const type = target.dataset.type;
       state.scopeTypes = MODEL_TYPES.filter((t) => (t === type ? target.checked : state.scopeTypes.includes(t)));
@@ -618,35 +652,6 @@ function bindEvents(root) {
     } else if (target.id === "cu-refetch") {
       state.refetchMetadata = target.checked;
     }
-  });
-  root.querySelector("#cu-size").addEventListener("change", async (ev) => {
-    const next = Number(ev.target.value || PAGE_SIZES[0]);
-    state.pageSize = PAGE_SIZES.includes(next) ? next : PAGE_SIZES[0];
-    state.pageOffset = 0;
-    await loadResultPage(true);
-  });
-  root.addEventListener("change", async (ev) => {
-    const target = ev.target;
-    if (!(target instanceof HTMLSelectElement)) return;
-    const key = target.dataset.arrange;
-    if (!key) return;
-    if (key === "sort") {
-      state.sortOrder = target.value;
-    } else if (key === "groupBy") {
-      state.groupBy = target.value;
-      if (state.thenBy === state.groupBy) state.thenBy = "none";
-    } else if (key === "thenBy") {
-      state.thenBy = target.value;
-    }
-    state.pageOffset = 0;
-    state.collapsed.clear();
-    renderArrange();
-    await loadResultPage(true);
-  });
-  root.querySelector("#cu-show-hidden").addEventListener("change", async (ev) => {
-    state.showHidden = Boolean(ev.target.checked);
-    state.pageOffset = 0;
-    await loadResultPage(true);
   });
   root.querySelector("#cu-prev").addEventListener("click", async () => {
     if (state.pageOffset <= 0) return;
@@ -658,21 +663,23 @@ function bindEvents(root) {
     state.pageOffset += state.pageSize;
     await loadResultPage(true);
   });
-  root.addEventListener("change", async (ev) => {
-    const target = ev.target;
-    if (!(target instanceof HTMLInputElement)) return;
-    if (target.dataset.filterKind !== "type" && target.dataset.filterKind !== "base") return;
-    const key = target.dataset.filterKind === "type" ? "filterTypes" : "filterBases";
-    const value = target.dataset.filterValue || "";
-    const selected = new Set(state[key] || []);
-    if (target.checked) selected.add(value);
-    else selected.delete(value);
-    state[key] = [...selected];
-    await onFiltersChanged();
-  });
   root.addEventListener("click", async (ev) => {
     const target = ev.target;
     if (!(target instanceof HTMLElement)) return;
+    if (target.closest("#cu-gear")) {
+      toggleSettings();
+      return;
+    }
+    const selectAll = target.closest("[data-tb-all], [data-tb-none]");
+    if (selectAll) {
+      await onToolbarSelectAll(selectAll);
+      return;
+    }
+    const toolbarAction = target.closest("[data-tb-act]");
+    if (toolbarAction) {
+      onToolbarAction(toolbarAction);
+      return;
+    }
     const viewTab = target.closest("[data-view]");
     if (viewTab) {
       const mode = viewTab.dataset.view;
@@ -707,14 +714,6 @@ function bindEvents(root) {
       }
       return;
     }
-    const filterAction = target.dataset.filterAction;
-    if (filterAction) {
-      const key = target.dataset.filterKind === "type" ? "filterTypes" : "filterBases";
-      const facetKey = target.dataset.filterKind === "type" ? "modelTypes" : "baseModels";
-      state[key] = filterAction === "all" ? [...(state.facets[facetKey] || [])] : [];
-      await onFiltersChanged();
-      return;
-    }
     if (target.dataset.archiveAction) {
       const modelId = target.dataset.modelId || "";
       const versionId = target.dataset.versionId || "";
@@ -734,14 +733,257 @@ function bindEvents(root) {
   });
 }
 
+/* The ⚙ button: the settings open and close above the tabs. */
+function toggleSettings() {
+  state.settingsOpen = !state.settingsOpen;
+  if (state.settingsEl) state.settingsEl.hidden = !state.settingsOpen;
+  state.gearEl?.setAttribute("aria-expanded", String(state.settingsOpen));
+}
+
+/* ---- Toolbars: one for the Gallery, one shared by Updates and Issues, one for Rename ---- */
+
+const TOOLBAR_TABS = ["gallery", "updates", "rename"];
+
+// Filters that narrow what a tab shows. Types and Bases are one selection for every tab.
+function isNarrowed(selection, options) {
+  return options.length > 0 && Array.isArray(selection) && !selectsAll(selection, options);
+}
+
+function filterCount(tab) {
+  let count = 0;
+  // The Gallery shows LoRAs, models and embeddings alike: Types only narrow the other tabs.
+  if (tab !== "gallery" && isNarrowed(state.filterTypes, state.facets.modelTypes)) count += 1;
+  if (isNarrowed(state.filterBases, state.facets.baseModels)) count += 1;
+  if (tab === "updates" && state.showHidden) count += 1;
+  if (tab === "gallery" && state.includeDownloadable && downloadableCount() > 0) count += 1;
+  return count;
+}
+
+const downloadableCount = () => state.galleryView?.downloadableCount?.() || 0;
+
+function sortLabel(tab) {
+  if (tab === "gallery") {
+    return GALLERY_SORTS.find((o) => o.value === state.galleryArrange.sort)?.label || "Name";
+  }
+  if (tab === "rename") return null;
+  return SORT_OPTIONS.find((o) => o.value === state.sortOrder)?.label || "Name";
+}
+
+function toolbarProps(tab) {
+  return {
+    query: tab === "gallery" ? state.galleryQuery : "",
+    filtered: filterCount(tab),
+    sortLabel: sortLabel(tab),
+    info: tab === "updates",
+    search: tab === "gallery",
+  };
+}
+
+/* Draws each tab's toolbar once; later changes patch its labels in place
+   (renderToolbars), so typing in the search field never rebuilds anything. */
+function setupToolbars() {
+  for (const wiring of Object.values(state.toolbarWiring)) wiring.destroy();
+  state.toolbarWiring = {};
+  for (const tab of TOOLBAR_TABS) {
+    const root = state.rootEl?.querySelector(`#cu-tb-${tab}`);
+    if (!root) continue;
+    state.toolbarEls[tab] = root;
+    root.innerHTML = toolbarHtml(toolbarProps(tab), escapeHtml);
+    state.toolbarWiring[tab] = wireToolbar(root, {
+      onQuery: (value) => onToolbarQuery(tab, value),
+      onOpen: (name) => fillToolbarMenu(tab, name),
+    });
+  }
+}
+
+function renderToolbars() {
+  for (const tab of TOOLBAR_TABS) {
+    const root = state.toolbarEls[tab];
+    if (root) updateToolbar(root, toolbarProps(tab), escapeHtml);
+  }
+  refreshOpenMenus();
+}
+
+function onToolbarQuery(tab, value) {
+  if (tab !== "gallery") return;
+  state.galleryQuery = String(value || "").trim();
+  state.galleryView?.setQuery(state.galleryQuery);
+  renderToolbars();
+}
+
+function typeOptions() {
+  const selected = state.filterTypes || [];
+  return state.facets.modelTypes.map((value) => ({ value, label: capitalize(value), checked: selected.includes(value) }));
+}
+
+function baseOptions() {
+  const selected = state.filterBases || [];
+  return state.facets.baseModels.map((value) => ({ value, label: value, checked: selected.includes(value) }));
+}
+
+function menuSections(tab, name) {
+  if (name === "filter") {
+    const types = { kind: "checks", key: "types", title: "Types", options: typeOptions(), actions: true };
+    const bases = { kind: "checks", key: "bases", title: "Bases", options: baseOptions(), actions: true };
+    if (tab === "gallery") {
+      const sections = [bases];
+      if (downloadableCount() > 0) {
+        sections.push({ kind: "toggle", key: "includeDownloadable", label: "Include downloadable", checked: state.includeDownloadable });
+      }
+      return sections;
+    }
+    if (tab === "rename") return [types, bases];
+    return [types, bases, { kind: "toggle", key: "showHidden", label: "Show hidden", checked: state.showHidden }];
+  }
+  if (tab === "gallery") {
+    return [
+      { kind: "choice", key: "groupBy", title: "Group by", options: GALLERY_GROUPS, value: state.galleryArrange.groupBy },
+      { kind: "choice", key: "sort", title: "Sort", options: GALLERY_SORTS, value: state.galleryArrange.sort },
+    ];
+  }
+  const sections = [{ kind: "choice", key: "groupBy", title: "Group", options: GROUP_OPTIONS, value: state.groupBy }];
+  if (state.groupBy !== "none") {
+    // The same grouping twice means nothing, so the first choice is not offered again.
+    sections.push({ kind: "choice", key: "thenBy", title: "Then", options: GROUP_OPTIONS.filter((o) => o.value !== state.groupBy), value: state.thenBy });
+  }
+  sections.push({ kind: "choice", key: "sort", title: "Sort", options: SORT_OPTIONS, value: state.sortOrder });
+  sections.push({ kind: "choice", key: "pageSize", title: "Per page", options: PAGE_SIZES.map((v) => ({ value: String(v), label: String(v) })), value: String(state.pageSize) });
+  return sections;
+}
+
+/* What the ⓘ popover says: when the last check ran, what it found, whether files changed. */
+function infoLines() {
+  if (state.startupLoading && !state.cachedAt) return ["Loading the last check…"];
+  if (!state.checkJobId) return ["No update check has run yet."];
+  const lines = [];
+  if (state.cachedAt) lines.push(`Last checked ${timeAgo(state.cachedAt)}`);
+  if (state.checkSummary) {
+    lines.push(summaryLine(state.checkSummary));
+  } else if (state.currentJobType === "check-updates") {
+    lines.push(state.resultItems.length
+      ? "Check in progress — previous results are shown until each model is re-checked."
+      : "Check in progress…");
+  }
+  const dirty = state.cacheFilesChanged;
+  if (dirty) {
+    const parts = [];
+    if (typeof dirty === "object") {
+      if (dirty.added) parts.push(`${dirty.added} added`);
+      if (dirty.removed) parts.push(`${dirty.removed} removed`);
+    }
+    lines.push(parts.length ? `Changes detected (${parts.join(", ")})` : "Changes detected");
+  }
+  return lines;
+}
+
+function infoPopoverHtml() {
+  const action = state.checkJobId && !state.startupLoading
+    ? { label: "Check again", key: "recheck", disabled: Boolean(state.currentJobId) }
+    : null;
+  return infoHtml(infoLines(), action, escapeHtml);
+}
+
+/* Fills one menu of one toolbar. A menu whose content did not change is left
+   alone, so a poll tick never replaces the control the reader is on; when it
+   did change, focus goes back to the same place in it. */
+function fillToolbarMenu(tab, name) {
+  const slot = state.toolbarEls[tab]?.querySelector(`[data-tb-menu="${name}"]`);
+  if (!slot) return;
+  const html = name === "info" ? infoPopoverHtml() : menuHtml(menuSections(tab, name), escapeHtml);
+  // Radio names differ on every call; they say nothing about the content.
+  const signature = html.replace(/ name="[^"]*"/g, "");
+  if (slot.dataset.sig === signature) return;
+  const controls = () => [...slot.querySelectorAll("input, button")];
+  const at = slot.contains(document.activeElement) ? controls().indexOf(document.activeElement) : -1;
+  slot.innerHTML = html;
+  slot.dataset.sig = signature;
+  if (at >= 0) controls()[at]?.focus({ preventScroll: true });
+}
+
+function refreshOpenMenus() {
+  for (const tab of TOOLBAR_TABS) {
+    const root = state.toolbarEls[tab];
+    if (!root) continue;
+    for (const slot of root.querySelectorAll("[data-tb-menu]")) {
+      if (!slot.hidden) fillToolbarMenu(tab, slot.dataset.tbMenu);
+    }
+  }
+}
+
+/* A change in a Filter or Sort menu. */
+async function onToolbarChange(tab, input) {
+  const key = input.dataset.key || "";
+  const value = input.dataset.value ?? "";
+  if (key === "types" || key === "bases") {
+    const selection = key === "types" ? "filterTypes" : "filterBases";
+    const selected = new Set(state[selection] || []);
+    if (input.checked) selected.add(value);
+    else selected.delete(value);
+    state[selection] = [...selected];
+    await onFiltersChanged();
+  } else if (key === "showHidden") {
+    state.showHidden = Boolean(input.checked);
+    state.pageOffset = 0;
+    renderToolbars();
+    await loadResultPage(true);
+  } else if (key === "includeDownloadable") {
+    state.includeDownloadable = Boolean(input.checked);
+    renderToolbars();
+    state.galleryView?.rerender();
+  } else if (tab === "gallery") {
+    if (key !== "groupBy" && key !== "sort") return;
+    state.galleryArrange = { ...state.galleryArrange, [key]: value };
+    writeGalleryArrange(state.galleryArrange);
+    renderToolbars();
+    state.galleryView?.render();
+  } else if (key === "pageSize") {
+    const next = Number(value || PAGE_SIZES[0]);
+    state.pageSize = PAGE_SIZES.includes(next) ? next : PAGE_SIZES[0];
+    state.pageOffset = 0;
+    renderToolbars();
+    await loadResultPage(true);
+  } else if (key === "sort" || key === "groupBy" || key === "thenBy") {
+    if (key === "sort") {
+      state.sortOrder = value;
+    } else if (key === "groupBy") {
+      state.groupBy = value;
+      if (state.thenBy === state.groupBy) state.thenBy = "none";
+    } else {
+      state.thenBy = value;
+    }
+    state.pageOffset = 0;
+    state.collapsed.clear();
+    renderArrange();
+    await loadResultPage(true);
+  }
+}
+
+/* Select all / Deselect all in the Types or Bases menu. */
+async function onToolbarSelectAll(button) {
+  const all = button.dataset.tbAll !== undefined;
+  const key = all ? button.dataset.tbAll : button.dataset.tbNone;
+  const selection = key === "types" ? "filterTypes" : "filterBases";
+  const facet = key === "types" ? "modelTypes" : "baseModels";
+  state[selection] = all ? [...(state.facets[facet] || [])] : [];
+  await onFiltersChanged();
+}
+
+/* A button inside the ⓘ popover. */
+function onToolbarAction(button) {
+  if (button.dataset.tbAct !== "recheck") return;
+  state.toolbarWiring.updates?.close();
+  state.forceNextRecheck = true;
+  startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
+}
+
 async function startJob(endpoint, type) {
   if (state.currentJobId) {
-    setStatus("A job is already running.");
+    setStatus("A job is already running.", "error");
     return;
   }
   const modelTypes = selectedTypes();
   if (!modelTypes.length) {
-    setStatus("Select at least one model type in Settings.");
+    setStatus("Select at least one model type in the \u2699 settings.", "error");
     return;
   }
   const forceRehash = state.forceRehash;
@@ -764,11 +1006,12 @@ async function startJob(endpoint, type) {
       renderFilters();
       await loadResultPage(true);
       renderCacheInfo();
-      setStatus(`Showing cached results from ${timeAgo(state.cachedAt)} \u2014 click Refresh to re-check.`);
+      setStatus(`Showing cached results from ${timeAgo(state.cachedAt)}`);
       return;
     }
   }
   state.forceNextRecheck = false;
+  clearError();
 
   try {
     const data = await postJson(endpoint, payload);
@@ -805,7 +1048,7 @@ async function startJob(endpoint, type) {
       await loadResultPage(true);
     }
   } catch (error) {
-    setStatus(`Failed to start job: ${error.message}`);
+    setStatus(`Failed to start job: ${error.message}`, "error");
   }
 }
 
@@ -827,7 +1070,7 @@ async function togglePauseResume() {
       setStatus("Job paused.");
     }
   } catch (error) {
-    setStatus(`Failed to pause/resume: ${error.message}`);
+    setStatus(`Failed to pause/resume: ${error.message}`, "error");
   }
 }
 
@@ -839,7 +1082,7 @@ async function stopCurrentJob() {
     setStatus("Stopping\u2026");
   } catch (error) {
     state.stopRequested = false;
-    setStatus(`Failed to stop: ${error.message}`);
+    setStatus(`Failed to stop: ${error.message}`, "error");
   }
 }
 
@@ -858,6 +1101,7 @@ function pollJob(jobId) {
       const job = await getJson(`/warp-studio/updater/jobs/${jobId}`);
       // A new job was bound while this tick waited: it owns the state now.
       if (state.currentJobId !== jobId) return;
+      if (consecutiveFailures) clearError(); // the "Reconnecting" notice is over
       consecutiveFailures = 0;
       const status = job.status || "running";
       const progress = Number(job.progress || 0);
@@ -949,7 +1193,7 @@ function pollJob(jobId) {
         }
         if (status === "failed") {
           const msg = Array.isArray(job.errors) && job.errors.length ? job.errors[0] : "Unknown error";
-          setStatus(`Failed: ${msg}`);
+          setStatus(`Failed: ${msg}`, "error");
         } else if (status === "cancelled") {
           setStatus("Job cancelled");
         } else if (renameJob) {
@@ -988,7 +1232,7 @@ function pollJob(jobId) {
       }
       consecutiveFailures++;
       if (consecutiveFailures < 5) {
-        setStatus(`Reconnecting... (Attempt ${consecutiveFailures}/5)`);
+        setStatus(`Reconnecting... (Attempt ${consecutiveFailures}/5)`, "error");
         return;
       }
       clearInterval(state.pollTimer);
@@ -1001,7 +1245,7 @@ function pollJob(jobId) {
       resetEta();
       updateProgress(0, 0, false);
       updateControlButtons();
-      setStatus(`Lost contact with the server (${error.message}). Reopen the panel to reload results.`);
+      setStatus(`Lost contact with the server (${error.message}). Reopen the panel to reload results.`, "error");
     } finally {
       tickInFlight = false;
     }
@@ -1080,7 +1324,7 @@ async function loadResultPage(force, { quiet = false } = {}) {
       await recoverFromLostJob();
       return;
     }
-    setStatus(`Failed to fetch result page: ${error.message}`);
+    setStatus(`Failed to fetch result page: ${error.message}`, "error");
   } finally {
     if (!quiet) setLoading("results", false);
   }
@@ -1125,55 +1369,11 @@ function scanCounts(s) {
   return `${s.total || 0} total \u00b7 ${s.refreshed || 0} refreshed \u00b7 ${s.skipped || 0} skipped \u00b7 ${s.notFound || 0} not found \u00b7 ${s.errors || 0} errors${found}`;
 }
 
+/* The ⓘ popover of Updates and Issues: when it was last checked, what it found,
+   whether files changed. Filled when it opens; kept current while it is open. */
 function renderCacheInfo() {
-  if (!state.cacheInfoEl) return;
-  if (!state.cachedAt) {
-    if (state.startupLoading) {
-      state.cacheInfoEl.innerHTML = `<span class="cu-spinner" aria-hidden="true"></span>Loading the last check\u2026`;
-      state.cacheInfoEl.style.display = "";
-      return;
-    }
-    state.cacheInfoEl.innerHTML = "";
-    state.cacheInfoEl.style.display = "none";
-    return;
-  }
-  const ttl = Number(getSetting(SETTINGS.cacheTtlMinutes, 240));
-  const age = Date.now() - new Date(state.cachedAt).getTime();
-  const fresh = ttl > 0 && age < ttl * 60 * 1000;
-  const dirty = state.cacheFilesChanged;
-
-  let statusPill = "";
-  let detailsText = "";
-  if (dirty) {
-    const parts = [];
-    if (typeof dirty === "object") {
-      if (dirty.added) parts.push(`${dirty.added} added`);
-      if (dirty.removed) parts.push(`${dirty.removed} removed`);
-    }
-    const details = parts.join(", ");
-    const tooltipText = details
-      ? `Models changed on your disk (${details}). Re-check is recommended to sync changes.`
-      : "Tracked models changed. Re-check is recommended to sync changes.";
-    statusPill = `<span class="cu-status-pill cu-tooltip" data-status="dirty" data-tooltip="${escapeHtml(tooltipText)}">changes detected</span>`;
-    detailsText = details ? ` <span class="cu-dirty-details">(${escapeHtml(details)})</span>` : "";
-  } else if (fresh) {
-    statusPill = `<span class="cu-status-pill cu-tooltip" data-status="cached" data-tooltip="Results are fresh and cached. Will remain cached for up to ${ttl} minutes since last check.">cached</span>`;
-  } else {
-    statusPill = `<span class="cu-status-pill cu-tooltip" data-status="stale" data-tooltip="Cache duration has expired. Click 'Check for Updates' to fetch fresh updates from Civitai.">stale</span>`;
-  }
-
-  const showRefresh = fresh && !dirty;
-  const refreshPart = showRefresh ? ` · <button id="cu-force-recheck" class="cu-text-btn">Refresh</button>` : "";
-  state.cacheInfoEl.innerHTML = `<span class="cu-cache-text">Last checked ${timeAgo(state.cachedAt)} ·</span> ${statusPill}${detailsText}${refreshPart}`;
-  state.cacheInfoEl.title = `Last checked ${timeAgo(state.cachedAt)}${dirty && typeof dirty === "object" ? ` · changes detected (${[dirty.added ? `${dirty.added} added` : "", dirty.removed ? `${dirty.removed} removed` : ""].filter(Boolean).join(", ")})` : ""}`;
-  state.cacheInfoEl.style.display = "";
-  const refreshEl = state.cacheInfoEl.querySelector("#cu-force-recheck");
-  if (refreshEl) {
-    refreshEl.addEventListener("click", () => {
-      state.forceNextRecheck = true;
-      startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
-    });
-  }
+  const slot = state.toolbarEls.updates?.querySelector('[data-tb-menu="info"]');
+  if (slot && !slot.hidden) fillToolbarMenu("updates", "info");
 }
 
 function renderSidecarWarnings() {
@@ -1411,20 +1611,9 @@ function resultsPageKey() {
 }
 
 function renderResults() {
-  if (!state.resultsEl || !state.checkSummaryEl) return;
+  if (!state.resultsEl) return;
   renderViewSwitch();
-  if (state.checkSummary) {
-    const s = state.checkSummary;
-    state.checkSummaryEl.textContent = summaryLine(s);
-  } else if (state.currentJobType === "check-updates") {
-    state.checkSummaryEl.textContent = state.resultItems.length
-      ? "Check in progress \u2014 previous results are shown until each model is re-checked."
-      : "Check in progress\u2026";
-  } else if (state.startupLoading) {
-    state.checkSummaryEl.textContent = "Loading the last check…";
-  } else {
-    state.checkSummaryEl.textContent = "No update check has run yet.";
-  }
+  renderCacheInfo();
   if (state.startupLoading && !state.resultItems.length) {
     state.lastRenderSignature = null;
     state.renderedEntries = null;
@@ -1657,11 +1846,11 @@ function applyResultMode() {
   state.shownMode = mode;
   const rename = mode === "rename";
   const gallery = mode === "gallery";
-  if (state.galleryPaneEl) state.galleryPaneEl.style.display = gallery ? "" : "none";
-  if (state.renamePaneEl) state.renamePaneEl.style.display = rename ? "" : "none";
+  if (state.galleryTabEl) state.galleryTabEl.style.display = gallery ? "" : "none";
+  if (state.renameTabEl) state.renameTabEl.style.display = rename ? "" : "none";
   if (state.updatesPaneEl) state.updatesPaneEl.style.display = rename || gallery ? "none" : "";
-  const size = state.rootEl?.querySelector("#cu-size");
-  if (size) size.style.visibility = rename || gallery ? "hidden" : "";
+  // A menu left open in a tab that is no longer shown would reappear with it.
+  for (const wiring of Object.values(state.toolbarWiring)) wiring.close();
   renderViewSwitch();
   if (rename && state.renameView) state.renameView.refresh();
   if (gallery) showGallery();
@@ -1743,6 +1932,7 @@ function bindJob(jobId, type, statusText) {
   state.lastStatus = "";
   state.lastItemCount = -1;
   resetEta();
+  clearError();
   updateProgress(0, 0, true);
   updateControlButtons();
   setStatus(statusText || "Working\u2026");
@@ -1838,15 +2028,15 @@ async function stopDownload(requestId) {
     const data = await postJson(`/warp-studio/updater/downloads/${encodeURIComponent(requestId)}/stop`, {});
     if (data.request) state.downloads.set(data.request.key, data.request);
   } catch (error) {
-    setStatus(`Could not stop the download: ${error.message}`);
+    setStatus(`Could not stop the download: ${error.message}`, "error");
   }
   paintDownloads();
 }
 
-// Sends one LoRA and its sidecars to the Recycle Bin. Resolves "" on success, else the error.
-async function deleteModel(name) {
+// Sends one model file and its sidecars to the Recycle Bin. Resolves "" on success, else the error.
+async function deleteModel(name, kind) {
   try {
-    const data = await postJson("/warp-studio/updater/delete-model", { name });
+    const data = await postJson("/warp-studio/updater/delete-model", { name, kind });
     if (data.error) return String(data.error);
     await refreshAfterAction();
     return "";
@@ -1935,29 +2125,9 @@ function renderMatureNotice(text) {
   return note;
 }
 
+/* Group, Then, Sort and Per page live in the Sort menu; this brings the toolbar's label up to date. */
 function renderArrange() {
-  if (!state.arrangeEl) return;
-  const groupShort = GROUP_OPTIONS.find((o) => o.value === state.groupBy)?.short || "None";
-  const thenShort = GROUP_OPTIONS.find((o) => o.value === state.thenBy)?.short || "None";
-  const summary = state.groupBy === "none"
-    ? "None"
-    : (state.thenBy === "none" ? groupShort : `${groupShort} \u2192 ${thenShort}`);
-  const options = (list, selected, disabled) => list
-    .map((o) => `<option value="${o.value}"${o.value === selected ? " selected" : ""}${disabled === o.value && o.value !== "none" ? " disabled" : ""}>${escapeHtml(o.label)}</option>`)
-    .join("");
-  const wasOpen = Boolean(state.arrangeEl.querySelector("details[open]"));
-  state.arrangeEl.innerHTML = `
-    <details class="cu-filter-menu cu-arrange"${wasOpen ? " open" : ""}>
-      <summary title="Group and sort the results">${controlSummary("Arrange", summary)}</summary>
-      <div class="cu-filter-panel cu-arrange-panel">
-        <div class="cu-arrange-row"><label>Group</label>
-          <select data-arrange="groupBy">${options(GROUP_OPTIONS, state.groupBy)}</select></div>
-        <div class="cu-arrange-row"><label>Then</label>
-          <select data-arrange="thenBy"${state.groupBy === "none" ? " disabled" : ""}>${options(GROUP_OPTIONS, state.thenBy, state.groupBy)}</select></div>
-        <div class="cu-arrange-row"><label>Sort</label>
-          <select data-arrange="sort">${options(SORT_OPTIONS, state.sortOrder)}</select></div>
-      </div>
-    </details>`;
+  renderToolbars();
 }
 
 function onMatureModeChanged() {
@@ -2050,18 +2220,9 @@ async function loadModeCounts() {
 }
 
 function renderFilters() {
-  if (!state.filterTypeEl || !state.filterBaseEl) return;
   syncFacetSelection("filterTypes", "modelTypes");
   syncFacetSelection("filterBases", "baseModels");
-  // Re-rendering replaces the <details> menus; keep them open across a
-  // re-render so toggling one checkbox doesn't collapse the dropdown.
-  const typeOpen = Boolean(state.filterTypeEl.querySelector("details[open]"));
-  const baseOpen = Boolean(state.filterBaseEl.querySelector("details[open]"));
-  state.filterTypeEl.innerHTML = renderFilterMenu("type", "Types", state.facets.modelTypes, state.filterTypes, true);
-  state.filterBaseEl.innerHTML = renderFilterMenu("base", "Bases", state.facets.baseModels, state.filterBases, false);
-  if (typeOpen) state.filterTypeEl.querySelector("details")?.setAttribute("open", "");
-  if (baseOpen) state.filterBaseEl.querySelector("details")?.setAttribute("open", "");
-  if (state.showHiddenEl) state.showHiddenEl.checked = Boolean(state.showHidden);
+  renderToolbars();
 }
 
 function applyFacets(nextFacets) {
@@ -2155,43 +2316,6 @@ function formatAvailability(value) {
   return String(value).replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
-function controlSummary(label, value) {
-  return `<span class="cu-ctl-label">${escapeHtml(label)}</span>`
-    + `<span class="cu-ctl-value">${escapeHtml(value)}</span>`;
-}
-
-function renderFilterMenu(kind, label, options, selected, capitalizeValues) {
-  const active = selected || [];
-  const summary = filterSummary(options, selected, capitalizeValues);
-  const entries = options.map((value) => {
-    const checked = active.includes(value) ? " checked" : "";
-    const title = capitalizeValues ? capitalize(value) : value;
-    return `<label class="cu-filter-option"><input type="checkbox" data-filter-kind="${kind}" data-filter-value="${escapeHtml(value)}"${checked}><span>${escapeHtml(title)}</span></label>`;
-  }).join("");
-  return `
-    <details class="cu-filter-menu">
-      <summary>${controlSummary(label, summary)}</summary>
-      <div class="cu-filter-panel">
-        <div class="cu-filter-actions">
-          <button class="cu-text-btn" data-filter-action="all" data-filter-kind="${kind}" type="button">Select all</button>
-          <button class="cu-text-btn" data-filter-action="none" data-filter-kind="${kind}" type="button">Deselect all</button>
-        </div>
-        <div class="cu-filter-options">
-          ${entries || '<div class="cu-filter-empty">No options</div>'}
-        </div>
-      </div>
-    </details>`;
-}
-
-function filterSummary(options, selected, capitalizeValues) {
-  const active = selected || [];
-  if (!options.length) return "all"; // no options yet: nothing is filtered
-  if (active.length === 0) return "none";
-  if (active.length === options.length) return "all";
-  if (active.length === 1) return capitalizeValues ? capitalize(active[0]) : active[0];
-  return `${active.length} selected`;
-}
-
 function filterParams() {
   // Listing every option would still drop cards that have no value for it
   // (a version without a base model), so a full selection sends no filter.
@@ -2230,7 +2354,7 @@ async function toggleArchivedUpdate(modelId, versionId, restore) {
     await postJson(endpoint, { modelId, versionIds: [versionId] });
     await loadResultPage(true);
   } catch (error) {
-    setStatus(`Failed to update hidden versions: ${error.message}`);
+    setStatus(`Failed to update hidden versions: ${error.message}`, "error");
   }
 }
 
@@ -2338,8 +2462,8 @@ function formatEta(seconds) {
 }
 
 function updateProgress(current, total, visible) {
-  if (!state.progressWrapEl || !state.progressFillEl || !state.progressTextEl) return;
-  state.progressWrapEl.style.display = visible ? "" : "none";
+  if (!state.progressFillEl || !state.progressTextEl) return;
+  if (state.jobBarEl) state.jobBarEl.hidden = !visible;
   const safeTotal = Math.max(0, Number(total || 0));
   const safeCurrent = Math.max(0, Number(current || 0));
   const pct = safeTotal > 0 ? Math.min(100, Math.round((safeCurrent / safeTotal) * 100)) : 0;
@@ -2361,9 +2485,28 @@ function updateProgress(current, total, visible) {
   }
 }
 
-function setStatus(message) {
+/* An error stays on screen under the job bar until the next job starts. Routine
+   text (progress, "Done", "Showing cached results") is the job bar's label while
+   a job runs; the last check's facts are behind the ⓘ. */
+function setStatus(message, level = "info") {
   state.statusText = message;
-  if (state.statusEl) state.statusEl.textContent = message;
+  if (level === "error") state.errorText = message;
+  else state.jobText = message;
+  paintStatus();
+}
+
+function paintStatus() {
+  if (state.statusEl && state.statusEl.textContent !== state.errorText) state.statusEl.textContent = state.errorText;
+  if (state.jobTextEl && state.jobTextEl.textContent !== state.jobText) {
+    state.jobTextEl.textContent = state.jobText;
+    state.jobTextEl.title = state.jobText;
+  }
+}
+
+function clearError() {
+  if (!state.errorText) return;
+  state.errorText = "";
+  paintStatus();
 }
 
 function extractFilename(path) {
@@ -2479,7 +2622,7 @@ async function syncSettingsToBackend() {
     const pathWarnings = Array.isArray(data.pathWarnings) ? data.pathWarnings : [];
     if (pathWarnings.length) {
       console.warn("Civitai updater:", pathWarnings.join(" "));
-      setStatus(pathWarnings.join(" "));
+      setStatus(pathWarnings.join(" "), "error");
     }
     if (state.rootEl) {
       renderRoots();
@@ -2604,7 +2747,7 @@ async function copyOrReveal(target, path, jobId) {
       show(copied ? "Copied ✓" : "Copy failed", copied ? "1" : "error");
     }
   } catch (error) {
-    setStatus(error?.message || String(error));
+    setStatus(error?.message || String(error), "error");
     show("Can't open the folder", "error");
   } finally {
     delete target.dataset.cuPending;
@@ -2823,18 +2966,6 @@ function injectStyles() {
        Red is reserved for one meaning: a new release exists.
        ================================================================ */
 
-    .cu-cache-info > * {
-      flex: 0 1 auto;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .cu-cache-info > .cu-spinner,
-    .cu-cache-info > .cu-status-pill {
-      flex-shrink: 0;
-    }
-
     .sidebar-content-container:has(> .cu-root),
     .sidebar-content-container:has(.cu-root) {
       scrollbar-gutter: stable;
@@ -2879,6 +3010,10 @@ function injectStyles() {
     /* ---- Masthead ---- */
 
     .cu-hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
       padding: 4px 2px 10px;
       border-bottom: 1px solid var(--cu-seam);
     }
@@ -2890,19 +3025,13 @@ function injectStyles() {
       text-transform: uppercase;
       letter-spacing: 0.18em;
       color: var(--cu-bone);
-      margin: 0 0 3px 0;
+      margin: 0;
     }
 
     .cu-hero-title::after {
       content: ".";
       color: var(--cu-red);
       letter-spacing: 0;
-    }
-
-    .cu-hero-sub {
-      margin: 0;
-      color: var(--cu-ash);
-      font-size: 11px;
     }
 
     /* ---- Cards ---- */
@@ -3083,19 +3212,97 @@ function injectStyles() {
       text-decoration: underline;
     }
 
-    /* ---- Action bar / job controls ---- */
+    /* ---- Header, settings, job bar ---- */
+
+    .cu-root [hidden] {
+      display: none !important;
+    }
+
+    .cu-gear {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      width: var(--cu-h-ctl);
+      height: var(--cu-h-ctl);
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: var(--cu-radius);
+      background: var(--cu-raise);
+      color: var(--cu-ash);
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+
+    .cu-gear:hover,
+    .cu-gear[aria-expanded="true"] {
+      border-color: var(--cu-dust);
+      color: var(--cu-bone);
+    }
+
+    .cu-settings-card {
+      margin: 0;
+    }
+
+    /* Only while a job runs, in every tab. */
+    .cu-job-bar {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 9px;
+    }
+
+    .cu-job-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 22px;
+    }
+
+    .cu-job-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--cu-mono);
+      font-size: 10.5px;
+      color: var(--cu-ash);
+    }
+
+    .cu-action-bar .cu-btn {
+      display: block;
+      min-width: 0;
+      padding: 0 8px;
+      overflow: hidden;
+      text-align: center;
+      text-overflow: ellipsis;
+      line-height: calc(var(--cu-h-btn) - 2px);
+    }
 
     .cu-action-bar {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 6px;
       margin-bottom: 9px;
     }
 
     .cu-job-controls {
+      flex: 0 0 auto;
       gap: 6px;
       align-items: center;
-      margin-top: 6px;
+    }
+
+    /* A narrow sidebar stacks the two buttons. */
+    @container (max-width: 330px) {
+      .cu-action-bar {
+        grid-template-columns: minmax(0, 1fr);
+      }
     }
 
     /* ---- Progress ---- */
@@ -3104,8 +3311,6 @@ function injectStyles() {
       display: flex;
       gap: 8px;
       align-items: center;
-      margin-top: 8px;
-      margin-bottom: 4px;
     }
 
     .cu-progress {
@@ -3138,61 +3343,6 @@ function injectStyles() {
       min-width: 84px;
       text-align: right;
       white-space: nowrap;
-    }
-
-    /* ---- Cache line + status pills ---- */
-
-    /* One line, whatever the panel's width: it never pushes the panel down when it fills in. */
-    .cu-cache-info {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: nowrap;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      height: 18px;
-      min-height: 18px;
-      margin-bottom: 7px;
-      font-size: 11px;
-      color: var(--cu-ash);
-    }
-
-    .cu-status-pill {
-      display: inline-flex;
-      align-items: center;
-      font-family: var(--cu-mono);
-      font-size: 8.5px;
-      font-weight: 500;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      padding: 2px 6px;
-      border-radius: 3px;
-      line-height: 1.2;
-      border: 1px solid;
-    }
-
-    .cu-status-pill[data-status="cached"] {
-      color: var(--cu-moss);
-      border-color: rgba(147, 181, 120, 0.35);
-      background: rgba(147, 181, 120, 0.07);
-    }
-
-    .cu-status-pill[data-status="stale"] {
-      color: var(--cu-amber);
-      border-color: rgba(210, 162, 76, 0.35);
-      background: rgba(210, 162, 76, 0.07);
-    }
-
-    .cu-status-pill[data-status="dirty"] {
-      color: var(--cu-red-soft);
-      border-color: rgba(255, 75, 62, 0.35);
-      background: var(--cu-red-dim);
-    }
-
-    .cu-dirty-details {
-      font-size: 10.5px;
-      color: var(--cu-dust);
     }
 
     /* ---- Sidecar warnings ---- */
@@ -3318,12 +3468,17 @@ function injectStyles() {
 
     /* ---- Status line ---- */
 
+    .cu-status:empty {
+      display: none;
+    }
+
     .cu-status {
-      font-family: var(--cu-mono);
-      font-size: 10.5px;
-      color: var(--cu-ash);
-      min-height: 16px;
-      margin-top: 2px;
+      margin-bottom: 9px;
+      padding: 6px 9px;
+      border-left: 2px solid var(--cu-amber);
+      color: var(--cu-amber);
+      font-size: 11px;
+      overflow-wrap: anywhere;
     }
 
     /* ---- Scan report ---- */
@@ -3348,13 +3503,6 @@ function injectStyles() {
       font-size: 10.5px;
       color: var(--cu-ash);
       margin-bottom: 8px;
-    }
-
-    .cu-filters {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 6px;
-      margin-bottom: 9px;
     }
 
     /* ---- Loading: a bar sweeping under the tabs ---- */
@@ -3470,96 +3618,8 @@ function injectStyles() {
       color: var(--cu-amber);
     }
 
-    @container (max-width: 330px) {
-      .cu-filters {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .cu-filters select,
-    #cu-size,
-    .cu-filter-menu > summary,
-    .cu-toggle {
-      display: flex;
-      align-items: center;
-      box-sizing: border-box;
-      height: var(--cu-h-ctl);
-      width: 100%;
-      padding: 0 9px 0 8px;
-      border: 1px solid var(--cu-seam-strong);
-      border-radius: var(--cu-radius);
-      background: var(--cu-raise);
-      color: var(--cu-bone);
-      font-family: var(--cu-body);
-      font-size: 11px;
-      line-height: 1;
-      transition: border-color 0.15s ease;
-    }
-
     /* Native select chrome differs per platform; draw our own caret so a
        select and a filter menu are the same object visually. */
-    .cu-filters select,
-    #cu-size,
-    .cu-arrange-row select {
-      -webkit-appearance: none;
-      appearance: none;
-      padding-right: 24px;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6' viewBox='0 0 9 6'%3E%3Cpath d='M1 1l3.5 3.5L8 1' fill='none' stroke='%236a6772' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-      background-position: right 8px center;
-      background-repeat: no-repeat;
-    }
-
-    /* A <details> has no chrome of its own, so without this the filter menus
-       read as text fields sitting next to real dropdowns. */
-    .cu-filter-menu > summary::after {
-      content: "";
-      flex: 0 0 auto;
-      width: 5px;
-      height: 5px;
-      margin-left: 8px;
-      border-right: 1.5px solid var(--cu-dust);
-      border-bottom: 1.5px solid var(--cu-dust);
-      border-radius: 0 0 1px 0;
-      transform: translateY(-2px) rotate(45deg);
-      transition: transform 140ms ease, border-color 140ms ease;
-    }
-
-    .cu-filter-menu[open] > summary::after {
-      transform: translateY(1px) rotate(-135deg);
-      border-color: var(--cu-bone);
-    }
-
-    .cu-ctl-label {
-      flex: 0 0 auto;
-      font-family: var(--cu-mono);
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: 0.11em;
-      color: var(--cu-dust);
-      margin-right: 7px;
-    }
-
-    .cu-ctl-value {
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: var(--cu-bone);
-    }
-
-    .cu-filters select:hover,
-    #cu-size:hover,
-    .cu-filter-menu > summary:hover,
-    .cu-toggle:hover {
-      border-color: var(--cu-dust);
-    }
-
-    .cu-filter-menu[open] > summary {
-      border-color: var(--cu-dust);
-      background: #26262d;
-    }
-
     /* ---- Checkbox: drawn, not inherited from the platform ---- */
 
     .cu-root input[type="checkbox"] {
@@ -3603,35 +3663,180 @@ function injectStyles() {
       transform: rotate(45deg) scale(1);
     }
 
-    .cu-toggle {
-      color: var(--cu-bone);
-    }
+    /* ---- Toolbar: 🔍, Filter, Sort, ⓘ ---- */
 
-    #cu-size {
-      width: 62px;
-      flex: 0 0 62px;
-    }
-
-    .cu-filter-slot {
-      min-width: 0;
-    }
-
-    .cu-filter-menu {
+    .cu-tb {
       position: relative;
+      margin-bottom: 9px;
     }
 
-    .cu-filter-menu > summary {
-      /* Stays flex: the shared control rule above lays out label, value and
-         chevron, and a display:block here would silently undo it. */
-      list-style: none;
-      cursor: pointer;
-      user-select: none;
+    .cu-tb-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cu-tb-btn {
+      display: inline-flex;
+      align-items: center;
+      flex: 0 1 auto;
+      box-sizing: border-box;
+      height: var(--cu-h-ctl);
+      min-width: 0;
+      margin: 0;
+      padding: 0 9px 0 8px;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: var(--cu-radius);
+      background: var(--cu-raise);
+      color: var(--cu-bone);
+      font-family: var(--cu-body);
+      font-size: 11px;
+      line-height: 1;
       white-space: nowrap;
       overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+      transition: border-color 0.15s ease;
     }
 
-    .cu-filter-menu > summary::-webkit-details-marker {
-      display: none;
+    .cu-tb-btn:hover {
+      border-color: var(--cu-dust);
+    }
+
+    .cu-tb-btn[aria-expanded="true"] {
+      border-color: var(--cu-dust);
+      background: #26262d;
+    }
+
+    /* A search that is hiding things stays lit, with its text. */
+    .cu-tb-btn[data-active] {
+      border-color: rgba(147, 181, 120, 0.55);
+      color: var(--cu-moss);
+    }
+
+    .cu-tb-query {
+      margin-left: 6px;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: var(--cu-mono);
+      font-size: 10px;
+    }
+
+    .cu-tb-info {
+      flex: 0 0 auto;
+      justify-content: center;
+      width: var(--cu-h-ctl);
+      margin-left: auto;
+      padding: 0;
+      color: var(--cu-ash);
+    }
+
+    .cu-tb-field {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      height: var(--cu-h-ctl);
+      margin: 6px 0 0;
+      padding: 0 9px 0 8px;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: var(--cu-radius);
+      background: var(--cu-raise);
+      color: var(--cu-bone);
+      font-family: var(--cu-body);
+      font-size: 11px;
+      transition: border-color 0.15s ease;
+    }
+
+    .cu-tb-field::placeholder {
+      color: var(--cu-dust);
+    }
+
+    .cu-tb-field:hover,
+    .cu-root .cu-tb-field:focus {
+      outline: none;
+      border-color: var(--cu-dust);
+    }
+
+    .cu-tb-title {
+      margin: 0 0 5px;
+      font-family: var(--cu-mono);
+      color: var(--cu-dust);
+      font-size: 9.5px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+
+    .cu-tb-section + .cu-tb-section {
+      margin-top: 9px;
+      padding-top: 9px;
+      border-top: 1px solid var(--cu-seam);
+    }
+
+    .cu-tb-menu .cu-filter-panel {
+      max-height: min(70vh, 440px);
+      overflow: auto;
+    }
+
+    .cu-tb-menu[data-tb-menu="info"] .cu-filter-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      left: auto;
+      right: 0;
+      width: max-content;
+    }
+
+    .cu-tb-line {
+      font-family: var(--cu-mono);
+      font-size: 10.5px;
+      color: var(--cu-ash);
+      overflow-wrap: anywhere;
+    }
+
+    .cu-tb-act {
+      align-self: flex-start;
+      margin-top: 2px;
+    }
+
+    .cu-root input[type="radio"] {
+      -webkit-appearance: none;
+      appearance: none;
+      display: inline-grid;
+      place-content: center;
+      box-sizing: border-box;
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      flex: 0 0 auto;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: 50%;
+      background: var(--cu-ink);
+      cursor: pointer;
+      transition: border-color 120ms ease;
+    }
+
+    .cu-root input[type="radio"]:hover {
+      border-color: var(--cu-dust);
+    }
+
+    .cu-root input[type="radio"]:checked {
+      border-color: #b7b4bd;
+    }
+
+    .cu-root input[type="radio"]::after {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #b7b4bd;
+      transform: scale(0);
+      transition: transform 120ms ease;
+    }
+
+    .cu-root input[type="radio"]:checked::after {
+      transform: scale(1);
     }
 
     .cu-filter-panel {
@@ -3681,14 +3886,6 @@ function injectStyles() {
     .cu-filter-empty {
       font-size: 10.5px;
       color: var(--cu-dust);
-    }
-
-    .cu-toggle {
-      gap: 8px;
-      cursor: pointer;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
     /* ---- Results list ---- */
@@ -4254,36 +4451,6 @@ function injectStyles() {
       line-height: 1.3;
     }
 
-    .cu-settings > summary {
-      cursor: pointer;
-      font-family: var(--cu-mono);
-      color: var(--cu-dust);
-      font-size: 9.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      font-weight: 500;
-      list-style: none;
-      user-select: none;
-      transition: color 0.15s ease;
-    }
-
-    .cu-settings > summary:hover {
-      color: var(--cu-bone);
-    }
-
-    .cu-settings > summary::-webkit-details-marker {
-      display: none;
-    }
-
-    .cu-settings > summary::before {
-      content: "\\25B8  ";
-      font-size: 9px;
-    }
-
-    .cu-settings[open] > summary::before {
-      content: "\\25BE  ";
-    }
-
     .cu-settings-body {
       margin-top: 8px;
     }
@@ -4447,53 +4614,6 @@ function injectStyles() {
       pointer-events: none;
     }
 
-    /* ---- Arrange popover ---- */
-
-    .cu-arrange-panel .cu-arrange-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-
-    .cu-arrange-panel .cu-arrange-row:last-child {
-      margin-bottom: 0;
-    }
-
-    .cu-arrange-row label {
-      flex: 0 0 38px;
-      font-family: var(--cu-mono);
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--cu-dust);
-    }
-
-    .cu-arrange-row select {
-      flex: 1 1 auto;
-      min-width: 0;
-      box-sizing: border-box;
-      height: var(--cu-h-ctl);
-      padding: 0 22px 0 8px;
-      border: 1px solid var(--cu-seam-strong);
-      border-radius: var(--cu-radius);
-      background-color: var(--cu-raise);
-      color: var(--cu-bone);
-      font-family: var(--cu-body);
-      font-size: 10.5px;
-      -webkit-appearance: none;
-      appearance: none;
-      background-image: linear-gradient(45deg, transparent 50%, var(--cu-dust) 50%),
-                        linear-gradient(135deg, var(--cu-dust) 50%, transparent 50%);
-      background-position: calc(100% - 12px) calc(50% + 1px), calc(100% - 8px) calc(50% + 1px);
-      background-size: 4px 4px, 4px 4px;
-      background-repeat: no-repeat;
-    }
-
-    .cu-arrange-row select:disabled {
-      opacity: 0.4;
-    }
-
     /* ---- Gallery ----
        The Updates look: the summary line, one control, the group bands. Every
        box has a fixed size, so a card without a preview or a creator is as tall
@@ -4503,56 +4623,31 @@ function injectStyles() {
       margin-bottom: 9px;
     }
 
-    .cu-g .cu-g-target {
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .cu-g-node {
-      color: var(--cu-bone);
-    }
-
-    .cu-g-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 6px;
-    }
-
-    .cu-g .cu-g-missing {
-      gap: 7px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-
-    .cu-g-search {
-      display: block;
-      box-sizing: border-box;
-      width: 100%;
-      height: var(--cu-h-ctl);
-      margin: 0;
-      padding: 0 9px 0 8px;
-      border: 1px solid var(--cu-seam-strong);
-      border-radius: var(--cu-radius);
-      background: var(--cu-raise);
-      color: var(--cu-bone);
-      font-family: var(--cu-body);
-      font-size: 11px;
-      transition: border-color 0.15s ease;
-    }
-
-    .cu-g-search::placeholder {
-      color: var(--cu-dust);
-    }
-
-    .cu-g-search:hover {
-      border-color: var(--cu-dust);
-    }
-
-    .cu-g .cu-g-search:focus {
-      outline: none;
-      border-color: var(--cu-dust);
-    }
+    /* The type switch, the note, the marks, the version chip and its list, folding. */
+    .cu-g-types { display: flex; gap: 14px; margin-bottom: 9px; }
+    .cu-g-type { padding: 0 0 3px; background: none; border: none; border-bottom: 1px solid transparent; color: var(--cu-dust); font-family: var(--cu-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
+    .cu-g-type:hover { color: var(--cu-bone); }
+    .cu-g-type[aria-pressed="true"] { color: var(--cu-bone); border-bottom-color: var(--cu-seam-strong); }
+    .cu-g-note { margin-bottom: 9px; }
+    .cu-g-note:empty { display: none; }
+    .cu-g .cu-g-band-head { cursor: pointer; }
+    .cu-g .cu-g-band-head:hover .cu-group-name { color: #ffffff; }
+    .cu-g-band:not([data-workflow="true"]) .cu-g-fit { visibility: hidden; }
+    .cu-g-band[data-folded] .cu-g-grid { display: none; }
+    .cu-g-mark { position: absolute; top: 34px; right: 6px; box-sizing: border-box; display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 10px; border: 1px solid rgba(147, 181, 120, 0.55); background: rgba(19, 19, 22, 0.88); color: var(--cu-moss); font-size: 11px; line-height: 1; pointer-events: none; }
+    .cu-g-mark[data-mark] { display: flex; }
+    .cu-g-mark[data-mark="parked"] { border-color: var(--cu-seam-strong); color: var(--cu-dust); }
+    .cu-g-card[data-mark="on"] .cu-g-pick { border-color: rgba(147, 181, 120, 0.55); }
+    .cu-g-layer { position: absolute; inset: 0 0 auto 0; aspect-ratio: 3 / 4; pointer-events: none; }
+    .cu-g-vers { position: absolute; right: 6px; bottom: 6px; pointer-events: auto; }
+    .cu-g-vers { box-sizing: border-box; height: 16px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--cu-seam-strong); background: rgba(19, 19, 22, 0.8); color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9px; line-height: 1; cursor: pointer; }
+    .cu-g-vers:hover, .cu-g-vers:focus-visible { border-color: var(--cu-dust); }
+    .cu-g-vmenu { position: absolute; z-index: 3; inset: 0 0 auto 0; aspect-ratio: 3 / 4; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; padding: 4px; overflow: auto; border: 1px solid var(--cu-seam-strong); border-radius: 5px; background: rgba(19, 19, 22, 0.97); }
+    .cu-g-vitem { display: flex; justify-content: space-between; gap: 6px; padding: 4px 5px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9.5px; text-align: left; cursor: pointer; }
+    .cu-g-vitem:hover, .cu-g-vitem:focus-visible { border-color: var(--cu-seam-strong); }
+    .cu-g-vitem[aria-current="true"] { color: var(--cu-moss); }
+    .cu-g-vname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cu-g-vdate { flex: 0 0 auto; color: var(--cu-dust); }
 
     .cu-g-error {
       padding: 6px 9px;
@@ -4572,9 +4667,8 @@ function injectStyles() {
       margin-top: 1px;
     }
 
-    /* A band head here is a label, not a toggle. */
     .cu-g .cu-g-band-head {
-      cursor: default;
+      cursor: pointer;
     }
 
     .cu-g .cu-g-band-head .cu-group-name {
@@ -4603,11 +4697,6 @@ function injectStyles() {
       line-height: 1.5;
     }
 
-    /* Hidden, not removed: the head keeps its height either way. */
-    .cu-g-band[data-fits="false"] .cu-g-fit {
-      visibility: hidden;
-    }
-
     .cu-g-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -4620,7 +4709,7 @@ function injectStyles() {
       min-width: 0;
     }
 
-    /* The whole face is the button that adds the LoRA. */
+    /* The whole face is the button that puts the model in the workflow. */
     .cu-g-pick {
       display: flex;
       flex-direction: column;
@@ -4655,10 +4744,6 @@ function injectStyles() {
     .cu-g-card[data-missing] .cu-g-pick {
       opacity: 0.45;
       cursor: default;
-    }
-
-    .cu-g-card[data-added] .cu-g-pick {
-      border-color: rgba(147, 181, 120, 0.55);
     }
 
     .cu-g-thumb {
@@ -4712,29 +4797,6 @@ function injectStyles() {
       font-family: var(--cu-mono);
       font-size: 9px;
       line-height: 1;
-    }
-
-    /* Over the thumbnail, so confirming a click moves nothing. */
-    .cu-g-added {
-      position: absolute;
-      left: 50%;
-      top: 50%;
-      transform: translate(-50%, -50%);
-      padding: 5px 10px;
-      border-radius: var(--cu-radius);
-      border: 1px solid rgba(147, 181, 120, 0.55);
-      background: rgba(19, 19, 22, 0.88);
-      color: var(--cu-moss);
-      font-family: var(--cu-disp);
-      font-size: 11.5px;
-      font-weight: 600;
-      line-height: 1;
-      pointer-events: none;
-      animation: cu-fade-in 0.12s ease-out;
-    }
-
-    .cu-g-added:empty {
-      display: none;
     }
 
     .cu-g-creator,
@@ -4810,7 +4872,7 @@ function injectStyles() {
       visibility: hidden;
     }
 
-    /* Covers exactly the thumbnail; the state sits in its middle, as "Added" does. */
+    /* Covers exactly the thumbnail; the state sits in its middle. */
     .cu-g-over {
       position: absolute;
       inset: 0 0 auto 0;

@@ -195,48 +195,6 @@ export function targetHtml(type, hasTarget, nodeCount, escapeHtml) {
   return escaper(escapeHtml)(text);
 }
 
-/* ---------------------------------------------------------------- styles */
-
-// The panel's own style template has the card and band rules. What this view
-// adds (marks, the version chip and its list, folding, the type switch) lives
-// here, so it ships with the markup that uses it. It rides on the panel's
-// custom properties, which the panel root defines.
-const STYLE_ID = "cu-g-style-2";
-const STYLE = `
-.cu-g-types { display: flex; gap: 14px; margin-bottom: 9px; }
-.cu-g-type { padding: 0 0 3px; background: none; border: none; border-bottom: 1px solid transparent; color: var(--cu-dust); font-family: var(--cu-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
-.cu-g-type:hover { color: var(--cu-bone); }
-.cu-g-type[aria-pressed="true"] { color: var(--cu-bone); border-bottom-color: var(--cu-seam-strong); }
-.cu-g-note { margin-bottom: 9px; }
-.cu-g-note:empty { display: none; }
-.cu-g .cu-g-band-head { cursor: pointer; }
-.cu-g .cu-g-band-head:hover .cu-group-name { color: #ffffff; }
-.cu-g-band:not([data-workflow="true"]) .cu-g-fit { visibility: hidden; }
-.cu-g-band[data-folded] .cu-g-grid { display: none; }
-.cu-g-mark { position: absolute; top: 34px; right: 6px; box-sizing: border-box; display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 10px; border: 1px solid rgba(147, 181, 120, 0.55); background: rgba(19, 19, 22, 0.88); color: var(--cu-moss); font-size: 11px; line-height: 1; pointer-events: none; }
-.cu-g-mark[data-mark] { display: flex; }
-.cu-g-mark[data-mark="parked"] { border-color: var(--cu-seam-strong); color: var(--cu-dust); }
-.cu-g-card[data-mark="on"] .cu-g-pick { border-color: rgba(147, 181, 120, 0.55); }
-.cu-g-layer { position: absolute; inset: 0 0 auto 0; aspect-ratio: 3 / 4; pointer-events: none; }
-.cu-g-vers { position: absolute; right: 6px; bottom: 6px; pointer-events: auto; }
-.cu-g-vers { box-sizing: border-box; height: 16px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--cu-seam-strong); background: rgba(19, 19, 22, 0.8); color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9px; line-height: 1; cursor: pointer; }
-.cu-g-vers:hover, .cu-g-vers:focus-visible { border-color: var(--cu-dust); }
-.cu-g-vmenu { position: absolute; z-index: 3; inset: 0 0 auto 0; aspect-ratio: 3 / 4; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; padding: 4px; overflow: auto; border: 1px solid var(--cu-seam-strong); border-radius: 5px; background: rgba(19, 19, 22, 0.97); }
-.cu-g-vitem { display: flex; justify-content: space-between; gap: 6px; padding: 4px 5px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9.5px; text-align: left; cursor: pointer; }
-.cu-g-vitem:hover, .cu-g-vitem:focus-visible { border-color: var(--cu-seam-strong); }
-.cu-g-vitem[aria-current="true"] { color: var(--cu-moss); }
-.cu-g-vname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cu-g-vdate { flex: 0 0 auto; color: var(--cu-dust); }
-`;
-
-function ensureStyle() {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = STYLE;
-  document.head.append(style);
-}
-
 /* ---------------------------------------------------------------- storage */
 
 // localStorage can throw or be empty (private windows, blocked site data).
@@ -302,7 +260,6 @@ export function renderGalleryView(el, options) {
   const app = options.app;
   const token = {};
   mounted = token;
-  ensureStyle();
   el.classList.add("cu-g");
   el.innerHTML =
     `<div class="cu-g-top">` +
