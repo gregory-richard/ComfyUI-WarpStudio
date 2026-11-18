@@ -25,7 +25,16 @@ from .comfy_queue import (
     list_naming_models,
 )
 from .constants import CACHE_SCHEMA_VERSION, INFO_SIDECAR_SUFFIX, SUPPORTED_MODEL_TYPES, USER_AGENT
+from .download_queue import MODEL_DOWNLOAD_JOB, DownloadQueue, DownloadRequest, run_queue
 from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
+from .model_actions import (
+    EARLY_ACCESS_ERROR,
+    INFO_GONE_ERROR,
+    DownloadContext,
+    download_one,
+    release_is_paid,
+)
+from .model_files import lora_roots, missing_info
 from .naming_ai import SYSTEM_PROMPT
 from .naming_check import base_named_by, base_vocabulary, name_check_flags, needs_review, users_own_words, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
@@ -363,9 +372,9 @@ def register_routes(
     async def pause_job(request):
         job_id = request.match_info.get("job_id", "")
         existing = job_manager.get(job_id)
-        if existing is not None and existing.type == NAMING_MODEL_DOWNLOAD_JOB:
+        if _unpausable(existing):
             # A paused stream times out on the server's side and the download is lost.
-            return web.json_response({"error": DOWNLOAD_PAUSE_ERROR}, status=409)
+            return web.json_response({"error": _PAUSE_ERRORS[existing.type]}, status=409)
         job = job_manager.pause(job_id)
         if not job:
             return web.json_response({"error": "job not found"}, status=404)
@@ -393,8 +402,14 @@ def register_routes(
         _register_rename_routes(
             routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, dry_runs
         )
+        _register_model_action_routes(
+            routes, config_store, job_manager, decisions, base_codes, answer_cache, journal
+        )
     else:
-        print("Civitai updater: the renamer's stores are missing, so its routes were not registered.")
+        print(
+            "Civitai updater: the renamer's stores are missing, so its routes and the"
+            " download routes were not registered."
+        )
 
     _ROUTES_REGISTERED = True
     print("Civitai updater: routes registered")
@@ -930,7 +945,266 @@ def _register_rename_routes(
         return web.json_response({"jobId": job.id})
 
 
-REVEAL_REMOTE_ERROR = "Show in folder works only on the computer ComfyUI runs on."
+# --- model downloads -------------------------------------------------------------
+
+DOWNLOAD_BUSY_ERROR = "Another job is running. Try again when it's done."
+MODEL_DOWNLOAD_PAUSE_ERROR = "Downloads cannot be paused. Stop cancels them."
+REPLACE_HELD_ERROR = "That version is already being replaced."
+DOWNLOAD_SOURCE_ERROR = 'source must be "updates" or "gallery"'
+_DOWNLOAD_SOURCES = ("updates", "gallery")
+# The download jobs, each refusing a pause in its own words.
+_PAUSE_ERRORS = {
+    NAMING_MODEL_DOWNLOAD_JOB: DOWNLOAD_PAUSE_ERROR,
+    MODEL_DOWNLOAD_JOB: MODEL_DOWNLOAD_PAUSE_ERROR,
+}
+
+
+def _unpausable(job) -> bool:
+    """A download job: a paused stream would time out on the server's side."""
+    return job is not None and getattr(job, "type", None) in _PAUSE_ERRORS
+
+
+def _is_model_download(job) -> bool:
+    return job is not None and getattr(job, "type", None) == MODEL_DOWNLOAD_JOB
+
+
+def _normalize_download_payload(payload: dict) -> dict:
+    """Known keys only: the source, stripped strings, and Replace only for a literal true."""
+    source = _clean_id(payload.get("source"))
+    cleaned = {"source": source if source in _DOWNLOAD_SOURCES else ""}
+    for key in ("jobId", "modelId", "versionId", "modelPath", "name"):
+        cleaned[key] = _clean_id(payload.get(key))
+    cleaned["replace"] = payload.get("replace") is True
+    return cleaned
+
+
+def download_problem(active_job, *, journal_pending: bool) -> Optional[tuple]:
+    """Why no download may be queued now, as (HTTP status, message), or None.
+
+    Only the download job may run beside a download: that also keeps the
+    check results' file (``check_records``) to one writer at a time.
+    """
+    if active_job is not None and not _is_model_download(active_job):
+        # A rename apply holds the journal while it runs: the job is the reason then.
+        return 409, DOWNLOAD_BUSY_ERROR
+    if journal_pending:
+        return 409, JOURNAL_PENDING_ERROR
+    return None
+
+
+def updates_request(payload: dict, job, *, can_trash: bool, queue) -> DownloadRequest | tuple:
+    """The request for a release the check results offer, or why not, as (HTTP status, message)."""
+    if job is None or getattr(job, "type", None) != CHECK_JOB:
+        return 404, "job not found"  # The panel's lost-job recovery reads this text.
+    model_id = payload.get("modelId") or ""
+    model_path = payload.get("modelPath") or ""
+    item = next(
+        (
+            entry
+            for entry in list(job.items)
+            if isinstance(entry, dict)
+            and model_id
+            and model_path
+            and str(entry.get("modelId") or "") == model_id
+            and isinstance(entry.get("modelPath"), str)
+            and entry["modelPath"]
+            and _same_path(entry["modelPath"], model_path)
+        ),
+        None,
+    )
+    if item is None:
+        return 400, "That file is not in these results."
+    version_id = payload.get("versionId") or ""
+    version = next(
+        (
+            entry
+            for entry in item.get("remoteVersions") or []
+            if isinstance(entry, dict)
+            and version_id
+            and str(entry.get("versionId") or "") == version_id
+        ),
+        None,
+    )
+    if version is None:
+        return 400, "That release is not one of this model's."
+    if release_is_paid(version):
+        return 409, EARLY_ACCESS_ERROR
+    replace = payload.get("replace") is True
+    if replace and item.get("metadataOnly"):
+        return 400, "Only a version on this drive can be replaced."
+    if replace and not can_trash:
+        return 409, "Replace needs the send2trash package."
+    if replace and queue.holds(item["modelPath"]):
+        return 409, REPLACE_HELD_ERROR
+    return DownloadRequest(
+        key=f"version:{version_id}",
+        source="updates",
+        model_id=model_id,
+        version_id=version_id,
+        model_type=str(item.get("modelType") or ""),
+        reference_path=item["modelPath"],
+        replace_path=item["modelPath"] if replace else "",
+        # A copy: the check job's records change as downloads land.
+        check_item=copy.deepcopy(item),
+    )
+
+
+def gallery_request(payload: dict, roots: list) -> DownloadRequest | tuple:
+    """The request for a LoRA whose info file has no weights beside it, or why not."""
+    name = payload.get("name") or ""
+    if not name:
+        return 400, "The name of a LoRA is required."
+    found = missing_info(roots, name)
+    if found is None:
+        return 404, INFO_GONE_ERROR
+    info_path, info = found
+    return DownloadRequest(
+        key=f"gallery:{name}",
+        source="gallery",
+        model_id=str(info.get("modelId")),
+        version_id=str(info.get("id")),
+        model_type="lora",
+        name=name,
+        reference_path=str(info_path),
+    )
+
+
+async def submit_download(
+    queue, job_manager, request, runner, *, attempts: int = 20, delay: float = 0.05
+) -> tuple:
+    """Queue the request and start the download job when none drains the queue.
+
+    Returns the request held (one already queued for the same release wins)
+    and the download job's id. A job that has drained the queue is still
+    active for a moment while it closes, so its successor's start is tried
+    again meanwhile, up to ``attempts`` times ``delay`` apart. When no job
+    starts (a job of another kind is running), the request is abandoned with
+    ``DOWNLOAD_BUSY_ERROR`` and the id is None.
+    """
+    held, needs_job = queue.submit(request)
+    if not needs_job:
+        active = job_manager.get_active()
+        return held, active.id if _is_model_download(active) else None
+    for attempt in range(max(1, attempts)):
+        job = job_manager.start(MODEL_DOWNLOAD_JOB, runner)
+        if job is not None:
+            return held, job.id
+        active = job_manager.get_active()
+        if active is not None and not _is_model_download(active):
+            break
+        if attempt + 1 < attempts:
+            await asyncio.sleep(delay)
+    queue.abandon(held, DOWNLOAD_BUSY_ERROR)
+    return held, None
+
+
+def download_context(
+    config_store, job_manager, decisions, base_codes, answer_cache, journal
+) -> DownloadContext:
+    """What one download needs, built on the job thread: it reads the naming models' headers."""
+    config = config_store.get()
+    models = list_naming_models()
+    status = rename_status(config, has_text_generation(), models, journal)
+    clip = _matching_model(config.get("namingModel", ""), models)
+
+    def make_client(should_stop):
+        # A new client for every download: nothing of an earlier lookup is kept,
+        # so early access is asked again.
+        return CivitaiClient(
+            api_key=config.get("apiKey", ""),
+            timeout_seconds=int(config.get("requestTimeoutSeconds", 30)),
+            max_retries=int(config.get("maxRetries", 4)),
+            should_stop=should_stop,
+        )
+
+    def make_generator(should_stop):
+        # Blocks on ComfyUI's own server: only ever called on the job thread.
+        return ComfyTextGenerator(comfy_base_url(), clip, SYSTEM_PROMPT, should_stop=should_stop)
+
+    return DownloadContext(
+        config=config,
+        data_dir=config_store.data_dir,
+        job_manager=job_manager,
+        decisions=decisions,
+        base_codes=base_codes,
+        answer_cache=answer_cache,
+        make_client=make_client,
+        make_generator=make_generator if status["available"] else None,
+        clip_name=clip,
+        roots_for=lambda model_type: resolve_model_roots(
+            config, [model_type], include_custom_paths=True
+        ).get(model_type, []),
+        lora_roots=lora_roots,
+    )
+
+
+def _register_model_action_routes(
+    routes, config_store, job_manager, decisions, base_codes, answer_cache, journal
+) -> DownloadQueue:
+    queue = DownloadQueue()
+
+    def work(request, report, should_stop):
+        ctx = download_context(
+            config_store, job_manager, decisions, base_codes, answer_cache, journal
+        )
+        download_one(request, report=report, should_stop=should_stop, ctx=ctx)
+
+    def runner(progress, emit, control):  # noqa: ARG001
+        return run_queue(queue, work, progress=progress, control=control)
+
+    def refused(problem):
+        status, message = problem
+        return web.json_response({"error": message}, status=status)
+
+    @routes.post("/warp-studio/updater/downloads")
+    @_guarded
+    async def start_download(request):
+        payload = _normalize_download_payload(await _read_json(request))
+        problem = download_problem(
+            job_manager.get_active(), journal_pending=journal.pending() is not None
+        )
+        if problem:
+            return refused(problem)
+        if payload["source"] == "updates":
+            job = job_manager.get(payload["jobId"]) if payload["jobId"] else None
+            made = updates_request(payload, job, can_trash=send2trash_available(), queue=queue)
+        elif payload["source"] == "gallery":
+            # Looks in the LoRA folders: off the event loop. A job of another kind
+            # started meanwhile still refuses the download job's start below.
+            made = await asyncio.to_thread(lambda: gallery_request(payload, lora_roots()))
+        else:
+            return web.json_response({"error": DOWNLOAD_SOURCE_ERROR}, status=400)
+        if isinstance(made, tuple):
+            return refused(made)
+        held, job_id = await submit_download(queue, job_manager, made, runner)
+        if job_id is None and held.state == "error":
+            return web.json_response({"error": held.error}, status=409)
+        return web.json_response({"request": held.as_dict(), "jobId": job_id})
+
+    @routes.get("/warp-studio/updater/downloads")
+    @_guarded
+    async def get_downloads(request):  # noqa: ARG001
+        active = job_manager.get_active()
+        return web.json_response(
+            {
+                "jobId": active.id if _is_model_download(active) else None,
+                "requests": queue.snapshot(),
+                "canTrash": send2trash_available(),
+            }
+        )
+
+    @routes.post("/warp-studio/updater/downloads/{request_id}/stop")
+    @_guarded
+    async def stop_download(request):
+        held = queue.stop(request.match_info.get("request_id", ""))
+        if held is None:
+            return web.json_response({"error": "download not found"}, status=404)
+        return web.json_response({"request": held.as_dict()})
+
+    return queue
+
+
+REVEAL_REMOTE_ERROR ="Show in folder works only on the computer ComfyUI runs on."
 
 
 def is_loopback(remote: Any) -> bool:
