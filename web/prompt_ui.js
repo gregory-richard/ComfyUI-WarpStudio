@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { nudgeEmphasis } from "./editor_core.js";
+import { diffText, nudgeEmphasis } from "./editor_core.js";
 import { everything, forget } from "./library.js";
 import {
   connectedBase,
@@ -15,7 +15,8 @@ import {
   loadCodeEditor,
   mountCodeEditor,
 } from "./prompt_editor.js";
-import { noteUsed } from "./prompt_target.js";
+import { addEmbedding, cycleLora } from "./prompt_marks.js";
+import { PROMPT_CHANGED, noteUsed } from "./prompt_target.js";
 import { writeBarFor } from "./prompt_writer.js";
 import { escapeAttr, escapeHTML, stemOf, toggleCommentLines } from "./text.js";
 import { keepWidgetValuesByName } from "./widget_values.js";
@@ -1546,10 +1547,13 @@ app.registerExtension({
       }
       return null;
     };
-    // Where a tag goes when it does not come from typing - the Browse button.
-    // The list, unless the reader is writing somewhere else at that moment:
-    // a tag lands with the other tags rather than in the middle of a sentence.
-    const tagBox = () => focusedBox() ?? list ?? prompt;
+
+    // The list a Gallery click lands in. A click from the sidebar has no
+    // focused box, so this never asks about focus: only about which list the
+    // reader last had the caret in, and whether the second one is switched on.
+    let lastList = LIST_WIDGET;
+    const targetList = () =>
+      list2 && switchWidget?.value && lastList === LIST_2_WIDGET ? list2 : list;
 
     // Trigger words are prose, so they go in the prompt however the offer was
     // made. Where in it is wherever the reader last had the caret - and the
@@ -1905,6 +1909,7 @@ app.registerExtension({
       sizeBoxes();
       const done = refreshVocabulary();
       node.setDirtyCanvas?.(true, true);
+      window.dispatchEvent(new CustomEvent(PROMPT_CHANGED, { detail: { node } }));
       return done;
     };
 
@@ -1927,7 +1932,14 @@ app.registerExtension({
       for (const event of ["keyup", "click", "select", "focus"]) {
         el.addEventListener(event, moved, { signal });
       }
-      el.addEventListener("focus", () => noteUsed(node), { signal });
+      el.addEventListener(
+        "focus",
+        () => {
+          noteUsed(node);
+          if (box === list || box === list2) lastList = box.name;
+        },
+        { signal }
+      );
       const onBlur = (e) => {
         // Focus moving into the strip is still work on this tag - its trigger
         // words and its preview are buttons in there, and clearing on the way
@@ -2459,17 +2471,32 @@ app.registerExtension({
       el.dispatchEvent(new Event("input", { bubbles: true }));
       commit();
     };
-    // The Gallery hands over a stem; it lands like anything typed would, in
-    // the box being typed in, else the list. From the sidebar nothing here has
-    // focus, so a card click goes into the list.
-    node._warppipeAddLora = (stem) => {
-      const el = tagBox()?.el;
-      if (!el) return false;
-      const value = el.value || "";
-      const caret = el.selectionStart ?? value.length;
-      const plan = tagInsertion(value, caret, caret, `<lora:${stem}:1.00>`);
-      edit(el, plan.from, plan.to, plan.text, plan.caret);
+    // What the Gallery reads and does. Each click reads the text as it is now,
+    // so a list edited by hand stays in step, and lands as one undoable edit of
+    // only the range that changed.
+    const boxText = (box) => box?.el?.value ?? "";
+    const apply = (box, next) => {
+      const el = box.el;
+      const change = diffText(el.value || "", next);
+      if (!change) return;
+      edit(el, change.from, change.to, change.insert);
       commit();
+    };
+    node._warppipeListText = () => boxText(targetList());
+    node._warppipePromptText = () => boxText(prompt);
+    node._warppipeCycleLora = (stem) => {
+      const box = targetList();
+      if (!box?.el) return null;
+      const got = cycleLora(boxText(box), stem);
+      apply(box, got.text);
+      return got.state;
+    };
+    node._warppipeAddEmbedding = (stem) => {
+      if (!prompt?.el) return false;
+      const before = boxText(prompt);
+      const next = addEmbedding(before, stem);
+      if (next === before) return false;
+      apply(prompt, next);
       return true;
     };
     // Re-read everything this node has memoised, then repaint. Called by the

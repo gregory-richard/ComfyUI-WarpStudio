@@ -2,9 +2,12 @@
 // sidebar and there is no node under the cursor. Takes `app` as an argument so
 // it imports nothing from ComfyUI.
 
+import { addEmbedding, cycleLora, hasEmbedding, loraState } from "./prompt_marks.js";
+
 export const PROMPT_NODE = "Warp Lora Prompt";
 
 const TEXT_WIDGET = "text";
+const LIST_WIDGET = "loras";
 
 let lastUsedNode = null;
 
@@ -69,34 +72,118 @@ export function requestGallery(app, node, events = globalThis.window) {
   events?.dispatchEvent(new CustomEvent(OPEN_GALLERY, { detail: { node, nodeId: node.id } }));
 }
 
-export function insertIntoNode(node, stem) {
+const widgetOf = (node, name) => (node?.widgets || []).find((w) => w.name === name);
+
+/** The text of the list a click lands in: the node's hook, else its first list. */
+function listText(node) {
+  if (typeof node?._warppipeListText === "function") return node._warppipeListText();
+  return String(widgetOf(node, LIST_WIDGET)?.value ?? "");
+}
+
+function promptText(node) {
+  if (typeof node?._warppipePromptText === "function") return node._warppipePromptText();
+  return String(widgetOf(node, TEXT_WIDGET)?.value ?? "");
+}
+
+/** One click on a LoRA: absent -> on, on -> parked, parked -> on.
+ *  Returns the new state, or null when the node has no list to change. */
+export function cycleInNode(node, stem) {
+  if (!node) return null;
+  if (typeof node._warppipeCycleLora === "function") {
+    const state = node._warppipeCycleLora(stem);
+    if (state) node.setDirtyCanvas?.(true, true);
+    return state ?? null;
+  }
+  const widget = widgetOf(node, LIST_WIDGET);
+  if (!widget) return null;
+  const got = cycleLora(String(widget.value ?? ""), stem);
+  widget.value = got.text;
+  node.setDirtyCanvas?.(true, true);
+  return got.state;
+}
+
+/** "on", "parked" or null: how the node's list holds this LoRA right now. */
+export function markIn(node, stem) {
+  if (!node) return null;
+  return loraState(listText(node), stem);
+}
+
+/** Add an embedding to the prose. True when it was added, false when it was
+ *  already there or the node has no prose box. */
+export function addEmbeddingToNode(node, stem) {
   if (!node) return false;
-  // The prompt owns it: this lands on a line of its own, like typing would.
-  // The fallback below is for a browser opened without the prompt UI.
-  if (typeof node._warppipeAddLora === "function") {
-    const added = node._warppipeAddLora(stem) === true;
+  if (typeof node._warppipeAddEmbedding === "function") {
+    const added = node._warppipeAddEmbedding(stem) === true;
     if (added) node.setDirtyCanvas?.(true, true);
     return added;
   }
-  const widget = (node.widgets || []).find((w) => w.name === TEXT_WIDGET);
+  const widget = widgetOf(node, TEXT_WIDGET);
   if (!widget) return false;
-
-  const tag = `<lora:${stem}:1.0>`;
-  const el = widget.inputEl;
-  const current = widget.value || "";
-  if (el && typeof el.selectionStart === "number") {
-    const at = el.selectionStart;
-    const next = `${current.slice(0, at)}${tag}${current.slice(el.selectionEnd)}`;
-    widget.value = next;
-    el.value = next;
-    const caret = at + tag.length;
-    el.setSelectionRange(caret, caret);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  } else {
-    widget.value = current ? `${current} ${tag}` : tag;
-  }
+  const before = String(widget.value ?? "");
+  const next = addEmbedding(before, stem);
+  if (next === before) return false;
+  widget.value = next;
   node.setDirtyCanvas?.(true, true);
   return true;
+}
+
+export function embeddingIn(node, stem) {
+  return node ? hasEmbedding(promptText(node), stem) : false;
+}
+
+export const PROMPT_CHANGED = "warpstudio:prompt-changed";
+
+/* Loaders: the checkpoint and diffusion-model loaders a card can load into. */
+export const LOADERS = {
+  CheckpointLoaderSimple: { widget: "ckpt_name", kind: "checkpoints" },
+  UNETLoader: { widget: "unet_name", kind: "diffusion_models" },
+};
+
+const loaderTypeOf = (node) => {
+  const type = node?.type ?? node?.comfyClass;
+  return Object.hasOwn(LOADERS, type) ? type : null;
+};
+
+let lastLoaderNode = null;
+
+export function noteLoaderUsed(node) {
+  if (node) lastLoaderNode = node;
+}
+
+/** The loaders of one kind in the graph on screen. */
+export function loaderNodesOf(app, kind) {
+  const graph = app?.canvas?.graph ?? app?.graph;
+  const all = graph?._nodes ?? graph?.nodes ?? [];
+  return Array.from(all).filter((n) => {
+    const type = loaderTypeOf(n);
+    return type && LOADERS[type].kind === kind;
+  });
+}
+
+/** Selection first, then the last one used, then the only one there is. */
+export function currentLoader(app, kind) {
+  return pickTarget(loaderNodesOf(app, kind), selectionOf(app), lastLoaderNode);
+}
+
+/** Put a model name in a loader's widget the way picking it from the list does.
+ *  False when the node has no such widget or the name is not one of its options. */
+export function setLoaderModel(node, name) {
+  const type = loaderTypeOf(node);
+  const widget = type ? widgetOf(node, LOADERS[type].widget) : null;
+  if (!widget) return false;
+  const values = widget.options?.values;
+  const list = typeof values === "function" ? values() : values;
+  if (!Array.isArray(list) || !list.includes(name)) return false;
+  widget.value = name;
+  widget.callback?.(name);
+  node.setDirtyCanvas?.(true, true);
+  return true;
+}
+
+export function loadedModel(node) {
+  const type = loaderTypeOf(node);
+  const widget = type ? widgetOf(node, LOADERS[type].widget) : null;
+  return String(widget?.value ?? "");
 }
 
 const titleOf = (node) => node?.title || "Prompt + LoRAs";

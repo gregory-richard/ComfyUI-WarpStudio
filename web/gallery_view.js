@@ -18,7 +18,7 @@ import {
 import { connectedBase, describeBase, fittingFamilies } from "./model_base.js";
 import {
   currentTarget,
-  insertIntoNode,
+  cycleInNode,
   noteUsed,
   promptNodesOf,
   targetLabel,
@@ -517,7 +517,7 @@ export function renderGalleryView(el, options) {
     if (hit.model.missing) return; // not on this drive: nothing to add
     const node = currentTarget(app);
     if (node !== target) follow(false); // the selection moved without telling us
-    if (!node || !insertIntoNode(node, hit.model.stem)) return;
+    if (!node || !cycleInNode(node, hit.model.stem)) return;
     noteUsed(node);
     flashAdded(card);
     // Adding moved focus into the node's box. A press from the keyboard (no

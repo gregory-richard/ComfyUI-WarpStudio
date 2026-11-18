@@ -4,7 +4,13 @@ import test from "node:test";
 import {
   OPEN_GALLERY,
   currentTarget,
-  insertIntoNode,
+  addEmbeddingToNode,
+  currentLoader,
+  loadedModel,
+  noteLoaderUsed,
+  cycleInNode,
+  markIn,
+  setLoaderModel,
   pickTarget,
   promptNodesOf,
   requestGallery,
@@ -48,34 +54,11 @@ test("pickTarget matches the selection by identity, never by id", () => {
   assert.equal(pickTarget(root, [inSubgraph], at(root, 2)), at(root, 2));
 });
 
-test("insertIntoNode uses _warppipeAddLora", () => {
-  const seen = [];
-  const node = {
-    _warppipeAddLora: (stem) => {
-      seen.push(stem);
-      return true;
-    },
-  };
-  assert.equal(insertIntoNode(node, "x"), true);
-  assert.deepEqual(seen, ["x"]);
-});
-
-test("insertIntoNode falls back to the text widget", () => {
-  const node = { widgets: [{ name: "text", value: "a" }] };
-  assert.equal(insertIntoNode(node, "x"), true);
-  assert.ok(node.widgets[0].value.includes("<lora:x:1.0>"));
-});
-
 test("pickTarget never picks a different node with the same id", () => {
   const workflowA = nodes(1, 3);
   const remembered = at(workflowA, 3);
   const workflowB = nodes(1, 3);
   assert.equal(pickTarget(workflowB, [], remembered), null);
-});
-
-test("insertIntoNode reports false when the node can't add", () => {
-  assert.equal(insertIntoNode({ _warppipeAddLora: () => false }, "x"), false);
-  assert.equal(insertIntoNode(null, "x"), false);
 });
 
 test("currentTarget reads the graph on screen, not the root", () => {
@@ -157,4 +140,88 @@ test("targetLabel tells same-titled nodes apart by id", () => {
   // Alone, or without the list: just the title.
   assert.equal(targetLabel(twins[0], [twins[0]]), "Prompt + LoRAs");
   assert.equal(targetLabel(twins[0]), "Prompt + LoRAs");
+});
+
+const widgetsOf = (text, loras) => [
+  { name: "text", value: text },
+  { name: "loras", value: loras },
+];
+
+test("cycleInNode without hooks cycles the loras widget: absent, on, parked", () => {
+  const node = { widgets: widgetsOf("a cat", "") };
+  assert.equal(cycleInNode(node, "maker - glow (krea2)"), "on");
+  assert.equal(node.widgets[1].value, "<lora:maker - glow (krea2):1.00>");
+  assert.equal(cycleInNode(node, "maker - glow (krea2)"), "parked");
+  assert.equal(node.widgets[1].value, "// <lora:maker - glow (krea2):1.00>");
+  assert.equal(node.widgets[0].value, "a cat");
+  assert.equal(cycleInNode({ widgets: [] }, "x"), null);
+  assert.equal(cycleInNode(null, "x"), null);
+});
+
+test("cycleInNode prefers _warppipeCycleLora and returns its answer", () => {
+  const seen = [];
+  const node = {
+    widgets: widgetsOf("", ""),
+    _warppipeCycleLora: (stem) => {
+      seen.push(stem);
+      return "parked";
+    },
+  };
+  assert.equal(cycleInNode(node, "x"), "parked");
+  assert.deepEqual(seen, ["x"]);
+  assert.equal(node.widgets[1].value, "");
+  assert.equal(cycleInNode({ _warppipeCycleLora: () => null }, "x"), null);
+});
+
+test("markIn reads _warppipeListText when present", () => {
+  const node = {
+    widgets: widgetsOf("", "<lora:a:1>"),
+    _warppipeListText: () => "// <lora:a:1>",
+  };
+  assert.equal(markIn(node, "a"), "parked");
+  assert.equal(markIn({ widgets: widgetsOf("", "<lora:a:1>") }, "a"), "on");
+  assert.equal(markIn({ widgets: widgetsOf("", "") }, "a"), null);
+});
+
+test("addEmbeddingToNode without hooks edits the text widget", () => {
+  const node = { widgets: widgetsOf("a cat", "") };
+  assert.equal(addEmbeddingToNode(node, "fine"), true);
+  assert.equal(node.widgets[0].value, "a cat, embedding:fine");
+  assert.equal(addEmbeddingToNode(node, "fine"), false);
+  assert.equal(addEmbeddingToNode({ _warppipeAddEmbedding: () => true }, "fine"), true);
+});
+
+const loader = (id, type, widget, values) => ({
+  id,
+  type,
+  widgets: [{ name: widget, value: values[0], options: { values } }],
+});
+
+test("currentLoader picks the selected UNETLoader over the last used one", () => {
+  const first = loader(1, "UNETLoader", "unet_name", ["a.safetensors"]);
+  const second = loader(2, "UNETLoader", "unet_name", ["b.safetensors"]);
+  const ckpt = loader(3, "CheckpointLoaderSimple", "ckpt_name", ["c.safetensors"]);
+  const graph = { _nodes: [first, second, ckpt] };
+  noteLoaderUsed(first);
+  const app = { graph, canvas: canvasOn(graph, [second]) };
+  assert.equal(currentLoader(app, "diffusion_models"), second);
+  app.canvas.selectNode(null);
+  assert.equal(currentLoader(app, "diffusion_models"), first);
+  // A checkpoint loader is not a candidate for diffusion models.
+  app.canvas.selectNode(ckpt);
+  assert.equal(currentLoader(app, "diffusion_models"), first);
+  assert.equal(currentLoader(app, "checkpoints"), ckpt);
+});
+
+test("setLoaderModel refuses a name that is not an option", () => {
+  const node = loader(1, "UNETLoader", "unet_name", ["a.safetensors", "b.safetensors"]);
+  const called = [];
+  node.widgets[0].callback = (v) => called.push(v);
+  assert.equal(setLoaderModel(node, "nope.safetensors"), false);
+  assert.equal(node.widgets[0].value, "a.safetensors");
+  assert.equal(setLoaderModel(node, "b.safetensors"), true);
+  assert.equal(node.widgets[0].value, "b.safetensors");
+  assert.deepEqual(called, ["b.safetensors"]);
+  assert.equal(loadedModel(node), "b.safetensors");
+  assert.equal(setLoaderModel({ type: "KSampler", widgets: [] }, "x"), false);
 });
