@@ -347,6 +347,85 @@ class GroupingTests(unittest.TestCase):
 
         self.assertEqual([archived], self.job.items)
 
+    # --- downloaded since the check ---------------------------------------
+
+    CHECK_END = "2026-11-23T18:48:58.471822+00:00"
+    BEFORE = "2026-11-23T18:40:00+00:00"
+    AFTER = "2026-11-23T18:59:48.459546+00:00"
+
+    def _two_versions(self, downloaded_at, archived=False):
+        """An old version from the check and the newest one, stamped ``downloaded_at``."""
+        remote = [self._remote("1", "2026-01-01T00:00:00Z"), self._remote("2", "2026-03-01T00:00:00Z")]
+        old = self._on_d("m1", "1", "2026-01-01T00:00:00Z", remote)
+        old["lastCheckedAt"] = self.BEFORE
+        new = (
+            self._archived("m1", "2", "2026-03-01T00:00:00Z", remote=remote)
+            if archived
+            else self._on_d("m1", "2", "2026-03-01T00:00:00Z", remote)
+        )
+        new["lastCheckedAt"] = downloaded_at
+        return [old, new]
+
+    def _downloaded_rows(self, group):
+        return {v["versionId"]: v["downloaded"] for v in group["localVersions"]}
+
+    def test_a_row_added_after_the_check_counts_as_downloaded(self) -> None:
+        from comfy_updater.jobs import _parse_iso
+
+        groups = self._groups(self._two_versions(self.AFTER), downloaded_after=_parse_iso(self.CHECK_END))
+
+        self.assertTrue(groups[0]["downloaded"])
+        self.assertEqual({"1": False, "2": True}, self._downloaded_rows(groups[0]))
+
+    def test_an_archived_row_never_counts_as_downloaded(self) -> None:
+        from comfy_updater.jobs import _parse_iso
+
+        groups = self._groups(
+            self._two_versions(self.AFTER, archived=True), downloaded_after=_parse_iso(self.CHECK_END)
+        )
+
+        self.assertFalse(groups[0]["downloaded"])
+        self.assertEqual({"1": False, "2": False}, self._downloaded_rows(groups[0]))
+
+    def test_without_a_reference_time_nothing_is_downloaded(self) -> None:
+        groups = self._groups(self._two_versions(self.AFTER), downloaded_after=None)
+
+        self.assertFalse(groups[0]["downloaded"])
+        self.assertEqual({"1": False, "2": False}, self._downloaded_rows(groups[0]))
+
+    def test_updates_keep_a_model_downloaded_since_the_check(self) -> None:
+        self.job.finishedAt = "2026-11-23T18:56:36+00:00"
+        self.job.items = self._two_versions(self.AFTER)
+
+        result = self.manager.get_items("job-1", mode="updates", limit=50)
+
+        self.assertEqual(["m1"], [card["modelId"] for card in result["items"]])
+        self.assertEqual([], result["items"][0]["newVersions"])
+        # The tab's number counts models with a new version only.
+        self.assertEqual(0, result["modeCounts"]["updates"])
+
+    def test_the_next_check_lets_a_downloaded_model_go(self) -> None:
+        self.job.finishedAt = "2026-11-23T19:30:00+00:00"
+        self.job.items = self._two_versions(self.AFTER)
+
+        result = self.manager.get_items("job-1", mode="updates", limit=50)
+
+        self.assertEqual([], result["items"])
+
+    def test_a_restored_last_check_keeps_downloaded_but_not_archived_rows(self) -> None:
+        # After a restart: checkedAt is the end of the drive's pass, and the
+        # archive pass stamped its rows after it.
+        archived_only = self._archived("m9", "5", "2026-01-01T00:00:00Z")
+        archived_only["lastCheckedAt"] = "2026-11-23T18:55:00+00:00"
+        self.manager.load_cached_check(
+            {"checkedAt": self.CHECK_END, "items": self._two_versions(self.AFTER)},
+            extra_items=[archived_only],
+        )
+
+        result = self.manager.get_items("cached", mode="updates", limit=50)
+
+        self.assertEqual(["m1"], [card["modelId"] for card in result["items"]])
+
 
 if __name__ == "__main__":
     unittest.main()

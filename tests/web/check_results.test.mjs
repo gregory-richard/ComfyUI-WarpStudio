@@ -125,3 +125,17 @@ test("an archive that could not be checked is said inline as an error too", () =
     ]);
   }
 });
+
+test("rowLabel: a version downloaded since the check says Downloaded", () => {
+  assert.deepEqual(rowLabel(row({ downloaded: true })), {
+    role: "downloaded",
+    label: "Downloaded",
+  });
+});
+
+test("rowLabel: an issue still wins over Downloaded", () => {
+  assert.deepEqual(rowLabel(row({ downloaded: true, alsoArchived: "x.safetensors" })), {
+    role: "duplicate",
+    label: "Duplicate",
+  });
+});

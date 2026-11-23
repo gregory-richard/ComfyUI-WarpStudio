@@ -213,6 +213,13 @@ touched. On a drive without a Recycle Bin, or for a file too big for it, Windows
 deletes the file for good. A release that costs Buzz or is in early access shows **Early access**
 instead of the buttons.
 
+A model you downloaded stays in **Updates** until the next check, even after a
+restart, with the new version marked **Downloaded**, so you can try it and then
+remove the old one. Every version row whose file is on this drive has **Delete**,
+in Updates and Issues: **Delete?** for four seconds, then the weights and their
+info and preview go to the Recycle Bin. Archived rows and info files alone have no
+Delete.
+
 Downloads run on the ComfyUI server, one at a time, so they carry on if you close
 the tab. A click while another job runs says **Waiting for the check** (or the dry run,
 the rename, the metadata fetch, the naming model download) and starts by itself

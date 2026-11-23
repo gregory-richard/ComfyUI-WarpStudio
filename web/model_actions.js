@@ -137,6 +137,21 @@ export function galleryActionHtml(card, record, ui, escapeHtml) {
   return `<button type="button" ${mark} data-g-action="delete"${title}>${COPY.delete}</button>`;
 }
 
+/*
+ * Delete on a version row of an Updates or Issues card, ui = { canTrash, confirming, deleting }.
+ * Only for weights on this drive: never an archived row (the archive is never changed)
+ * or an info file alone. The server deletes only a file the check lists.
+ */
+export function rowDeleteHtml(v, ui, escapeHtml) {
+  if (!ui?.canTrash || v?.archived || v?.metadataOnly || !v?.modelPath) return "";
+  const attrs = `class="cu-inline-btn cu-ver-del" data-row-action="delete" data-path="${escapeHtml(v.modelPath)}" title="${COPY.deleteTitleFor("version")}"`;
+  if (ui.deleting)
+    return `<button type="button" ${attrs} data-deleting disabled>${COPY.deleting}</button>`;
+  if (ui.confirming)
+    return `<button type="button" ${attrs} data-confirm>${COPY.deleteAsk}</button>`;
+  return `<button type="button" ${attrs}>${COPY.delete}</button>`;
+}
+
 /* The Gallery card's state overlay: Waiting, the percentage, the error; Downloaded only just after. */
 export function galleryStateText(record, { justDone = false } = {}) {
   const state = slotState(record);

@@ -2,7 +2,7 @@
 // reason of each saved file's row, and the status line when a check ends.
 // Pure: nothing here touches ComfyUI or the page.
 
-// The row label column fits "Duplicate" and "Info only"; the message line names the source.
+// The row label column fits "Downloaded", the longest label; the message line names the source.
 const FALLBACK_LABEL = "Found";
 const FALLBACK_SOURCES = {
   "ai-toolkit": { phrase: "your ai-toolkit training" },
@@ -36,6 +36,8 @@ export function rowLabel(v) {
     const found = !v.alsoArchived && v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource];
     return { role: issue.role, label: found ? FALLBACK_LABEL : issue.label };
   }
+  // Downloaded since the check: the card stays in Updates until the next one.
+  if (v.downloaded) return { role: "downloaded", label: "Downloaded" };
   if (v.archived) return { role: "archived", label: "Archived" };
   return v.metadataOnly
     ? { role: "metadata", label: "Metadata" }

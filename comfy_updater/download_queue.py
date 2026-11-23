@@ -203,6 +203,17 @@ class DownloadQueue:
         with self._lock:
             return [request.as_dict() for request in self._requests]
 
+    def forget_finished(self, key: str) -> None:
+        """Drop the finished records of ``key``: the file they brought was deleted since.
+
+        A card reads a finished record as "Downloaded"; the release is new again
+        and must offer Download. A waiting or running request stays.
+        """
+        with self._lock:
+            self._requests = [
+                r for r in self._requests if r.key != key or r.state in _ACTIVE_STATES
+            ]
+
     def _prune_locked(self) -> None:
         finished = [r for r in self._requests if r.state not in _ACTIVE_STATES]
         drop = len(finished) - KEEP_FINISHED

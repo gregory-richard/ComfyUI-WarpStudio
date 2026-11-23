@@ -25,14 +25,17 @@ from comfy_updater.naming_ai import SYSTEM_PROMPT
 from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
 from comfy_updater.routes import (
     _PAUSE_ERRORS,
+    ARCHIVE_READ_ONLY_ERROR,
     DOWNLOAD_BUSY_ERROR,
     DOWNLOAD_HANDOVER_ERROR,
     DOWNLOAD_PAUSE_ERROR,
+    FILE_GONE_ERROR,
     JOURNAL_PENDING_ERROR,
     MODEL_DOWNLOAD_PAUSE_ERROR,
     NAMING_MODEL_DOWNLOAD_JOB,
     REPLACE_HELD_ERROR,
     REPLACE_MOVED_ERROR,
+    UNLISTED_FILE_ERROR,
     _normalize_download_payload,
     _register_model_action_routes,
     _unpausable,
@@ -1049,6 +1052,7 @@ class DownloadRouteTests(_Dirs):
                 ("POST", "/warp-studio/updater/downloads"),
                 ("POST", "/warp-studio/updater/downloads/{request_id}/stop"),
                 ("POST", "/warp-studio/updater/delete-model"),
+                ("POST", "/warp-studio/updater/delete-file"),
             },
             set(self.routes.handlers),
         )
@@ -1274,6 +1278,155 @@ class DownloadRouteTests(_Dirs):
         ):
             with mock.patch("comfy_updater.routes.send_to_trash", fake_trash):
                 return self.call("POST", "/warp-studio/updater/delete-model", payload)
+
+    # --- delete-file: a file the check lists ------------------------------
+
+    def delete_file(self, path, job_id="check-1"):
+        bin_folder = self.root / "bin"
+        bin_folder.mkdir(exist_ok=True)
+
+        def fake_trash(target: str) -> None:
+            os.replace(target, bin_folder / Path(target).name)
+
+        with mock.patch("comfy_updater.routes.send_to_trash", fake_trash):
+            return self.call(
+                "POST", "/warp-studio/updater/delete-file", {"jobId": job_id, "path": path}
+            )
+
+    def listed_job(self, *items, finished_at=""):
+        self.jobs.restore_job(
+            "check-updates", "check-2", startedAt="", finishedAt=finished_at, summary={}, items=list(items)
+        )
+
+    def test_delete_file_sends_a_listed_file_to_the_bin(self) -> None:
+        weights = Path(self.v1)
+        weights.write_bytes(b"x")
+        weights.with_suffix(".civitai.info").write_text("{}", encoding="utf-8")
+        weights.with_suffix(".preview.png").write_bytes(b"png")
+
+        status, body = self.delete_file(self.v1)
+
+        self.assertEqual(200, status, body)
+        self.assertEqual("glow.safetensors", body["removed"][0])
+        self.assertEqual(3, len(body["removed"]))
+        self.assertFalse(weights.exists())
+        self.assertEqual([], self.jobs.get("check-1").items)
+
+    def test_delete_file_refuses_a_path_the_check_does_not_list(self) -> None:
+        other = self.folder / "other.safetensors"
+        other.write_bytes(b"x")
+
+        status, body = self.delete_file(str(other))
+
+        self.assertEqual((404, UNLISTED_FILE_ERROR), (status, body["error"]))
+        self.assertTrue(other.exists())
+
+    def test_delete_file_never_touches_the_archive(self) -> None:
+        archive = self.root / "archive"
+        archive.mkdir()
+        kept = archive / "glow.safetensors"
+        kept.write_bytes(b"x")
+        self.listed_job(self.item(modelPath=str(kept), filePath=str(kept), archived=True))
+
+        status, body = self.delete_file(str(kept), job_id="check-2")
+
+        self.assertEqual((409, ARCHIVE_READ_ONLY_ERROR), (status, body["error"]))
+        self.assertTrue(kept.exists())
+
+    def test_delete_file_refuses_an_info_only_row(self) -> None:
+        weights = Path(self.v1)
+        info = weights.with_suffix(".civitai.info")
+        info.write_text("{}", encoding="utf-8")
+        weights.write_bytes(b"x")  # even when a file by the weights' name appeared since
+        self.listed_job(self.item(modelPath=str(info), filePath=self.v1, metadataOnly=True))
+
+        for posted in (str(info), self.v1):
+            with self.subTest(posted=posted):
+                status, body = self.delete_file(posted, job_id="check-2")
+                self.assertEqual((404, FILE_GONE_ERROR), (status, body["error"]))
+        self.assertTrue(info.exists())
+        self.assertTrue(weights.exists())
+
+    def test_delete_file_waits_for_a_running_check(self) -> None:
+        Path(self.v1).write_bytes(b"x")
+        release = threading.Event()
+        try:
+            self.jobs.start("check-updates", _blocking_runner(release))
+
+            status, body = self.delete_file(self.v1)
+        finally:
+            release.set()
+
+        self.assertEqual((409, DOWNLOAD_BUSY_ERROR), (status, body["error"]))
+        self.assertTrue(Path(self.v1).exists())
+
+    def test_delete_file_needs_a_job_and_a_path(self) -> None:
+        for payload in ({}, {"jobId": "check-1"}, {"path": self.v1}, {"jobId": 5, "path": self.v1}):
+            with self.subTest(payload=payload):
+                status, _body = self.call("POST", "/warp-studio/updater/delete-file", payload)
+                self.assertEqual(400, status)
+        status, body = self.delete_file(self.v1, job_id="no-such-job")
+        self.assertEqual((404, "job not found"), (status, body["error"]))
+
+    def test_deleting_the_downloaded_version_shows_the_release_as_new_again(self) -> None:
+        old = self.item(
+            localVersionDate="2026-01-01T00:00:00.000Z",
+            lastCheckedAt="2026-11-23T18:40:00+00:00",
+            remoteVersions=[_remote("202"), _remote("201")],
+        )
+        new_path = self.folder / "glow v2.safetensors"
+        new_path.write_bytes(b"x")
+        new = self.item(
+            modelPath=str(new_path),
+            filePath=str(new_path),
+            localVersionId="202",
+            localVersionDate="2026-02-01T00:00:00.000Z",
+            lastCheckedAt="2026-11-23T18:59:48+00:00",
+            remoteVersions=[_remote("202"), _remote("201")],
+        )
+        self.listed_job(old, new, finished_at="2026-11-23T18:56:36+00:00")
+        before = self.jobs.get_items("check-2", mode="updates", limit=50)["items"]
+        self.assertEqual([[]], [card["newVersions"] for card in before])
+
+        status, body = self.delete_file(str(new_path), job_id="check-2")
+
+        self.assertEqual(200, status, body)
+        after = self.jobs.get_items("check-2", mode="updates", limit=50)["items"]
+        self.assertEqual([["202"]], [[v["versionId"] for v in card["newVersions"]] for card in after])
+
+    def test_delete_file_serves_only_a_check_job(self) -> None:
+        Path(self.v1).write_bytes(b"x")
+        self.jobs.restore_job(
+            "rename-dry-run", "dry-1", startedAt="", finishedAt="", summary={}, items=[self.item()]
+        )
+
+        status, body = self.delete_file(self.v1, job_id="dry-1")
+
+        self.assertEqual((404, "job not found"), (status, body["error"]))
+        self.assertTrue(Path(self.v1).exists())
+
+    def finished_download(self, version_id: str) -> None:
+        request = DownloadRequest(
+            key=f"version:{version_id}", source="updates", model_id="101", version_id=version_id, model_type="lora"
+        )
+        self.queue.submit(request)
+        self.queue.take_next()
+        self.queue.finish(request, "done")
+        self.queue.take_next()
+
+    def test_deleting_a_downloaded_version_forgets_its_finished_download(self) -> None:
+        # Its row is new again: it must offer Download, not say Downloaded.
+        new_path = self.folder / "glow v2.safetensors"
+        new_path.write_bytes(b"x")
+        self.listed_job(self.item(modelPath=str(new_path), filePath=str(new_path), localVersionId="202"))
+        self.finished_download("202")
+        self.finished_download("203")
+
+        status, body = self.delete_file(str(new_path), job_id="check-2")
+
+        self.assertEqual(200, status, body)
+        _status, downloads = self.call("GET", "/warp-studio/updater/downloads")
+        self.assertEqual(["version:203"], [record["key"] for record in downloads["requests"]])
 
     def test_delete_resolves_in_the_kind_folder(self) -> None:
         diffusion = self.root / "diffusion_models"

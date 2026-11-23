@@ -10,6 +10,7 @@ import {
   latestRecords,
   percent,
   recordMessage,
+  rowDeleteHtml,
   slotState,
   versionActionsHtml,
   versionKey,
@@ -246,4 +247,41 @@ test("a waiting version row shows what it waits for in the slot and no second li
   assert.ok(versionActionsHtml(slot, rec(), escapeHtml).includes(">Waiting<"));
   const hostile = versionActionsHtml(slot, rec({ id: "r1", waitingFor: "<b>" }), escapeHtml);
   assert.ok(!hostile.includes("<b>"));
+});
+
+// A version row in an Updates or Issues card: Delete for a file on this drive.
+const onDrive = (fields) => ({ modelPath: "D:/m/a.safetensors", ...fields });
+
+test("rowDeleteHtml: a file on this drive gets Delete with its path", () => {
+  const html = rowDeleteHtml(onDrive(), { canTrash: true }, escapeHtml);
+  assert.ok(html.includes('data-row-action="delete"'));
+  assert.ok(html.includes('data-path="D:/m/a.safetensors"'));
+  assert.ok(html.includes(`>${COPY.delete}<`));
+});
+
+test("rowDeleteHtml: never for the archive, an info file alone, no path, or without the Recycle Bin", () => {
+  const ui = { canTrash: true };
+  assert.equal(rowDeleteHtml(onDrive({ archived: true }), ui, escapeHtml), "");
+  assert.equal(rowDeleteHtml(onDrive({ metadataOnly: true }), ui, escapeHtml), "");
+  assert.equal(rowDeleteHtml(onDrive({ modelPath: "" }), ui, escapeHtml), "");
+  assert.equal(rowDeleteHtml(onDrive(), { canTrash: false }, escapeHtml), "");
+});
+
+test("rowDeleteHtml: asks, then deletes", () => {
+  const asking = rowDeleteHtml(onDrive(), { canTrash: true, confirming: true }, escapeHtml);
+  assert.ok(asking.includes("data-confirm"));
+  assert.ok(asking.includes(`>${COPY.deleteAsk}<`));
+  const deleting = rowDeleteHtml(onDrive(), { canTrash: true, deleting: true }, escapeHtml);
+  assert.ok(deleting.includes("disabled"));
+  assert.ok(deleting.includes(`>${COPY.deleting}<`));
+});
+
+test("rowDeleteHtml: the path is escaped", () => {
+  const html = rowDeleteHtml(
+    onDrive({ modelPath: 'D:/m/"x"<b>.safetensors' }),
+    { canTrash: true },
+    escapeHtml
+  );
+  assert.ok(!html.includes("<b>"));
+  assert.ok(html.includes("&quot;x&quot;"));
 });
