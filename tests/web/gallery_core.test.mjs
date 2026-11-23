@@ -5,6 +5,7 @@ import {
   arrange,
   cardModel,
   filterEntries,
+  formatCount,
   galleryFacets,
   foldedIn,
   toggleFolded,
@@ -309,4 +310,60 @@ test("toggleFolded keeps a folded base that is not listed right now", () => {
   assert.deepEqual(toggleFolded(["Gone", "Pony"], "Pony"), ["Gone"]);
   assert.deepEqual(toggleFolded(null, "Pony"), ["Pony"]);
   assert.deepEqual(toggleFolded("Pony", "sdxl"), ["sdxl"]);
+});
+
+const withIds = [
+  { ...a, model_id: 1 },
+  { ...b, model_id: 2 },
+  { ...c }, // no model: never has numbers
+  { ...d, model_id: 3 },
+];
+const stats = new Map([
+  ["1", { downloads: 100, likes: 9, comments: 2 }],
+  ["2", { downloads: 500, likes: 3, comments: 0 }],
+  ["3", { downloads: 100, likes: 3, comments: 0 }],
+]);
+const idsOf = (sort, extra = {}) =>
+  arrange(stacksOf(withIds), { groupBy: "none", sort, stats, ...extra })[0].stacks.map(
+    (s) => s.members[0].id
+  );
+
+test("arrange sorts by downloads, highest first, ties by name, unknown last", () => {
+  assert.deepEqual(idsOf("downloads"), [b.id, d.id, a.id, c.id]);
+});
+
+test("arrange sorts by likes and by comments the same way", () => {
+  assert.deepEqual(idsOf("likes"), [a.id, d.id, b.id, c.id]);
+  // A zero is a number: it ranks above a stack with none.
+  assert.deepEqual(idsOf("comments"), [a.id, d.id, b.id, c.id]);
+});
+
+test("a stat sort with no numbers falls back to name order", () => {
+  assert.deepEqual(idsOf("downloads", { stats: new Map() }), [d.id, b.id, a.id, c.id]);
+  assert.deepEqual(idsOf("likes", { stats: undefined }), [d.id, b.id, a.id, c.id]);
+});
+
+test("a stat sort applies inside each band", () => {
+  const groups = arrange(stacksOf(withIds), { groupBy: "base", sort: "downloads", stats });
+  const pony = groups.find((g) => g.base === "Pony");
+  assert.deepEqual(
+    pony.stacks.map((s) => s.members[0].id),
+    [a.id, c.id]
+  );
+});
+
+test("formatCount", () => {
+  const cases = [
+    [0, "0"],
+    [950, "950"],
+    [999, "999"],
+    [1000, "1k"],
+    [11570, "11.6k"],
+    [1234567, "1.2M"],
+    [999950, "1M"],
+    [-1, ""],
+    [NaN, ""],
+    [Infinity, ""],
+  ];
+  for (const [input, expected] of cases) assert.equal(formatCount(input), expected, String(input));
 });

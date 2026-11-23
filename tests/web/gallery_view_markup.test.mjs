@@ -244,6 +244,19 @@ test("cardHtml always has the action slot and the state overlay, so heights matc
   }
 });
 
+test("cardHtml shows a metric badge on the thumbnail only when one is given", () => {
+  assert.ok(!cardHtml(model(), ui(), escapeHtml).includes("cu-g-metric"));
+  const html = cardHtml(model({ triggers: 2 }), ui({ metric: "↓ 11.6k" }), escapeHtml);
+  const thumb = html.slice(html.indexOf('<span class="cu-g-thumb">'), html.indexOf("</button>"));
+  assert.match(thumb, /<span class="cu-g-metric">↓ 11\.6k<\/span>/);
+  assert.ok(thumb.includes("cu-g-badge"));
+});
+
+test("cardHtml escapes the metric", () => {
+  const html = cardHtml(model(), ui({ metric: "<b>" }), escapeHtml);
+  assert.ok(!html.includes("<b>"));
+});
+
 test("role=img is only on a mark span that shows a mark", () => {
   assert.ok(!cardHtml(model(), ui(), escapeHtml).includes('role="img"'));
   const on = cardHtml(model(), ui({ mark: "on" }), escapeHtml);

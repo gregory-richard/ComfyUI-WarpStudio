@@ -12,7 +12,7 @@ import {
   versionActionsHtml,
   versionKey,
 } from "./model_actions.js";
-import { galleryOnlyBases } from "./gallery_core.js";
+import { galleryOnlyBases, STAT_SORTS } from "./gallery_core.js";
 import { infoHtml, menuHtml, moreMenuItems, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
@@ -76,6 +76,9 @@ const GALLERY_GROUPS = [
 const GALLERY_SORTS = [
   { value: "name", label: "Name" },
   { value: "newest", label: "Newest on disk" },
+  { value: "downloads", label: "Most downloaded" },
+  { value: "likes", label: "Most liked" },
+  { value: "comments", label: "Most comments" },
 ];
 
 /* The Gallery's Group by and Sort, remembered across reloads. */
@@ -227,6 +230,8 @@ const state = {
   galleryQuery: "",
   includeDownloadable: false,
   galleryArrange: readGalleryArrange(),
+  // Civitai downloads, likes and comments by model id, for the stat sorts.
+  modelStats: new Map(),
   // An "open the gallery" request that arrived while the panel was not drawn.
   pendingGallery: null,
   // Scroll offset per view, and the view whose pane is showing.
@@ -456,6 +461,7 @@ async function renderTab(el) {
     app,
     query: () => state.galleryQuery,
     arrange: () => state.galleryArrange,
+    stats: () => state.modelStats,
     includeDownloadable: () => state.includeDownloadable,
     downloads: () => state.downloads,
     canTrash: () => state.canTrash,
@@ -1319,6 +1325,7 @@ function pollJob(jobId) {
           if (job.summary && Object.keys(job.summary).length > 0) state.checkSummary = job.summary;
           takeArchiveResult(job.summary);
           await loadResultPage(true);
+          loadModelStats();
         }
         if (state.currentJobType === "scan") {
           if (job.summary && Object.keys(job.summary).length > 0) state.scanSummary = job.summary;
@@ -2007,11 +2014,27 @@ function restoreScroll(mode) {
   });
 }
 
+/* Civitai's numbers for the stat sorts. A failed request keeps what is there
+   and says nothing; the sorts then fall back to name. */
+async function loadModelStats() {
+  try {
+    const data = await getJson("/warp-studio/updater/model-stats");
+    const next = new Map(Object.entries(data?.stats || {}));
+    state.modelStats = next;
+    if (state.galleryLoaded && STAT_SORTS.includes(state.galleryArrange.sort)) {
+      state.galleryView?.render();
+    }
+  } catch (_) {
+    // no numbers; the sorts fall back to name
+  }
+}
+
 function showGallery() {
   const view = state.galleryView;
   if (!view) return;
   if (!state.galleryLoaded) {
     state.galleryLoaded = true;
+    loadModelStats();
     view.refresh().catch(() => {});
     return;
   }
@@ -5008,6 +5031,24 @@ function injectStyles() {
       border: 1px solid rgba(147, 181, 120, 0.35);
       background: rgba(19, 19, 22, 0.8);
       color: var(--cu-moss);
+      font-family: var(--cu-mono);
+      font-size: 9px;
+      line-height: 1;
+    }
+
+    /* Opposite the trigger badge, in the muted text colour. */
+    .cu-g-metric {
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      display: inline-flex;
+      align-items: center;
+      height: 16px;
+      padding: 0 5px;
+      border-radius: 3px;
+      border: 1px solid var(--cu-seam-strong);
+      background: rgba(19, 19, 22, 0.8);
+      color: var(--cu-ash);
       font-family: var(--cu-mono);
       font-size: 9px;
       line-height: 1;
