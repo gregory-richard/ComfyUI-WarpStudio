@@ -1724,12 +1724,14 @@ GET  /warp-studio/updater/downloads
 POST /warp-studio/updater/downloads
 POST /warp-studio/updater/downloads/{request_id}/stop
 POST /warp-studio/updater/delete-model
+POST /warp-studio/updater/delete-file
 ```
 
 - `GET downloads` returns `{jobId, requests, canTrash}`: the running download job's id (or `null`) and every request with its state (`waiting`, `downloading`, `done`, `stopped` or `error`), progress and message. A reloaded panel reads it to paint its cards.
 - `POST downloads` takes `{source: "updates", jobId, modelId, versionId, modelPath, replace}` for a release in a check job's results, or `{source: "gallery", name}` for a LoRA that is not on this drive. It answers `{request, jobId}`. A release in early access, a file not in the results, or a second Replace of the same file is refused. A request made while another kind of job runs is not refused: it waits (its record in `GET downloads` carries `waitingFor`, the job's type) and starts when that job ends. Only a rename that was cut off and still needs recovering answers HTTP 409.
 - `POST downloads/{request_id}/stop` cancels a waiting request or stops the running one. `404` for an unknown id.
 - `POST delete-model` takes `{name, kind}`: `name` is a model's `id` from the index, and `kind` is one of `loras` (the default), `embeddings`, `checkpoints` or `diffusion_models`; any other `kind` answers 400. It sends the weights and sidecars to the Recycle Bin and answers `{removed, warnings}`. It is refused (409) without `send2trash`, while another kind of job runs, or while that file is waiting to be replaced, and answers 404 when the LoRA is gone.
+- `POST delete-file` takes `{jobId, path}`: the `modelPath` of a version row in that check job's results (an Updates or Issues card). It deletes only a file the job lists, the same way as `delete-model`, and answers `{removed, warnings}`. A path the job doesn't list, or a row with only an info file, answers 404. An archived row answers 409 (the archive is never changed), as do the `delete-model` refusals. A missing `jobId` or `path` answers 400.
 
 ---
 

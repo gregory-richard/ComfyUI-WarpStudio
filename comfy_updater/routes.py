@@ -1204,13 +1204,16 @@ def recheck(request: DownloadRequest, *, journal_pending: bool) -> str:
 
 NO_TRASH_DELETE_ERROR = "Delete needs the send2trash package."
 LORA_GONE_ERROR = "That LoRA is not there any more."
+FILE_GONE_ERROR = "That file is not there any more."
+UNLISTED_FILE_ERROR = "That file is not in the check results."
+ARCHIVE_READ_ONLY_ERROR = "Files in the archive are never changed."
 REPLACE_BUSY_ERROR = "That file is being replaced. Try again when it's done."
 
 
 def delete_problem(
-    active_job, *, queue, weights: Optional[Path], can_trash: bool
+    active_job, *, queue, weights: Optional[Path], can_trash: bool, gone_message: str = LORA_GONE_ERROR
 ) -> Optional[tuple]:
-    """Why a LoRA can't be deleted now, as (HTTP status, message), or None.
+    """Why a model can't be deleted now, as (HTTP status, message), or None.
 
     A download may run beside a delete, unless it is about to replace this file.
     """
@@ -1219,7 +1222,7 @@ def delete_problem(
     if active_job is not None and not _is_model_download(active_job):
         return 409, DOWNLOAD_BUSY_ERROR
     if weights is None:
-        return 404, LORA_GONE_ERROR
+        return 404, gone_message
     if queue.holds(str(weights)):
         return 409, REPLACE_BUSY_ERROR
     return None
@@ -1575,7 +1578,64 @@ def _register_model_action_routes(
             return web.json_response({"error": str(exc)}, status=500)
         return web.json_response(result)
 
+    @routes.post("/warp-studio/updater/delete-file")
+    @_guarded
+    async def delete_listed_file(request):
+        # A version row of an Updates or Issues card: found by the check job's own
+        # row, never by the posted path alone. The archive is never changed.
+        payload = await _read_json(request)
+        job_id = payload.get("jobId")
+        wanted = payload.get("path")
+        if not isinstance(job_id, str) or not job_id.strip() or not isinstance(wanted, str) or not wanted.strip():
+            return web.json_response({"error": "jobId and the path of a listed file are required"}, status=400)
+        job = job_manager.get(job_id.strip())
+        if job is None:
+            return web.json_response({"error": "job not found"}, status=404)
+        entry = _job_entry(job, wanted)
+        if entry is None:
+            return web.json_response({"error": UNLISTED_FILE_ERROR}, status=404)
+        _listed, item = entry
+        if item.get("archived"):
+            return web.json_response({"error": ARCHIVE_READ_ONLY_ERROR}, status=409)
+
+        weights = await asyncio.to_thread(_listed_weights, item, wanted)
+        problem = delete_problem(
+            job_manager.get_active(),
+            queue=queue,
+            weights=weights,
+            can_trash=send2trash_available(),
+            gone_message=FILE_GONE_ERROR,
+        )
+        if problem:
+            return refused(problem)
+        try:
+            result = await asyncio.to_thread(
+                delete_model,
+                weights,
+                trash=send_to_trash,
+                job_manager=job_manager,
+                data_dir=config_store.data_dir,
+            )
+        except DownloadError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response(result)
+
     return queue
+
+
+def _listed_weights(item: dict, wanted: str) -> Optional[Path]:
+    """The weights a check row lists, when ``wanted`` names them and they are on disk.
+
+    An info file alone (``metadataOnly``) has no weights to delete, even when a
+    file by the weights' name has appeared since.
+    """
+    model_path = item.get("modelPath")
+    if item.get("metadataOnly") or not isinstance(model_path, str) or not _same_path(model_path, wanted):
+        return None
+    if not any(model_path.lower().endswith(ext) for ext in SUPPORTED_MODEL_EXTENSIONS):
+        return None
+    path = Path(model_path)
+    return path if path.is_file() else None
 
 
 REVEAL_REMOTE_ERROR = "Show in folder works only on the computer ComfyUI runs on."
