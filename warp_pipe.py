@@ -15,9 +15,11 @@ from typing import Any, ClassVar, Optional
 
 try:
     from .comfy_updater import model_files
+    from .comfy_updater.constants import SUPPORTED_MODEL_EXTENSIONS
     from .comfy_updater.request_guard import guarded
 except ImportError:
     from comfy_updater import model_files
+    from comfy_updater.constants import SUPPORTED_MODEL_EXTENSIONS
     from comfy_updater.request_guard import guarded
 
 logger = logging.getLogger("WarpPipe")
@@ -2417,7 +2419,13 @@ def missing_lora_index() -> list[dict[str, Any]]:
 
 
 def thumbnail_source(name: str, kind: str) -> Optional[str]:
-    """The preview image a thumbnail request names, or None."""
+    """The preview image a thumbnail request names, or None.
+
+    ``name`` must be a model file: the picture served is always the one beside it,
+    never a file the name points at itself.
+    """
+    if not isinstance(name, str) or not name.lower().endswith(SUPPORTED_MODEL_EXTENSIONS):
+        return None
     if kind in {"loras", "embeddings", "checkpoints", "diffusion_models"}:
         return lora_preview_path(_resolve_model_path(kind, name))
     if kind == "missing":
@@ -2476,6 +2484,11 @@ def _register_routes() -> None:
 
     @routes.get("/warp-studio/lora/thumbnail")
     async def _thumbnail(request):
+        # An <img> sends no guard header, but it does say where it was asked from:
+        # the panel's own pictures are same-origin, so another site can't even
+        # learn whether a file exists.
+        if (request.headers.get("Sec-Fetch-Site") or "").strip().lower() in ("cross-site", "same-site"):
+            return web.Response(status=403, text="Cross-site requests are not allowed.")
         name = request.query.get("name", "")
         kind = request.query.get("kind", "loras")
         if kind not in {"loras", "embeddings", "checkpoints", "diffusion_models", "missing"}:

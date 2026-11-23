@@ -3,6 +3,7 @@ import importlib.util
 import inspect
 import json
 import threading
+import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -553,7 +554,7 @@ def test_handle_write_empty_idea_without_previous_is_error(tmp_path, previous):
     assert out == {"error": "Type an idea first"}
 
 
-def test_handle_write_foreign_host_never_gets_key(tmp_path):
+def test_handle_write_foreign_host_gets_nothing(tmp_path):
     (tmp_path / "s.txt").write_text("SYS", encoding="utf-8")
     seen = []
 
@@ -574,8 +575,9 @@ def test_handle_write_foreign_host_never_gets_key(tmp_path):
         image_path=lambda name: None,
         opener=opener,
     )
-    assert "error" in out
-    assert seen and all(r.get_header("Authorization") is None for r in seen)
+    # Not the key, not the idea, not the system prompt: no request at all.
+    assert seen == []
+    assert "Save an API key for evil.example" in out["error"]
     assert "NANOKEY" not in out["error"]
 
 
@@ -1146,6 +1148,59 @@ def test_a_redirect_must_meet_the_rules_of_a_base_url(server, tmp_path):
     server.replies.append((302, "", {"Location": "http://example.invalid/steal"}))
     out = pw.handle_models(server.url, True, env={}, key_file=_key_file(tmp_path))
     assert "Plain http" in out["error"]
+
+
+def test_a_remote_provider_may_not_redirect_to_this_computer():
+    handler = pw._KeySafeRedirect()
+    for target in ("http://127.0.0.1:8188/api/prompt", "https://192.168.1.10/x", "https://[::1]/x"):
+        request = urllib.request.Request("https://api.example.com/v1/models")
+        with pytest.raises(pw.PromptWriterError, match="redirected to this computer"):
+            handler.redirect_request(request, None, 302, "Found", {}, target)
+
+
+# --- which providers get a prompt ---------------------------------------------
+
+
+def _never_called(*args, **kwargs):
+    raise AssertionError("nothing may be sent to an unknown provider")
+
+
+def test_a_provider_without_a_saved_key_gets_nothing(tmp_path):
+    key_file = tmp_path / "keys.json"
+    base = "https://api.example.com/v1"
+
+    models = pw.handle_models(base, True, env={}, key_file=key_file, opener=_never_called)
+    title = pw.handle_title(
+        {"base_url": base, "model": "m", "source": "an idea"}, env={}, key_file=key_file, opener=_never_called
+    )
+
+    assert "Save an API key for api.example.com" in models["error"]
+    assert "Save an API key for api.example.com" in title["error"]
+
+
+def test_providers_the_user_chose_pass(tmp_path):
+    key_file = tmp_path / "keys.json"
+    key_file.write_text(json.dumps({"api.example.com": "k"}), encoding="utf-8")
+
+    pw.check_provider("https://api.example.com/v1", key_file)
+    pw.check_provider("https://nano-gpt.com/api/v1", None)
+    pw.check_provider("http://localhost:1234/v1", None)
+    pw.check_provider("http://127.0.0.1:1234/v1", None)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user@nano-gpt.com/api/v1",
+        "https://user:pw@nano-gpt.com/api/v1",
+        "https://evil.example\\@nano-gpt.com/api/v1",
+        "https://nano-gpt.com/api/v1?x=1",
+        "https://nano-gpt.com/api/v1#x",
+    ],
+)
+def test_an_address_parsers_could_read_two_ways_is_refused(url):
+    with pytest.raises(pw.PromptWriterError):
+        pw.check_provider(url, None)
 
 
 def test_every_request_goes_through_the_redirect_rules():

@@ -12,6 +12,7 @@ written, and are scrubbed from any error text.
 import base64
 import datetime
 import http.client
+import ipaddress
 import json
 import logging
 import math
@@ -114,19 +115,66 @@ def key_for(url: str, env: Mapping[str, str], key_file: Optional[Path]) -> Optio
 
 def check_url(url: str) -> None:
     """Refuse anything but https, or plain http to the local machine."""
+    if "\\" in (url or ""):
+        raise PromptWriterError("base_url must not contain a backslash")
     try:
         parts = urllib.parse.urlsplit(url or "")
         host = (parts.hostname or "").lower()
+        has_user = parts.username is not None or parts.password is not None
     except ValueError:
         raise PromptWriterError(f"Invalid base_url: {url!r}") from None
     if parts.scheme not in ("http", "https"):
         raise PromptWriterError("base_url must start with https://")
     if not host:
         raise PromptWriterError("base_url has no host")
+    if has_user:
+        # Parsers disagree on which host "a@b" names; the key must never guess.
+        raise PromptWriterError("base_url must not contain a user name or password")
     if parts.scheme == "http" and host not in LOCAL_HOSTS:
         raise PromptWriterError(
             f"Plain http:// is only allowed for localhost; use https:// for {host}"
         )
+
+
+def _is_local(host: str) -> bool:
+    """This computer or the local network: localhost, or a loopback, private or link-local address."""
+    host = (host or "").lower().rstrip(".")
+    if host in LOCAL_HOSTS or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_unspecified
+        or address.is_reserved
+    )
+
+
+def check_provider(base_url: str, key_file: Optional[Path]) -> None:
+    """Refuse a provider the user never chose: only NanoGPT, this computer, or a saved key's host.
+
+    The address comes from ComfyUI's settings, which other code can change; a key can
+    only be saved through the Prompt Writer's own guarded route. So a prompt, its
+    chat and its pictures never go to a host the user did not save a key for.
+    """
+    check_url(base_url)
+    if "?" in base_url or "#" in base_url:
+        raise PromptWriterError("base_url must not contain ? or #")
+    host = _host(base_url)
+    if host in NANOGPT_HOSTS or host in LOCAL_HOSTS:
+        return
+    if key_for(base_url, {}, key_file) is not None:
+        return
+    raise PromptWriterError(
+        f"Save an API key for {host} under ⚙ in the Prompt Writer first. Prompts go only "
+        "to NanoGPT, to this computer, or to a provider you saved a key for."
+    )
 
 
 class _KeySafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -134,6 +182,8 @@ class _KeySafeRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         check_url(newurl)
+        if _is_local(_host(newurl)) and not _is_local(_host(req.full_url)):
+            raise PromptWriterError("The provider redirected to this computer or network; refused")
         follow = super().redirect_request(req, fp, code, msg, headers, newurl)
         if follow is not None and _host(newurl) not in _key_hosts(req.full_url):
             follow.remove_header("Authorization")
@@ -833,7 +883,7 @@ def _turns(raw) -> list:
 
 
 def _key_or_error(base_url: str, env, key_file) -> Optional[str]:
-    check_url(base_url)
+    check_provider(base_url, key_file)
     key = key_for(base_url, env, key_file)
     if key is None and _host(base_url) in NANOGPT_HOSTS:
         raise PromptWriterError(
@@ -846,8 +896,8 @@ def _key_or_error(base_url: str, env, key_file) -> Optional[str]:
 def handle_models(base_url: str, refresh: bool, *, env, key_file, opener=_open) -> dict:
     base_url = (base_url or DEFAULT_BASE_URL).strip()
     try:
-        check_url(base_url)
-        key = key_for(base_url, env, key_file)  # the list works without a key
+        check_provider(base_url, key_file)
+        key = key_for(base_url, env, key_file)  # NanoGPT's and a local list work without a key
         return {"models": list_models(base_url, api_key=key, refresh=refresh, opener=opener)}
     except PromptWriterError as exc:
         return {"error": str(exc)}

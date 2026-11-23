@@ -1248,11 +1248,19 @@ Every route but the thumbnail asks for the header `X-Civitai-Updater: 1`, and a
 POST must be sent as `application/json`. A request from another site (by `Origin`
 or `Sec-Fetch-Site`) is refused with 403 even with the header. A browser sends a
 custom header to another site only after a CORS preflight, which ComfyUI refuses
-unless it runs with `--enable-cors-header`, so no other web page you have open can
-call these routes. The thumbnail route stays open because an `<img>` sends no
-header; it serves only a preview that sits next to a file in one of ComfyUI's
-model folders. A `name` with a drive, a leading slash or a `..` step finds
-nothing.
+unless it runs with `--enable-cors-header`. The thumbnail route can't ask for the
+header, because an `<img>` sends none; it refuses `Sec-Fetch-Site: cross-site` and
+`same-site` instead, and serves only the preview beside a model file (`name` must
+end in a model extension) in one of ComfyUI's model folders. A `name` with a
+drive, a leading slash or a `..` step finds nothing. The guard doesn't stop DNS
+rebinding, and neither does ComfyUI's own server, so keep ComfyUI off untrusted
+networks.
+
+The Prompt Writer sends only to NanoGPT, to `localhost` / `127.0.0.1` / `::1`, or
+to a host you saved a key for through `POST /warp-studio/llm/key`. Any other
+`base_url` gets `Save an API key for <host> under ⚙ in the Prompt Writer first.`
+A `base_url` with a user name, a backslash, `?` or `#` is refused, and so is a
+redirect from a remote provider to this computer or the local network.
 
 If `aiohttp` or `server` cannot be imported — running the module outside
 ComfyUI, for tests or a lint — registration is skipped and the nodes still work.

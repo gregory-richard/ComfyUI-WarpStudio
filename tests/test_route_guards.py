@@ -114,6 +114,31 @@ def test_only_the_thumbnail_route_goes_without_the_header(warp_pipe, monkeypatch
     assert response.status == 404  # looked up, found nothing: not refused
 
 
+@pytest.mark.parametrize("site", ["cross-site", "same-site"])
+def test_another_site_cannot_ask_for_a_thumbnail(warp_pipe, monkeypatch, tmp_path, site):
+    handlers = _register(warp_pipe, monkeypatch, tmp_path)
+
+    response = _call(
+        handlers[("GET", "/warp-studio/lora/thumbnail")],
+        "GET",
+        "/warp-studio/lora/thumbnail?name=none.safetensors&kind=loras",
+        {"Host": HOST, "Sec-Fetch-Site": site},
+    )
+
+    assert response.status == 403
+
+
+def test_a_thumbnail_name_must_be_a_model_file(warp_pipe, monkeypatch, tmp_path):
+    root = tmp_path / "loras"
+    root.mkdir()
+    (root / "photo.png").write_bytes(b"png")
+    (root / "photo.preview.png").write_bytes(b"png")
+    _naive_folders(monkeypatch, root)
+
+    assert warp_pipe.thumbnail_source("photo.png", "loras") is None
+    assert warp_pipe.thumbnail_source("photo.preview.png", "loras") is None
+
+
 def _naive_folders(monkeypatch, root):
     """A folder_paths whose lookup joins blindly, so only our own checks keep names inside."""
     module = types.ModuleType("folder_paths")
