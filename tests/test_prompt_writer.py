@@ -577,7 +577,7 @@ def test_handle_write_foreign_host_gets_nothing(tmp_path):
     )
     # Not the key, not the idea, not the system prompt: no request at all.
     assert seen == []
-    assert "Save an API key for evil.example" in out["error"]
+    assert "evil.example has no saved key" in out["error"]
     assert "NANOKEY" not in out["error"]
 
 
@@ -1174,8 +1174,8 @@ def test_a_provider_without_a_saved_key_gets_nothing(tmp_path):
         {"base_url": base, "model": "m", "source": "an idea"}, env={}, key_file=key_file, opener=_never_called
     )
 
-    assert "Save an API key for api.example.com" in models["error"]
-    assert "Save an API key for api.example.com" in title["error"]
+    assert "api.example.com has no saved key" in models["error"]
+    assert "api.example.com has no saved key" in title["error"]
 
 
 def test_providers_the_user_chose_pass(tmp_path):

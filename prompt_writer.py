@@ -172,8 +172,9 @@ def check_provider(base_url: str, key_file: Optional[Path]) -> None:
     if key_for(base_url, {}, key_file) is not None:
         return
     raise PromptWriterError(
-        f"Save an API key for {host} under ⚙ in the Prompt Writer first. Prompts go only "
-        "to NanoGPT, to this computer, or to a provider you saved a key for."
+        f"{host} has no saved key. If it is the provider you set, save its key under ⚙ "
+        "in the Prompt Writer (any text, for a provider that needs none). Prompts go only "
+        "to NanoGPT, to this computer, or to a provider with a saved key."
     )
 
 

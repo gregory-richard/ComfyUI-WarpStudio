@@ -1258,7 +1258,7 @@ networks.
 
 The Prompt Writer sends only to NanoGPT, to `localhost` / `127.0.0.1` / `::1`, or
 to a host you saved a key for through `POST /warp-studio/llm/key`. Any other
-`base_url` gets `Save an API key for <host> under ⚙ in the Prompt Writer first.`
+`base_url` gets `<host> has no saved key.` A provider that needs no key works once any text is saved as its key; it is sent as `Authorization: Bearer <text>`, which such a server ignores.
 A `base_url` with a user name, a backslash, `?` or `#` is refused, and so is a
 redirect from a remote provider to this computer or the local network.
 

@@ -293,9 +293,10 @@ Warp Studio talks to the internet only for the features below, and only to these
 On your computer, Warp Studio reads, moves and deletes files only inside
 ComfyUI's model folders, and Delete sends them to the Recycle Bin. **Show in
 folder** works only in a browser on the computer ComfyUI runs on. Every route
-but the thumbnail asks for a header that only the ComfyUI page sends, and every
-route refuses requests from other sites. ComfyUI itself has no login, so keep it
-off the internet and off networks you don't trust. The details are in the
+but the thumbnail asks for a header that only the ComfyUI page sends, and refuses
+requests from other sites. That holds for ordinary web pages, not for a DNS
+rebinding attack, which ComfyUI's own server doesn't stop either. ComfyUI has no
+login, so keep it off the internet. The details are in the
 [wiki](WIKI.md#http-api).
 
 ## Example workflow
