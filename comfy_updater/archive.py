@@ -114,18 +114,24 @@ def archive_reference_path(
 ) -> Optional[Path]:
     """Where a download from an archived row goes, as a reference path on D.
 
-    It keeps the subfolders below the archive's type folder when D has them,
-    else it uses the type root itself. The file does not have to exist yet. None
-    when the row lies in no archive type folder, or would leave the D root.
+    The archive's top folder is matched by name (case does not matter) with one
+    of the type's roots on D. The subfolders below it are kept when D has them,
+    else the type root itself is used. Nothing in the archive is read, so this
+    works while its drive is unplugged; the file does not have to exist yet.
+    None when the row lies outside the archive, in no type folder, or would
+    leave the D root.
     """
-    for archive_folder, d_root in archive_type_folders(archive_root, type_roots).get(model_type, []):
-        try:
-            relative = archived_path.relative_to(archive_folder)
-        except ValueError:
+    try:
+        parts = archived_path.relative_to(archive_root).parts
+    except ValueError:
+        return None
+    if len(parts) < 2 or ".." in parts:
+        return None
+    type_folder = parts[0].casefold()
+    for d_root in type_roots.get(model_type, []):
+        if d_root.name.casefold() != type_folder:
             continue
-        if ".." in relative.parts:
-            continue
-        subfolder = d_root / relative.parent
+        subfolder = d_root.joinpath(*parts[1:-1])
         target_dir = subfolder if subfolder.is_dir() else d_root
         return target_dir / archived_path.name
     return None

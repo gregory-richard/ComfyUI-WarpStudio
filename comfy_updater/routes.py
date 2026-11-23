@@ -573,6 +573,34 @@ def _reachable(folder: Path) -> bool:
         return False
 
 
+def _merge_archive_results(
+    saved_items: list[dict], fresh_items: list[dict], fresh_summary: dict, model_types: list[str] | None
+) -> tuple[dict, list[dict]]:
+    """Combine an archive pass over ``model_types`` with the saved archive results of the rest.
+
+    As for last_check.json, items of a checked type come only from the fresh
+    pass and the other types' are kept. The counts are made over the merged
+    items; withoutInfo (weights without an info file) stays the pass's own,
+    since it counts files of the folders this pass walked, not results.
+    """
+    checked_types = set(model_types or [])
+    carried = [item for item in saved_items if checked_types and item.get("modelType") not in checked_types]
+    items = carried + list(fresh_items)
+
+    def count(status: str) -> int:
+        return sum(1 for item in items if item.get("status") == status)
+
+    summary = dict(fresh_summary or {})
+    summary.update(
+        total=len(items),
+        resolved=count("ok"),
+        withUpdates=sum(1 for item in items if item.get("hasUpdate")),
+        notFound=count("not_found"),
+        errors=count("error"),
+    )
+    return summary, items
+
+
 def _model_stats(items: list) -> dict:
     """Each model's Civitai numbers by model id; the first item that has them wins."""
     stats: dict = {}
@@ -675,8 +703,10 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
                     )
                     # A stopped pass checked only part of it: the last results stay.
                     if not control.is_cancelled():
-                        save_archive_results(data_dir, archive_folder, archive_summary, fresh_items)
-                        archive_items = fresh_items
+                        archive_summary, archive_items = _merge_archive_results(
+                            saved_archive_items, fresh_items, archive_summary, payload["modelTypes"]
+                        )
+                        save_archive_results(data_dir, archive_folder, archive_summary, archive_items)
             archive_info = load_archive_summary(data_dir, archive_folder)
             if archive_info:
                 job_summary["archive"] = archive_info

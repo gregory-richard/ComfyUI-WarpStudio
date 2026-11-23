@@ -106,6 +106,26 @@ class ArchiveReferencePathTests(unittest.TestCase):
         other = self.archive / "Clip" / "x.civitai.info"
         self.assertIsNone(archive_reference_path(self.archive, other, "lora", {"lora": [self.d_lora]}))
 
+    def test_reference_path_needs_no_archive_on_disk(self) -> None:
+        (self.d_lora / "sdxl").mkdir()
+        unplugged = self.tmp / "unplugged"
+        archived = unplugged / "lora" / "sdxl" / "a.civitai.info"  # the top folder matches without case
+
+        result = archive_reference_path(unplugged, archived, "lora", {"lora": [self.d_lora]})
+
+        self.assertFalse(unplugged.exists())
+        self.assertEqual(self.d_lora / "sdxl" / "a.civitai.info", result)
+        self.assertEqual(
+            self.d_lora / "a.civitai.info",
+            archive_reference_path(unplugged, unplugged / "Lora" / "a.civitai.info", "lora", {"lora": [self.d_lora]}),
+        )
+
+    def test_reference_path_none_outside_the_archive_or_its_type_folders(self) -> None:
+        roots = {"lora": [self.d_lora]}
+        self.assertIsNone(archive_reference_path(self.archive, self.tmp / "D" / "Lora" / "a.civitai.info", "lora", roots))
+        self.assertIsNone(archive_reference_path(self.archive, self.archive / "a.civitai.info", "lora", roots))
+        self.assertIsNone(archive_reference_path(self.archive, self.archived, "checkpoint", roots))
+
     def test_reference_path_stays_inside_the_d_root(self) -> None:
         escaping = self.archive / "Lora" / ".." / ".." / "x.civitai.info"
         result = archive_reference_path(self.archive, escaping, "lora", {"lora": [self.d_lora]})

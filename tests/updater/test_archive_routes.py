@@ -286,6 +286,42 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
         )
         self.assertNotIn("archiveError", job.summary)
 
+    def test_a_check_of_some_types_keeps_the_other_archived_types(self) -> None:
+        checkpoint_path = str(self.archive / "Checkpoints" / "base.civitai.info")
+        checkpoint = self.z_item(modelPath=checkpoint_path, modelType="checkpoint", modelId="501")
+        self.save_archive([self.z_item(), checkpoint])
+        self.service.archive_items = [self.z_item(localVersionId="402", hasUpdate=False, status="not_found")]
+
+        job = self.check(modelTypes=["lora"], includeArchive=True)
+
+        saved = read_data_file(self.data_dir / ARCHIVE_RESULTS_FILENAME)
+        self.assertEqual(sorted([self.z_path, checkpoint_path]), self.paths(saved["items"]))
+        lora = next(item for item in saved["items"] if item["modelType"] == "lora")
+        self.assertEqual("402", lora["localVersionId"])
+        # The counts describe both types; withoutInfo is the pass's own (files, not results).
+        summary = saved["summary"]
+        self.assertEqual(
+            (2, 1, 1, 1, 0, 2),
+            (
+                summary["total"],
+                summary["resolved"],
+                summary["withUpdates"],
+                summary["notFound"],
+                summary["errors"],
+                summary["withoutInfo"],
+            ),
+        )
+        self.assertEqual({"checkedAt": saved["checkedAt"], **summary}, job.summary["archive"])
+        self.assertEqual(sorted([self.z_path, checkpoint_path]), self.paths(job.items))
+
+        # A check of every type replaces them all: the checkpoint is no longer in the archive.
+        job = self.check(includeArchive=True)
+
+        saved = read_data_file(self.data_dir / ARCHIVE_RESULTS_FILENAME)
+        self.assertEqual([self.z_path], self.paths(saved["items"]))
+        self.assertEqual(1, saved["summary"]["total"])
+        self.assertEqual([self.z_path], self.paths(job.items))
+
     def test_unreachable_archive_keeps_the_previous_results(self) -> None:
         self.write_last_check([self.d_item()])
         saved = self.save_archive([self.z_item()])
@@ -543,6 +579,18 @@ class ArchivedDownloadTests(_ArchiveRoutesCase):
         self.assertEqual(self.d_lora / "sdxl" / "old.civitai.info", reference)
         self.assertFalse(reference.is_relative_to(self.archive))
         self.assertEqual("", self.requests[0].replace_path)
+
+    def test_download_from_an_archived_row_works_with_the_archive_unplugged(self) -> None:
+        shutil.rmtree(self.archive)
+
+        status, body = self.post_download()
+        self.assertEqual(200, status, body)
+        _join_job_threads()
+
+        self.assertEqual(
+            [self.d_lora / "sdxl" / "old.civitai.info"],
+            [Path(request.reference_path) for request in self.requests],
+        )
 
     def test_replace_of_an_archived_row_is_refused(self) -> None:
         status, body = self.post_download(replace=True)
