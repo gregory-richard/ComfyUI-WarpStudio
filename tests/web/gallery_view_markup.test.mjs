@@ -252,6 +252,15 @@ test("cardHtml shows a metric badge on the thumbnail only when one is given", ()
   assert.ok(thumb.includes("cu-g-badge"));
 });
 
+test("on a stacked card the metric badge is lifted above the versions chip", () => {
+  const stacked = cardHtml(model(), ui({ versions: 3, metric: "↓ 11.6k" }), escapeHtml);
+  assert.match(stacked, /<span class="cu-g-metric cu-g-metric-stacked">↓ 11\.6k<\/span>/);
+  assert.ok(stacked.includes("3 versions ▾"));
+  const single = cardHtml(model(), ui({ versions: 1, metric: "↓ 11.6k" }), escapeHtml);
+  assert.ok(!single.includes("cu-g-metric-stacked"));
+  assert.ok(!cardHtml(model(), ui({ versions: 3 }), escapeHtml).includes("cu-g-metric"));
+});
+
 test("cardHtml escapes the metric", () => {
   const html = cardHtml(model(), ui({ metric: "<b>" }), escapeHtml);
   assert.ok(!html.includes("<b>"));

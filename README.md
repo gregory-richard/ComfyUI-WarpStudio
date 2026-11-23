@@ -245,9 +245,11 @@ runs as usual, then looks up every archived model too: about 7 minutes more for
 1,100 of them. It only reads. Archived models whose new version is out show in
 **Updates** marked **Archived**, with **Download** (to this drive) and **Hide**.
 A version you have in the archive is never offered as new. The same version on
-both drives is listed in **Issues** as **Also in archive**; removing a copy is up
-to you. The results are kept until the next **Check with archive**, so a plain
-check doesn't drop them, and the ⓘ says when the archive was last checked.
+both drives is listed in **Issues** as **Duplicate**, and an info file left on
+this drive for a model in the archive as **Info only**; removing them is up to
+you. The results are kept until the next **Check with archive**, so a plain
+check doesn't drop them, and the ⓘ says when the archive was last checked. The
+archive folder can't be a model folder, or lie inside or hold one.
 
 The API key, cache time, extra model folders, the archive folder and how mature
 models show are in the settings, under **Warp Studio** in the groups that start

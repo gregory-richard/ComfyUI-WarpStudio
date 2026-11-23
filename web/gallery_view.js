@@ -107,7 +107,9 @@ export function cardHtml(model, ui, escapeHtml) {
     model.triggers > 0
       ? `<span class="cu-g-badge" title="${esc(plural(model.triggers, "trigger word"))}">⊕ ${esc(model.triggers)}</span>`
       : "";
-  const metricBadge = metric ? `<span class="cu-g-metric">${esc(metric)}</span>` : "";
+  // The versions chip takes the same corner: the number sits above it.
+  const metricClass = versions > 1 ? "cu-g-metric cu-g-metric-stacked" : "cu-g-metric";
+  const metricBadge = metric ? `<span class="${metricClass}">${esc(metric)}</span>` : "";
   const url = safeUrl(model.url);
   const link = url
     ? `<a class="cu-g-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Open on Civitai" aria-label="${esc(`Open ${model.title} on Civitai`)}">↗</a>`

@@ -13,7 +13,8 @@ import {
   versionKey,
 } from "./model_actions.js";
 import { galleryOnlyBases, STAT_SORTS } from "./gallery_core.js";
-import { infoHtml, menuHtml, moreMenuItems, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
+import { archiveResult, checkDoneStatus, issueMessage, rowIssue, rowLabel } from "./check_results.js";
+import { infoHtml, menuHtml, moreMenuItems, savedArchiveFolder, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
 // The server refuses requests without this header (see request_guard.js).
@@ -52,14 +53,6 @@ const SETTINGS = {
   fallbackHuggingFace: "WarpStudio.Updater.Fallback.HuggingFace",
   fallbackAiToolkitFolders: "WarpStudio.Updater.Fallback.AiToolkitFolders",
   fallbackOwnCreator: "WarpStudio.Updater.Fallback.OwnCreator",
-};
-
-// The row label column fits "No match"; the message line names the source.
-const FALLBACK_LABEL = "Found";
-const FALLBACK_SOURCES = {
-  "ai-toolkit": { phrase: "your ai-toolkit training" },
-  huggingface: { phrase: "Hugging Face" },
-  civarchive: { phrase: "civarchive" },
 };
 
 const GROUP_OPTIONS = [
@@ -136,6 +129,8 @@ const state = {
   checkSummary: null,
   archiveInfo: null,
   archiveError: "",
+  // The archive folder the server kept (not the setting as typed): the ⋯ menu offers it.
+  savedArchiveFolder: "",
   cachedAt: null,
   scanSummary: null,
   resultItems: [],
@@ -667,7 +662,7 @@ function bindMoreMenu(root) {
   };
   const open = () => {
     const items = moreMenuItems({
-      archiveFolder: String(getSetting(SETTINGS.archiveFolder, "") || ""),
+      archiveFolder: state.savedArchiveFolder,
       busy: Boolean(state.currentJobId),
     });
     menu.innerHTML =
@@ -984,9 +979,9 @@ function infoLines() {
       ? "Check in progress — previous results are shown until each model is re-checked."
       : "Check in progress…");
   }
-  if (state.archiveError) {
-    lines.push(state.archiveError);
-  } else if (state.archiveInfo?.checkedAt) {
+  // An archive that could not be checked keeps its last results: both are said.
+  if (state.archiveError) lines.push(state.archiveError);
+  if (state.archiveInfo?.checkedAt) {
     const found = state.archiveInfo.withUpdates || 0;
     lines.push(`Archive checked ${timeAgo(state.archiveInfo.checkedAt)} · ${found} with new versions`);
   }
@@ -1002,16 +997,12 @@ function infoLines() {
   return lines;
 }
 
-/* A check that included the archive reports how it went in its summary. A
-   plain check says nothing about the archive, so the last result stays. */
+/* A check that included the archive reports how it went in its summary (see
+   archiveResult). A plain check says nothing new, so the last result stays. */
 function takeArchiveResult(summary) {
-  if (!summary) return;
-  if (summary.archive) {
-    state.archiveInfo = summary.archive;
-    state.archiveError = "";
-  } else if (summary.archiveError) {
-    state.archiveError = String(summary.archiveError);
-  }
+  const next = archiveResult(summary, { info: state.archiveInfo, error: state.archiveError });
+  state.archiveInfo = next.info;
+  state.archiveError = next.error;
 }
 
 function infoPopoverHtml() {
@@ -1345,12 +1336,11 @@ function pollJob(jobId) {
         } else if (downloadJob) {
           setStatus(finishedText(job.summary));
         } else if (state.currentJobType === "check-updates") {
-          const updates = job.summary?.withUpdates || 0;
-          const hidden = job.summary?.hiddenUpdates || 0;
           state.cachedAt = new Date().toISOString();
           state.cacheFilesChanged = null;
           renderCacheInfo();
-          setStatus(`Done \u2014 ${updates} update${updates !== 1 ? "s" : ""} found${hidden ? `, ${hidden} hidden` : ""}`);
+          // An archive that could not be checked is said here too, not only in the info popover.
+          for (const [text, level] of checkDoneStatus(job.summary)) setStatus(text, level);
         } else {
           setStatus("Scan complete");
         }
@@ -1602,7 +1592,7 @@ function buildResultCard(item, cardIndex) {
     // last row of each run that shares it.
     const [nextKind, nextIndex] = order[position + 1] || [];
     const next = nextKind === "saved" ? localVersions[nextIndex] : null;
-    const showMessage = !next || !(next.alsoArchived || ISSUE_LABELS[next.status]) || issueMessage(next) !== issueMessage(v);
+    const showMessage = !next || !rowIssue(next) || issueMessage(next) !== issueMessage(v);
     return renderLocalVersionRow(v, showMessage);
   }).join("");
 
@@ -1680,20 +1670,12 @@ function wireThumbImage(img, localPath, loadNow) {
   else showNoPreview();
 }
 
-const ISSUE_LABELS = {
-  error: { role: "error", label: "Error" },
-  not_found: { role: "nomatch", label: "No match" },
-};
-
 function renderLocalVersionRow(v, showMessage = true) {
-  // A D row whose same version is also in the archive is an issue of its own.
-  const issue = v.alsoArchived
-    ? { role: "duplicate", label: "Also in archive" }
-    : ISSUE_LABELS[v.status];
+  // A D row whose same version is also in the archive is an issue of its own;
+  // an archived row never is (see check_results.js).
+  const issue = rowIssue(v);
   const date = v.publishedAt ? shortDate(v.publishedAt) : "";
-  const role = issue ? issue.role : (v.archived ? "archived" : (v.metadataOnly ? "metadata" : "saved"));
-  const source = !v.alsoArchived && v.status === "not_found" ? FALLBACK_SOURCES[v.fallbackSource] : null;
-  const label = source ? FALLBACK_LABEL : (issue ? issue.label : (v.archived ? "Archived" : (v.metadataOnly ? "Metadata" : "Saved")));
+  const { role, label } = rowLabel(v);
   const filePath = v.filePath || v.modelPath || "";
   // A file Civitai never identified has no version name; its file name is
   // what the user will recognize.
@@ -1708,19 +1690,6 @@ function renderLocalVersionRow(v, showMessage = true) {
           <span class="cu-ver-link cu-copy-path" data-path="${escapeHtml(filePath)}" title="${escapeHtml(copyPathTitle(filePath))}">${escapeHtml(name)}</span>
         </span>
       </div>${message}`;
-}
-
-function issueMessage(v) {
-  if (v.alsoArchived) return `The same version is in the archive as ${v.alsoArchived}.`;
-  const source = FALLBACK_SOURCES[v.fallbackSource];
-  if (source && (v.status === "not_found" || v.status === "error")) {
-    const found = `${v.hasLocalPreview ? "Info and preview" : "Info"} from ${source.phrase}.`;
-    return v.status === "not_found" ? `Not on Civitai. ${found}` : `${v.error || "The lookup failed."} ${found}`;
-  }
-  if (v.status === "not_found") {
-    return "Civitai has no release with this file's hash. It may be converted, merged, private, or never uploaded.";
-  }
-  return v.error || "The lookup failed.";
 }
 
 function resultsSignature() {
@@ -2707,6 +2676,7 @@ async function hydrateSettingsFromBackend() {
     setSetting(SETTINGS.useExtraModelPaths, Boolean(cfg.useExtraModelPaths ?? true));
     setSetting(SETTINGS.useCustomPaths, Boolean(cfg.useCustomPaths ?? true));
     setSetting(SETTINGS.archiveFolder, String(cfg.archiveFolder || ""));
+    state.savedArchiveFolder = savedArchiveFolder(data);
     const custom = cfg.customPaths || {};
     setSetting(SETTINGS.customCheckpoint, listToSettingString(custom.checkpoint));
     setSetting(SETTINGS.customLora, listToSettingString(custom.lora));
@@ -2786,6 +2756,8 @@ async function syncSettingsToBackend() {
       state.cacheFilesChanged = true;
     }
     state.roots = data.effectiveRoots || state.roots;
+    // A refused folder is not in the answer: the ⋯ menu stops offering it.
+    state.savedArchiveFolder = savedArchiveFolder(data);
     const pathWarnings = Array.isArray(data.pathWarnings) ? data.pathWarnings : [];
     if (pathWarnings.length) {
       console.warn("Civitai updater:", pathWarnings.join(" "));
@@ -4289,9 +4261,10 @@ function injectStyles() {
       background: var(--cu-seam);
     }
 
+    /* The label column fits the longest label, "Duplicate" or "Info only", on every row alike. */
     .cu-ver-row {
       display: grid;
-      grid-template-columns: 64px 60px minmax(0, 72px) minmax(0, 1fr);
+      grid-template-columns: 72px 60px minmax(0, 72px) minmax(0, 1fr);
       align-items: center;
       gap: 6px;
     }
@@ -4300,19 +4273,19 @@ function injectStyles() {
        --lead holds the columns before the name. The actions get what is left after the name's
        90px; below the width where that is too little, they move under the name, right-aligned. */
     .cu-versions .cu-ver-row.cu-ver-row-acts {
-      --lead: 64px 60px minmax(0, 72px);
-      grid-template-columns: var(--lead) minmax(0, 1fr) fit-content(max(0px, calc(100cqw - 310px)));
+      --lead: 72px 60px minmax(0, 72px);
+      grid-template-columns: var(--lead) minmax(0, 1fr) fit-content(max(0px, calc(100cqw - 318px)));
     }
 
     /* The sidebar is not the viewport: adapt columns to the panel width. */
 
     @container cu-root (max-width: 430px) {
       .cu-versions .cu-ver-row {
-        grid-template-columns: 64px 60px minmax(0, 1fr);
+        grid-template-columns: 72px 60px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        --lead: 64px 60px;
+        --lead: 72px 60px;
       }
 
       .cu-versions .cu-ver-base {
@@ -4322,11 +4295,11 @@ function injectStyles() {
 
     @container cu-root (max-width: 330px) {
       .cu-versions .cu-ver-row {
-        grid-template-columns: 64px minmax(0, 1fr);
+        grid-template-columns: 72px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        --lead: 64px;
+        --lead: 72px;
       }
 
       .cu-versions .cu-ver-date {
@@ -4334,7 +4307,7 @@ function injectStyles() {
       }
     }
 
-    @container cu-vers (max-width: 459px) {
+    @container cu-vers (max-width: 467px) {
       .cu-versions .cu-ver-row.cu-ver-row-acts {
         grid-template-columns: var(--lead) minmax(0, 1fr);
         row-gap: 3px;
@@ -4407,6 +4380,16 @@ function injectStyles() {
       border-color: var(--cu-amber);
     }
 
+    /* An info file alone, its model in the archive: an issue, with a hollow dot (no weights). */
+    .cu-ver-label[data-role="infoonly"] {
+      color: var(--cu-amber);
+    }
+
+    .cu-ver-label[data-role="infoonly"]::before {
+      border-style: dashed;
+      border-color: var(--cu-amber);
+    }
+
     .cu-ver-label[data-role="new"] {
       color: var(--cu-red-soft);
     }
@@ -4449,7 +4432,7 @@ function injectStyles() {
     /* The reason sits under its row, aligned with the columns after the label. */
 
     .cu-issue-msg {
-      margin: -3px 0 1px 70px;
+      margin: -3px 0 1px 78px;
       font-family: var(--cu-mono);
       font-size: 9.5px;
       line-height: 1.4;
@@ -5052,6 +5035,11 @@ function injectStyles() {
       font-family: var(--cu-mono);
       font-size: 9px;
       line-height: 1;
+    }
+
+    /* The "n versions ▾" chip (16px high, 6px up) holds the corner: the number sits above it. */
+    .cu-g-metric.cu-g-metric-stacked {
+      bottom: 26px;
     }
 
     .cu-g-creator,

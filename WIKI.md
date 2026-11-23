@@ -667,14 +667,19 @@ archive.
   with **Download** and **Hide**, and no **Replace**. **Download** puts the file on
   this drive, in the folder for that model type and the same subfolder as in the
   archive when there is one, else the type's folder.
-- The same Civitai version on both drives is listed in **Issues** as **Also in
-  archive**, with the archive file's name. Removing a copy is up to you.
+- The same Civitai version on both drives is listed in **Issues** as
+  **Duplicate**, with the archive file's name. An info file on this drive whose
+  model is in the archive is listed as **Info only**. Removing them is up to you.
 - Archived models Civitai removed or doesn't know never appear in **Issues**.
 - The results are kept apart, in `archive_check.json` in the data folder, so a
   plain check keeps the archived rows. A row goes when its version is downloaded
-  to this drive or hidden. The ⓘ says when the archive was last checked.
-- If the archive folder can't be reached (an unplugged drive), the ⓘ says so and
-  the last results stay.
+  to this drive or hidden. The ⓘ says when the archive was last checked and how
+  many archived models have a new version in **Updates**.
+- The archive folder can't be a model folder, lie inside one or hold one: such
+  a folder is not saved.
+- If the archive folder can't be reached (an unplugged drive), holds no folder
+  named like a model folder, or now overlaps a model folder, the check says so
+  and the last results stay.
 
 ### Previews from other sources
 
@@ -1510,7 +1515,7 @@ Every field is optional; only the fields present in the request are updated.
 - `fallbackHuggingFace`, `fallbackAiToolkitFolders`: a list or a string separated by `;` or new lines. Hugging Face authors or `owner/name` repos; folders that hold ai-toolkit runs
 - `fallbackOwnCreator`: string, the creator name your own trainings are filed under
 - `customPaths`: object keyed by model type (`checkpoint|lora|vae|unet|embedding`); a value is a list of paths or a string separated by `;` or new lines. Only the keys present in the request are updated.
-- `archiveFolder`: string, one absolute folder of archived models (`""` clears it). It is checked like a custom path: it must exist and not be a whole drive, or it is left out and `pathWarnings` says why.
+- `archiveFolder`: string, one absolute folder of archived models (`""` clears it). It is checked like a custom path: it must exist, not be a whole drive, and not be, lie inside or hold a model folder, or it is left out and `pathWarnings` says why.
 
 A newly added custom path must be an existing absolute folder and not a whole
 drive or the filesystem root. Paths that fail this are left out of the saved
@@ -1547,9 +1552,11 @@ Response: `jobId`, or HTTP 409 as above.
 The archive pass only reads the archive's `.civitai.info` files. Its items are
 saved in `archive_check.json` in the data folder, never in `last_check.json`, and
 a check without `includeArchive` keeps them. The job's `summary` then carries
-`archive` (when the archive was last checked, with its counts) or, when the
-folder can't be reached, `archiveError` and the saved results stay. A stopped
-archive pass saves nothing.
+`archive` (when the archive was last checked, with its counts; `withUpdates` is
+the archived-only models with a new version Updates shows, after Hide). When the
+folder can't be reached, holds no folder named like a model folder, or overlaps a
+model folder, it also carries `archiveError` and the saved results stay. A
+stopped archive pass saves nothing.
 
 The job is seeded with every item of the previous check so the panel keeps
 showing them (marked provisional) while models are re-checked. Once the job has
@@ -1630,6 +1637,9 @@ version is represented only by a valid `.civitai.info` sidecar. `modelPath` is
 the file the entry was found through (the sidecar, for a metadata-only entry);
 `filePath` is always the weights file, where it would be for a metadata-only
 entry, with the extension the sidecar names (`.safetensors` when it names none).
+`archived` marks a file in the archive folder; a version on this drive that is
+also archived carries `alsoArchived` (the archive file's name), and `infoOnly`
+when only its `.civitai.info` is on this drive.
 
 #### `GET /warp-studio/updater/last-check`
 
@@ -1640,8 +1650,9 @@ Returns `sidecarWarnings` and `data`:
 - while a check is running: `jobId`, `checkedAt`, `summary`, `itemCount`, `inProgress: true`
 - otherwise the saved check: `jobId` (always `cached`), `checkedAt`, `summary`,
   `itemCount`, `inProgress: false`, `filesChanged`, `filesAdded`, `filesRemoved`,
-  and `archive`: when the archive was last checked (`checkedAt`) with its counts,
-  or `null` when there is no archive folder or no saved archive check for it
+  and `archive`: when the archive was last checked (`checkedAt`) with its counts
+  (`withUpdates` as in the check job's summary), or `null` when there is no
+  archive folder or no saved archive check for it
 
 The saved check is loaded as a job with id `cached`, so its items can be paged
 through `GET /warp-studio/updater/jobs/cached/items`.

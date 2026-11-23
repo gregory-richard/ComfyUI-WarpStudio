@@ -92,8 +92,16 @@ export function infoHtml(lines, action, escapeHtml) {
 }
 
 /**
+ * The archive folder the server kept, from a config answer (GET or POST
+ * /config). A folder it refused is not in it, so the ⋯ menu doesn't offer it.
+ */
+export function savedArchiveFolder(answer) {
+  return String(answer?.config?.archiveFolder || "").trim();
+}
+
+/**
  * The items of the Updates tab's ⋯ menu. Check with archive only appears once
- * an archive folder is set; both are disabled while a job runs.
+ * an archive folder is saved; both are disabled while a job runs.
  */
 export function moreMenuItems({ archiveFolder, busy }) {
   const disabled = Boolean(busy);
