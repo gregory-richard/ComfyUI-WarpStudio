@@ -151,7 +151,10 @@ title and version from the file name when it follows `creator - title - version
 The toolbar has 🔍, **Filter** and **Sort**. 🔍 opens the search, which matches
 name, creator, version and Civitai's model name, and stays lit while it holds
 text. **Filter** narrows by base model. **Sort** groups by base or not at all
-and orders by name or by what is newest on disk. A base band folds when you
+and orders by name, by what is newest on disk, or by Civitai's numbers: **Most
+downloaded**, **Most liked** or **Most comments**. Those come from the last
+Check for Updates, and each card then shows its number. Models Civitai has no
+numbers for come last. A base band folds when you
 click its header, and stays folded after a reload. The band that matches the
 model wired into the target node is marked **for this workflow** and comes
 first; it follows you when you switch workflows.
@@ -224,18 +227,31 @@ base model's folder; when no naming model is set, it keeps Civitai's file name.
 Most adult models need a Civitai API key to download. Set it under **Warp Studio**
 → **Civitai Network** → **API Key**; it is sent only to Civitai, over https.
 
-**Check for Updates** and **Fetch Missing Metadata** sit at the top of **Updates**
-and **Issues**. The first scans and compares; with fresh saved results it shows
-"Results from … ago" with **Check again** for a few seconds instead. The second
-only downloads sidecars and previews for models that lack them. Both can be
-paused, resumed and stopped, and survive a page reload. The toolbar has
+**Check for Updates** and a **⋯** menu sit at the top of **Updates** and
+**Issues**. **Check for Updates** scans and compares; with fresh saved results it
+shows "Results from … ago" with **Check again** for a few seconds instead. The
+**⋯** menu holds **Fetch Missing Metadata**, which only downloads sidecars and
+previews for models that lack them, and, once an archive folder is set,
+**Check with archive**. Jobs can be paused, resumed and stopped, and survive a
+page reload. The toolbar has
 **Filter** (types, bases, hidden), **Sort** (grouping, order, page size) and ⓘ,
 which holds when it was last checked, the counts, "Changes detected" and
 **Check again**. **Rename** has **Filter** only. The list stays still while a
 check runs. Any release you don't want can be hidden.
 
-The API key, cache time, extra model folders and how mature models show are in
-the settings, under **Warp Studio** in the groups that start with "Civitai".
+**Check with archive** is for models you moved to another drive. Set the folder
+under **Warp Studio** → **Civitai Path Sources** → **Archive Folder**. The check
+runs as usual, then looks up every archived model too: about 7 minutes more for
+1,100 of them. It only reads. Archived models whose new version is out show in
+**Updates** marked **Archived**, with **Download** (to this drive) and **Hide**.
+A version you have in the archive is never offered as new. The same version on
+both drives is listed in **Issues** as **Also in archive**; removing a copy is up
+to you. The results are kept until the next **Check with archive**, so a plain
+check doesn't drop them, and the ⓘ says when the archive was last checked.
+
+The API key, cache time, extra model folders, the archive folder and how mature
+models show are in the settings, under **Warp Studio** in the groups that start
+with "Civitai".
 
 ### Previews from other sources
 
@@ -291,7 +307,9 @@ Warp Studio talks to the internet only for the features below, and only to these
 | Renaming | Nothing: it runs a local model through ComfyUI's own queue | |
 
 On your computer, Warp Studio reads, moves and deletes files only inside
-ComfyUI's model folders, and Delete sends them to the Recycle Bin. **Show in
+ComfyUI's model folders and the extra folders you added, and Delete sends them to
+the Recycle Bin. The archive folder is only read, for its `.civitai.info` files:
+nothing there is written, renamed or deleted. **Show in
 folder** works only in a browser on the computer ComfyUI runs on. Every route
 but the thumbnail asks for a header that only the ComfyUI page sends, and refuses
 requests from other sites. That holds for ordinary web pages, not for a DNS
