@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
@@ -784,14 +783,14 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
     for local_version in local_versions:
         version_id = local_version.get("versionId", "")
         if local_version.get("archived") and version_id and version_id not in archived_names:
-            archived_names[version_id] = os.path.basename(
+            archived_names[version_id] = _filename(
                 local_version.get("filePath") or local_version.get("modelPath") or ""
             )
     for local_version in local_versions:
         version_id = local_version.get("versionId", "")
         if not local_version.get("archived") and version_id in archived_names:
             local_version["alsoArchived"] = archived_names[version_id]
-    archived_only = all(version.get("archived") for version in local_versions)
+    archived_only = bool(local_versions) and all(version.get("archived") for version in local_versions)
 
     # A local version without a date cannot be compared, and an empty newest
     # date would make every other release look new. Civitai reports the date
