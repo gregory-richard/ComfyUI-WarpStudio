@@ -135,6 +135,9 @@ def register_routes(
         path_warnings = _drop_refused_custom_paths(
             incoming, config_store.get().get("customPaths")
         )
+        path_warnings += _drop_refused_archive_folder(
+            incoming, config_store.get().get("archiveFolder", "")
+        )
         updated = config_store.update(incoming)
         public = dict(updated)
         public["apiKey"] = ""
@@ -479,6 +482,10 @@ def _normalize_config_payload(payload: dict) -> dict:
         creator = payload.get("fallbackOwnCreator")
         incoming["fallbackOwnCreator"] = creator if isinstance(creator, str) else ""
 
+    if "archiveFolder" in payload:
+        archive_folder = payload.get("archiveFolder")
+        incoming["archiveFolder"] = archive_folder.strip() if isinstance(archive_folder, str) else ""
+
     if "customPaths" in payload:
         custom = payload.get("customPaths")
         if isinstance(custom, dict):
@@ -531,6 +538,25 @@ def _drop_refused_custom_paths(incoming: dict, stored_paths=None) -> list[str]:
                 kept.append(entry)
         custom_paths[model_type] = kept
     return warnings
+
+
+def _drop_refused_archive_folder(incoming: dict, stored_folder: str = "") -> list[str]:
+    """Remove a newly set archive folder that is not a real, absolute folder.
+
+    Like the custom paths, the stored value is kept as it is: the panel sends
+    every setting on each sync, and an archive drive that is unplugged must not
+    be forgotten. An empty value (no archive) is always allowed.
+    """
+    folder = incoming.get("archiveFolder")
+    if not isinstance(folder, str) or not folder.strip():
+        return []
+    if folder.strip().lower() == str(stored_folder or "").strip().lower():
+        return []
+    problem = custom_path_problem(folder)
+    if not problem:
+        return []
+    del incoming["archiveFolder"]
+    return [f"Archive folder {folder} was not saved: {problem}"]
 
 
 def _cached_check_items(cache_data) -> list[dict]:
