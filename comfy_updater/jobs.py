@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
@@ -163,7 +164,12 @@ class JobManager:
             kept: list[dict] = []
             for item in job.items:
                 key = str(item.get("modelPath") or "").lower()
-                if item.get("_seeded") and item.get("modelType") in checked_types and key not in current_paths:
+                if (
+                    item.get("_seeded")
+                    and not item.get("archived")
+                    and item.get("modelType") in checked_types
+                    and key not in current_paths
+                ):
                     job.seededPaths.discard(key)
                     continue
                 kept.append(item)
@@ -689,6 +695,9 @@ def _group_items_by_model(
 
     for item in items:
         key = str(item.get("modelId") or "")
+        if item.get("archived") and not key:
+            # An archived file Civitai could not place would only be noise.
+            continue
         if not key:
             key = item.get("modelUrl") or ""
         if not key:
@@ -738,6 +747,7 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
                     "modelPath": member.get("modelPath", ""),
                     "filePath": _file_path(member),
                     "metadataOnly": bool(member.get("metadataOnly")),
+                    "archived": bool(member.get("archived")),
                     "previewUrl": member.get("localPreviewUrl", ""),
                     "previewType": member.get("localPreviewType", "image"),
                     "fallbackSource": member.get("fallbackSource", ""),
@@ -767,6 +777,21 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
                     "availability": remote_version.get("availability", ""),
                     **_paid_access_now(remote_version),
                 }
+
+    # The same release held on the drive and in the archive is a duplicate:
+    # the drive copy is flagged with the archived file's name.
+    archived_names: dict[str, str] = {}
+    for local_version in local_versions:
+        version_id = local_version.get("versionId", "")
+        if local_version.get("archived") and version_id and version_id not in archived_names:
+            archived_names[version_id] = os.path.basename(
+                local_version.get("filePath") or local_version.get("modelPath") or ""
+            )
+    for local_version in local_versions:
+        version_id = local_version.get("versionId", "")
+        if not local_version.get("archived") and version_id in archived_names:
+            local_version["alsoArchived"] = archived_names[version_id]
+    archived_only = all(version.get("archived") for version in local_versions)
 
     # A local version without a date cannot be compared, and an empty newest
     # date would make every other release look new. Civitai reports the date
@@ -805,7 +830,14 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
     primary_any = primary_visible or (hidden_versions[0] if hidden_versions else {})
     local_preview = next((version for version in local_versions if version.get("previewUrl")), {})
     nsfw = any(bool(member.get("nsfw")) for member in members)
-    issue_count = sum(1 for version in local_versions if version.get("status") in ISSUE_STATUSES)
+    # Archived files never count as issues; a drive copy of an archived
+    # release does, once.
+    issue_count = sum(
+        1
+        for version in local_versions
+        if not version.get("archived")
+        and (version.get("status") in ISSUE_STATUSES or version.get("alsoArchived"))
+    )
 
     # A model page can carry releases on several base models, so the card is
     # filed under the base of the release it is headlining, and every row still
@@ -835,6 +867,7 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
         # provisional; one whose files were re-checked already is final.
         "isProvisional": provisional and any(member.get("_seeded") for member in members),
         "issueCount": issue_count,
+        "archived": archived_only,
         "hasUpdate": bool(new_versions),
         "hasHiddenUpdates": bool(hidden_versions),
         "hasAnyUpdate": bool(new_versions or hidden_versions),
@@ -882,6 +915,7 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
             "modelPath": item.get("modelPath", ""),
             "filePath": _file_path(item),
             "metadataOnly": bool(item.get("metadataOnly")),
+            "archived": False,
             "previewUrl": item.get("localPreviewUrl", ""),
             "previewType": item.get("localPreviewType", "image"),
             "fallbackSource": item.get("fallbackSource", ""),
@@ -898,6 +932,7 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
         "modelUrl": item.get("modelUrl", ""),
         "isProvisional": provisional and bool(item.get("_seeded")),
         "issueCount": 1 if item.get("status") in ISSUE_STATUSES else 0,
+        "archived": False,
         "hasUpdate": False,
         "hasHiddenUpdates": False,
         "hasAnyUpdate": False,
