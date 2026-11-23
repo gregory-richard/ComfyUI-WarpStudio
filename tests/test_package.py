@@ -42,7 +42,8 @@ def test_v3_also_turns_on_with_the_new_variable(package_loader, monkeypatch):
 
 def test_pyproject_identity():
     text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'name = "warp-studio"' in text and 'version = "1.0.0"' in text
+    version = (PROJECT_ROOT / "version.txt").read_text(encoding="utf-8").strip()
+    assert 'name = "warp-studio"' in text and f'version = "{version}"' in text
     assert 'DisplayName = "Warp Studio"' in text
     assert "simplifies model management, streamlines workflows, and makes prompting easier" in text
 

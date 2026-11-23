@@ -2,7 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.0] - 2026-11-23
+
+### Security
+
+- **The Prompt Writer's and the Gallery's routes now need the panel's header**, as the updater's always did. Before, another web page open in the same browser could save a Prompt Writer key, or have ComfyUI send a prompt with pictures from its output folder to an address of that page's choosing. All `/warp-studio/llm/*` routes, `/warp-studio/loras`, `/models`, `/embeddings`, `/loras/missing` and `/model/base` refuse a request without `X-Civitai-Updater: 1`, a cross-site request, and a POST that isn't `application/json`
+- **The Prompt Writer sends only to providers you chose**: NanoGPT, a server on this computer, or a host you saved a key for under ⚙. ComfyUI's settings can be changed by other code, so an address there alone is no longer enough. Another provider shows "… has no saved key"; save its key once (any text, for one that needs none) and it works as before. Addresses with a user name, a backslash, `?` or `#` are refused, and so is a redirect from a provider to this computer or the local network
+- **Model names stay inside the model folders**: a name with a drive, a leading slash or a `..` step finds nothing, and a lookup that answers with a path outside ComfyUI's folders for that type is refused. This covers `/warp-studio/model/base`, the thumbnails and the LoRA tags in prompts
+- **Thumbnails** refuse requests from other sites, so a web page can't use them to learn which models you have (when ComfyUI is opened on this computer or over https; browsers don't say where a request came from over plain http on a LAN), and answer only for a model file's name
+- A **Network and privacy** section in the README lists every host Warp Studio talks to and what it sends
 
 ### Added
 
@@ -18,6 +26,8 @@ All notable changes to this project will be documented in this file.
 - **Download** and **Replace** on the Updates cards. Downloads run on the server, one at a time, with a queue, **Stop**, progress in the job bar and a SHA-256 check. Replace sends the old version to the Recycle Bin only after the new file is checked and in place. A release in early access shows **Early access**. Most adult models need the Civitai API key.
 - **Include downloadable** in the Gallery's **Filter**, offered only when some LoRAs have an info file here but no weights: they show as dimmed cards with **Download**, which puts the file next to the info file under the same name.
 - **Delete** on Gallery cards: **Delete?** for four seconds, then the weights and their sidecars go to the Recycle Bin, weights first.
+- **Check with archive**, in the new **⋯** menu once you set an **Archive Folder** (Warp Studio → Civitai Path Sources). It runs the normal check, then looks up the models you moved to another drive, from their `.civitai.info` files. It takes about 7 minutes more for 1,100 models and only reads: nothing in the archive is written, renamed or deleted. New versions of archived models show in Updates marked **Archived**, with **Download** (to this drive) and **Hide**. The same version on both drives is listed in Issues as **Duplicate**, and an info file left on this drive for a model in the archive as **Info only**. The results are kept until the next Check with archive
+- **Gallery sorts by Civitai's numbers**: **Most downloaded**, **Most liked** and **Most comments**, with the number on each card. Check for Updates fills them in, so run one check after updating
 
 ### Changed
 
@@ -27,6 +37,8 @@ All notable changes to this project will be documented in this file.
 - **Check for Updates** and **Fetch Missing Metadata** moved to the top of Updates and Issues. On fresh saved results, Check for Updates shows "Results from … ago" with **Check again** for about five seconds. The "cached" pill and the status line are gone
 - The job bar sits under the tabs, in every tab, only while a job runs. Errors stay inline
 - Updates rows are one line again: **Download**, **Replace** and **Hide** sit at the right end, and a long version name ends in "…"
+- **Fetch Missing Metadata** moved into the **⋯** menu next to Check for Updates. The check already writes the info and preview of every file it identifies; the fetch is for files Civitai doesn't serve and for re-fetching existing info
+- The Hide list's restore button now says **Unhide**
 
 ### Fixed
 

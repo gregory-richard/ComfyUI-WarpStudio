@@ -99,14 +99,43 @@ export function stackEntries(entries) {
   return [...stacks.values()].map((stack) => ({ ...stack, members: stack.members.sort(newest) }));
 }
 
+export const STAT_SORTS = ["downloads", "likes", "comments"];
+
+/** The shown member's number for a stat sort, or null when there is none. */
+export function statOf(stack, sort, stats) {
+  const id = stack.members[0].model_id;
+  const value = id ? stats?.get?.(String(id))?.[sort] : null;
+  return Number.isFinite(value) ? value : null;
+}
+
+/** A count for a card badge: 950, 11.6k, 1.2M. Not a count gives "". */
+export function formatCount(n) {
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return "";
+  if (n < 1000) return String(Math.round(n));
+  const tenths = (value) => Math.round(value * 10) / 10;
+  const k = tenths(n / 1000);
+  if (k < 1000) return `${k}k`;
+  return `${tenths(n / 1e6)}M`;
+}
+
 /** Stacks as bands: by base (the ones that fit first, then the biggest) or as
- * one band. Within a band, by the shown member's title or by when it was added. */
-export function arrange(stacks, { groupBy = "base", sort = "name", fitting = new Set() } = {}) {
+ * one band. Within a band, by the shown member's title, by when it was added, or
+ * by a Civitai number (highest first; stacks without one last, by name). */
+export function arrange(
+  stacks,
+  { groupBy = "base", sort = "name", fitting = new Set(), stats = new Map() } = {}
+) {
   const shown = (stack) => stack.members[0];
   const byName = (x, y) =>
     fold(cardTitle(shown(x))).localeCompare(fold(cardTitle(shown(y)))) || byId(shown(x), shown(y));
   const byAdded = (x, y) => time(shown(y).added) - time(shown(x).added) || byName(x, y);
-  const order = sort === "newest" ? byAdded : byName;
+  const byStat = (x, y) => {
+    const nx = statOf(x, sort, stats);
+    const ny = statOf(y, sort, stats);
+    if (nx === null || ny === null) return (nx === null) - (ny === null) || byName(x, y);
+    return ny - nx || byName(x, y);
+  };
+  const order = sort === "newest" ? byAdded : STAT_SORTS.includes(sort) ? byStat : byName;
   if (groupBy === "none") {
     return [{ base: null, fits: false, stacks: [...stacks].sort(order) }];
   }

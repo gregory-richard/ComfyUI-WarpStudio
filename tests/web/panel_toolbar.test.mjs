@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   infoHtml,
   menuHtml,
+  moreMenuItems,
+  savedArchiveFolder,
   toolbarHtml,
   updateToolbar,
   wireToolbar,
@@ -419,4 +421,47 @@ test("the info button opens its popover like Filter and Sort", () => {
   f.click("info");
   assert.equal(infoMenu.hidden, false);
   assert.deepEqual(opened, ["info"]);
+});
+
+test("the ⋯ menu always offers Fetch Missing Metadata and offers the archive check only with a folder", () => {
+  assert.deepEqual(
+    moreMenuItems({ archiveFolder: "", busy: false }).map((i) => i.key),
+    ["scan"]
+  );
+  assert.deepEqual(
+    moreMenuItems({ archiveFolder: "  ", busy: false }).map((i) => i.key),
+    ["scan"]
+  );
+  const items = moreMenuItems({ archiveFolder: "D:\old", busy: false });
+  assert.deepEqual(
+    items.map((i) => [i.key, i.label, i.disabled]),
+    [
+      ["scan", "Fetch Missing Metadata", false],
+      ["archive", "Check with archive", false],
+    ]
+  );
+});
+
+test("a running job disables every ⋯ menu item", () => {
+  const items = moreMenuItems({ archiveFolder: "D:\old", busy: true });
+  assert.equal(items.length, 2);
+  assert.ok(items.every((i) => i.disabled));
+});
+
+test("the ⋯ menu offers the archive check for the folder the server kept, not the one typed", () => {
+  const keys = (answer) =>
+    moreMenuItems({ archiveFolder: savedArchiveFolder(answer), busy: false }).map((i) => i.key);
+  assert.deepEqual(keys({ config: { archiveFolder: "Z:\\models" }, pathWarnings: [] }), [
+    "scan",
+    "archive",
+  ]);
+  // A refused folder is left out: the answer holds the stored one, here none.
+  const refused = {
+    config: { archiveFolder: "" },
+    pathWarnings: ["Archive folder D:\\models was not saved: it overlaps a model folder."],
+  };
+  assert.deepEqual(keys(refused), ["scan"]);
+  assert.deepEqual(keys({}), ["scan"]);
+  assert.deepEqual(keys(null), ["scan"]);
+  assert.equal(savedArchiveFolder({ config: { archiveFolder: "  Z:\\models " } }), "Z:\\models");
 });

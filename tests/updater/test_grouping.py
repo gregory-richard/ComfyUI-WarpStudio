@@ -198,6 +198,155 @@ class GroupingTests(unittest.TestCase):
         self.assertEqual([], result["groups"])
         self.assertEqual("", result["items"][0]["groupPrimary"])
 
+    # --- archive folder -------------------------------------------------
+
+    @staticmethod
+    def _remote(version_id, date):
+        return {
+            "versionId": version_id, "versionName": f"v{version_id}", "versionDate": date,
+            "baseModel": "SDXL 1.0", "previewUrl": "", "previewType": "image",
+            "versionUrl": "", "downloadUrl": "",
+        }
+
+    def _archived(self, model_id, version_id, date, status="ok", remote=None, name="Model"):
+        return {
+            "modelId": model_id, "modelName": name, "modelType": "lora",
+            "creatorName": "artist", "modelUrl": f"https://civitai.red/models/{model_id}",
+            "modelPath": f"E:\\archive\\{name}-{version_id}.safetensors.civitai.info",
+            "filePath": f"E:\\archive\\{name}-{version_id}.safetensors",
+            "baseModel": "SDXL 1.0", "localVersionId": version_id, "localVersionName": f"v{version_id}",
+            "localVersionDate": date, "remoteVersions": remote or [], "status": status,
+            "archived": True, "metadataOnly": True,
+        }
+
+    def _on_d(self, model_id, version_id, date, remote=None, name="Model"):
+        entry = item(model_id, name, "lora", "SDXL 1.0", local_date=date)
+        entry["localVersionId"] = version_id
+        entry["modelPath"] = f"C:\\models\\{name}-{version_id}.safetensors"
+        entry["remoteVersions"] = remote or []
+        return entry
+
+    def _groups(self, items, **kwargs):
+        from comfy_updater.jobs import _group_items_by_model
+        return _group_items_by_model(items, **kwargs)
+
+    def test_a_version_in_the_archive_is_not_offered_as_new(self) -> None:
+        remote = [self._remote("1", "2026-01-01T00:00:00Z"), self._remote("2", "2026-03-01T00:00:00Z")]
+        groups = self._groups([
+            self._on_d("m1", "1", "2026-01-01T00:00:00Z", remote),
+            self._archived("m1", "2", "2026-03-01T00:00:00Z", remote=remote),
+        ])
+
+        self.assertEqual(1, len(groups))
+        self.assertFalse(groups[0]["hasUpdate"])
+        self.assertFalse(groups[0]["archived"])
+
+    def test_an_archive_only_model_with_a_newer_release_is_an_archived_update(self) -> None:
+        remote = [self._remote("1", "2026-01-01T00:00:00Z"), self._remote("2", "2026-03-01T00:00:00Z")]
+        groups = self._groups([self._archived("m1", "1", "2026-01-01T00:00:00Z", remote=remote)])
+
+        self.assertTrue(groups[0]["archived"])
+        self.assertTrue(groups[0]["hasUpdate"])
+        self.assertEqual(0, groups[0]["issueCount"])
+        self.assertTrue(groups[0]["localVersions"][0]["archived"])
+
+    def test_archived_lookup_errors_never_become_issues(self) -> None:
+        groups = self._groups([
+            self._archived("m1", "1", "2026-01-01T00:00:00Z", status="error"),
+            self._archived("m2", "2", "2026-01-01T00:00:00Z", status="not_found"),
+        ])
+
+        self.assertEqual([0, 0], [g["issueCount"] for g in groups])
+        result = self.manager
+        self.job.items = [self._archived("m1", "1", "2026-01-01T00:00:00Z", status="error")]
+        self.assertEqual(0, result.get_items("job-1", mode="issues", limit=50)["total"])
+
+    def test_the_same_version_on_d_and_in_the_archive_is_an_issue(self) -> None:
+        groups = self._groups([
+            self._on_d("m1", "7", "2026-01-01T00:00:00Z"),
+            self._archived("m1", "7", "2026-01-01T00:00:00Z", name="Copy"),
+        ])
+
+        group = groups[0]
+        self.assertFalse(group["archived"])
+        self.assertEqual(1, group["issueCount"])
+        by_archived = {v["archived"]: v for v in group["localVersions"]}
+        self.assertEqual("Copy-7.safetensors", by_archived[False]["alsoArchived"])
+        self.assertNotIn("alsoArchived", by_archived[True])
+        # The drive holds the weights: a duplicate, not an info file alone.
+        self.assertNotIn("infoOnly", by_archived[False])
+
+    def _info_stub_on_d(self, model_id, version_id, date, name="Model"):
+        """What an archived model leaves behind on D: its .civitai.info, no weights."""
+        entry = self._on_d(model_id, version_id, date, name=name)
+        entry["metadataOnly"] = True
+        entry["modelPath"] = f"C:\\models\\{name}-{version_id}.civitai.info"
+        entry["filePath"] = f"C:\\models\\{name}-{version_id}.safetensors"
+        return entry
+
+    def test_an_info_file_on_d_of_an_archived_version_is_an_info_only_issue(self) -> None:
+        groups = self._groups([
+            self._info_stub_on_d("m1", "7", "2026-01-01T00:00:00Z"),
+            self._archived("m1", "7", "2026-01-01T00:00:00Z", name="Copy"),
+        ])
+
+        group = groups[0]
+        self.assertFalse(group["archived"])
+        self.assertEqual(1, group["issueCount"])
+        by_archived = {v["archived"]: v for v in group["localVersions"]}
+        self.assertEqual("Copy-7.safetensors", by_archived[False]["alsoArchived"])
+        self.assertTrue(by_archived[False]["infoOnly"])
+        self.assertNotIn("infoOnly", by_archived[True])
+
+    def test_duplicates_and_info_only_files_both_show_in_issues(self) -> None:
+        self.job.items = [
+            self._on_d("m1", "7", "2026-01-01T00:00:00Z"),
+            self._archived("m1", "7", "2026-01-01T00:00:00Z", name="Copy"),
+            self._info_stub_on_d("m2", "8", "2026-01-01T00:00:00Z", name="Stub"),
+            self._archived("m2", "8", "2026-01-01T00:00:00Z", name="Moved"),
+        ]
+
+        result = self.manager.get_items("job-1", mode="issues", limit=50)
+
+        self.assertEqual(2, result["total"])
+        self.assertEqual(2, result["modeCounts"]["issues"])
+        rows = {
+            v["alsoArchived"]: bool(v.get("infoOnly"))
+            for card in result["items"]
+            for v in card["localVersions"]
+            if not v["archived"]
+        }
+        self.assertEqual({"Copy-7.safetensors": False, "Moved-8.safetensors": True}, rows)
+
+    def test_archived_items_without_a_model_id_are_dropped(self) -> None:
+        stray = self._archived("", "1", "2026-01-01T00:00:00Z", status="not_found")
+        stray["modelUrl"] = ""
+
+        self.assertEqual([], self._groups([stray]))
+
+    def test_hidden_archived_versions_stay_hidden(self) -> None:
+        # "Archived" in the Hide list means hidden; it is unrelated to the archive folder.
+        remote = [self._remote("1", "2026-01-01T00:00:00Z"), self._remote("2", "2026-03-01T00:00:00Z")]
+        groups = self._groups(
+            [self._archived("m1", "1", "2026-01-01T00:00:00Z", remote=remote)],
+            archived_versions={"m1": {"2"}},
+        )
+
+        self.assertFalse(groups[0]["hasUpdate"])
+        self.assertTrue(groups[0]["hasHiddenUpdates"])
+
+    def test_seed_sync_keeps_archived_seeds(self) -> None:
+        archived = self._archived("m1", "1", "2026-01-01T00:00:00Z")
+        archived["_seeded"] = True
+        gone = self._on_d("m2", "2", "2026-01-01T00:00:00Z")
+        gone["_seeded"] = True
+        self.job.items = [archived, gone]
+        self.job.seededPaths = {archived["modelPath"].lower(), gone["modelPath"].lower()}
+
+        self.manager.sync_seeds_with_disk("job-1", ["lora"], set(), [])
+
+        self.assertEqual([archived], self.job.items)
+
 
 if __name__ == "__main__":
     unittest.main()

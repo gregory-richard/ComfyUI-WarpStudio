@@ -29,6 +29,9 @@ DEFAULT_CONFIG = {
     "fallbackHuggingFace": ["malcolmrey"],
     "fallbackAiToolkitFolders": [],
     "fallbackOwnCreator": "",
+    # A folder (e.g. a drive) old models are moved to, laid out like the models
+    # folder. Only ever read; empty means no archive.
+    "archiveFolder": "",
     "customPaths": {model_type: [] for model_type in SUPPORTED_MODEL_TYPES},
 }
 
@@ -95,6 +98,7 @@ class ConfigStore:
             "namingModel",
             "fallbackCivarchive",
             "fallbackOwnCreator",
+            "archiveFolder",
         ):
             if key in incoming:
                 merged[key] = incoming[key]
@@ -149,6 +153,9 @@ class ConfigStore:
         if not isinstance(merged["fallbackOwnCreator"], str):
             merged["fallbackOwnCreator"] = ""
         merged["fallbackOwnCreator"] = merged["fallbackOwnCreator"].strip()[:100]
+        if not isinstance(merged["archiveFolder"], str):
+            merged["archiveFolder"] = ""
+        merged["archiveFolder"] = merged["archiveFolder"].strip()
 
         return merged
 

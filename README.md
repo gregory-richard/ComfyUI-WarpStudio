@@ -151,7 +151,10 @@ title and version from the file name when it follows `creator - title - version
 The toolbar has 🔍, **Filter** and **Sort**. 🔍 opens the search, which matches
 name, creator, version and Civitai's model name, and stays lit while it holds
 text. **Filter** narrows by base model. **Sort** groups by base or not at all
-and orders by name or by what is newest on disk. A base band folds when you
+and orders by name, by what is newest on disk, or by Civitai's numbers: **Most
+downloaded**, **Most liked** or **Most comments**. Those come from the last
+Check for Updates, and each card then shows its number. Models Civitai has no
+numbers for come last. A base band folds when you
 click its header, and stays folded after a reload. The band that matches the
 model wired into the target node is marked **for this workflow** and comes
 first; it follows you when you switch workflows.
@@ -224,18 +227,33 @@ base model's folder; when no naming model is set, it keeps Civitai's file name.
 Most adult models need a Civitai API key to download. Set it under **Warp Studio**
 → **Civitai Network** → **API Key**; it is sent only to Civitai, over https.
 
-**Check for Updates** and **Fetch Missing Metadata** sit at the top of **Updates**
-and **Issues**. The first scans and compares; with fresh saved results it shows
-"Results from … ago" with **Check again** for a few seconds instead. The second
-only downloads sidecars and previews for models that lack them. Both can be
-paused, resumed and stopped, and survive a page reload. The toolbar has
+**Check for Updates** and a **⋯** menu sit at the top of **Updates** and
+**Issues**. **Check for Updates** scans and compares; with fresh saved results it
+shows "Results from … ago" with **Check again** for a few seconds instead. The
+**⋯** menu holds **Fetch Missing Metadata**, which only downloads sidecars and
+previews for models that lack them, and, once an archive folder is set,
+**Check with archive**. Jobs can be paused, resumed and stopped, and survive a
+page reload. The toolbar has
 **Filter** (types, bases, hidden), **Sort** (grouping, order, page size) and ⓘ,
 which holds when it was last checked, the counts, "Changes detected" and
 **Check again**. **Rename** has **Filter** only. The list stays still while a
 check runs. Any release you don't want can be hidden.
 
-The API key, cache time, extra model folders and how mature models show are in
-the settings, under **Warp Studio** in the groups that start with "Civitai".
+**Check with archive** is for models you moved to another drive. Set the folder
+under **Warp Studio** → **Civitai Path Sources** → **Archive Folder**. The check
+runs as usual, then looks up every archived model too: about 7 minutes more for
+1,100 of them. It only reads. Archived models whose new version is out show in
+**Updates** marked **Archived**, with **Download** (to this drive) and **Hide**.
+A version you have in the archive is never offered as new. The same version on
+both drives is listed in **Issues** as **Duplicate**, and an info file left on
+this drive for a model in the archive as **Info only**; removing them is up to
+you. The results are kept until the next **Check with archive**, so a plain
+check doesn't drop them, and the ⓘ says when the archive was last checked. The
+archive folder can't be a model folder, or lie inside or hold one.
+
+The API key, cache time, extra model folders, the archive folder and how mature
+models show are in the settings, under **Warp Studio** in the groups that start
+with "Civitai".
 
 ### Previews from other sources
 
@@ -277,6 +295,29 @@ workflows that use the old names will show those models as missing; re-pick
 them. Every move is recorded in `ComfyUI/user/warp-studio/updater/rename_log.jsonl`.
 What is never renamed, and the rest of the details, are in the
 [wiki](WIKI.md#warp-studio-panel).
+
+## Network and privacy
+
+Warp Studio talks to the internet only for the features below, and only to these hosts:
+
+| Feature | Goes to | What is sent |
+| --- | --- | --- |
+| Updates, metadata, previews | Civitai (`civitai.com`, `civitai.red`) | Your files' SHA-256 hashes and the Civitai ids in their info files. Your Civitai API key, if you set one, goes to Civitai and nowhere else |
+| Download and Replace | Civitai, then the public https download host it redirects to | The file request. The key is dropped when the redirect leaves Civitai, and every file is checked against Civitai's SHA-256 |
+| Previews from other sources (off until you set them up) | `huggingface.co`, `*.hf.co`, `civarchive.com`, `c.genur.art` | Hashes, and the author or repo names you entered |
+| Prompt Writer | The AI provider in your settings: NanoGPT, a server on this computer, or a provider you saved a key for under ⚙ | Your idea, the chat so far, the LoRAs you picked, the system prompt (a `.txt` from the folder you set) and the pictures you attach. Pictures come only from ComfyUI's input, output and temp folders. A key goes only to the host it was saved for. Plain http only to this computer |
+| Renaming | Nothing: it runs a local model through ComfyUI's own queue | |
+
+On your computer, Warp Studio reads, moves and deletes files only inside
+ComfyUI's model folders and the extra folders you added, and Delete sends them to
+the Recycle Bin. The archive folder is only read, for its `.civitai.info` files:
+nothing there is written, renamed or deleted. **Show in
+folder** works only in a browser on the computer ComfyUI runs on. Every route
+but the thumbnail asks for a header that only the ComfyUI page sends, and refuses
+requests from other sites. That holds for ordinary web pages, not for a DNS
+rebinding attack, which ComfyUI's own server doesn't stop either. ComfyUI has no
+login, so keep it off the internet. The details are in the
+[wiki](WIKI.md#http-api).
 
 ## Example workflow
 

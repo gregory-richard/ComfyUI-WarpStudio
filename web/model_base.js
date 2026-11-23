@@ -3,6 +3,8 @@
 // Both the prompt's completion and the library browser need this, and they must
 // not be able to disagree about what matches what, so it lives in one place.
 
+import { GUARD_HEADERS } from "./request_guard.js";
+
 /** What a LoRA is filed under: what it says it is, else where it sits.
  *
  * base_model comes from the .civitai.info sidecar and means the same thing in
@@ -117,9 +119,9 @@ export async function connectedBase(node) {
 
   let answer = null;
   try {
-    const info = await fetch(`/warp-studio/model/base?name=${encodeURIComponent(name)}`).then((r) =>
-      r.json()
-    );
+    const info = await fetch(`/warp-studio/model/base?name=${encodeURIComponent(name)}`, {
+      headers: GUARD_HEADERS,
+    }).then((r) => r.json());
     if (info.base_model) answer = { name: info.base_model, fromFolder: false };
   } catch {
     /* fall through to the folder */

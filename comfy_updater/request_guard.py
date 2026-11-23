@@ -1,4 +1,4 @@
-"""Reject requests to the updater's HTTP routes that did not come from its own panel.
+"""Reject requests to Warp Studio's HTTP routes that did not come from its own pages.
 
 ComfyUI's server has no authentication, so any web page the user visits can
 send requests to it. The checks below stop those cross-site requests before a
@@ -16,6 +16,7 @@ route reads its body or touches the disk:
 
 from __future__ import annotations
 
+import functools
 from urllib.parse import urlsplit
 
 GUARD_HEADER = "X-Civitai-Updater"
@@ -45,6 +46,25 @@ def request_rejection(method: str, headers, host: str) -> str | None:
             return "Request body must be application/json."
 
     return None
+
+
+def guarded(handler):
+    """Wrap an aiohttp route handler so a request ``request_rejection`` refuses gets a 403.
+
+    Every JSON route of the package uses it: the updater's, the Gallery's and the
+    Prompt Writer's. The thumbnail route cannot, because an ``<img>`` sends no header.
+    """
+
+    @functools.wraps(handler)
+    async def wrapper(request):
+        reason = request_rejection(request.method, request.headers, request.host)
+        if reason:
+            from aiohttp import web
+
+            return web.json_response({"error": reason}, status=403)
+        return await handler(request)
+
+    return wrapper
 
 
 def _same_origin(origin: str, host: str) -> bool:

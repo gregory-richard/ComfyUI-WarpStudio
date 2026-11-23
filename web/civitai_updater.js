@@ -12,10 +12,13 @@ import {
   versionActionsHtml,
   versionKey,
 } from "./model_actions.js";
-import { galleryOnlyBases } from "./gallery_core.js";
-import { infoHtml, menuHtml, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
+import { galleryOnlyBases, STAT_SORTS } from "./gallery_core.js";
+import { archiveResult, checkDoneStatus, issueMessage, rowIssue, rowLabel } from "./check_results.js";
+import { infoHtml, menuHtml, moreMenuItems, savedArchiveFolder, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
+// The server refuses requests without this header (see request_guard.js).
+import { GUARD_HEADERS } from "./request_guard.js";
 
 const TAB_ID = "warp-studio-updater";
 const EXTENSION_NAME = "warpstudio.updater";
@@ -38,6 +41,7 @@ const SETTINGS = {
   useComfyPaths: "WarpStudio.Updater.PathSources.UseComfy",
   useExtraModelPaths: "WarpStudio.Updater.PathSources.UseExtraModelPaths",
   useCustomPaths: "WarpStudio.Updater.PathSources.UseCustom",
+  archiveFolder: "WarpStudio.Updater.ArchiveFolder",
   customCheckpoint: "WarpStudio.Updater.CustomPaths.Checkpoint",
   customLora: "WarpStudio.Updater.CustomPaths.Lora",
   customVae: "WarpStudio.Updater.CustomPaths.VAE",
@@ -49,14 +53,6 @@ const SETTINGS = {
   fallbackHuggingFace: "WarpStudio.Updater.Fallback.HuggingFace",
   fallbackAiToolkitFolders: "WarpStudio.Updater.Fallback.AiToolkitFolders",
   fallbackOwnCreator: "WarpStudio.Updater.Fallback.OwnCreator",
-};
-
-// The row label column fits "No match"; the message line names the source.
-const FALLBACK_LABEL = "Found";
-const FALLBACK_SOURCES = {
-  "ai-toolkit": { phrase: "your ai-toolkit training" },
-  huggingface: { phrase: "Hugging Face" },
-  civarchive: { phrase: "civarchive" },
 };
 
 const GROUP_OPTIONS = [
@@ -73,6 +69,9 @@ const GALLERY_GROUPS = [
 const GALLERY_SORTS = [
   { value: "name", label: "Name" },
   { value: "newest", label: "Newest on disk" },
+  { value: "downloads", label: "Most downloaded" },
+  { value: "likes", label: "Most liked" },
+  { value: "comments", label: "Most comments" },
 ];
 
 /* The Gallery's Group by and Sort, remembered across reloads. */
@@ -128,6 +127,10 @@ const state = {
 
   checkJobId: null,
   checkSummary: null,
+  archiveInfo: null,
+  archiveError: "",
+  // The archive folder the server kept (not the setting as typed): the ⋯ menu offers it.
+  savedArchiveFolder: "",
   cachedAt: null,
   scanSummary: null,
   resultItems: [],
@@ -222,6 +225,8 @@ const state = {
   galleryQuery: "",
   includeDownloadable: false,
   galleryArrange: readGalleryArrange(),
+  // Civitai downloads, likes and comments by model id, for the stat sorts.
+  modelStats: new Map(),
   // An "open the gallery" request that arrived while the panel was not drawn.
   pendingGallery: null,
   // Scroll offset per view, and the view whose pane is showing.
@@ -257,6 +262,7 @@ app.registerExtension({
     { id: SETTINGS.useComfyPaths, name: "Use Comfy Default Paths", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Comfy Defaults"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.useExtraModelPaths, name: "Use extra_model_paths.yaml", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Extra Model Paths"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.useCustomPaths, name: "Use Custom Paths", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Custom Paths"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.archiveFolder, name: "Archive Folder", type: "text", defaultValue: "", tooltip: "A folder of models you moved off this drive. Check with archive, under ⋯ in Updates, looks for new versions of them. Warp Studio only reads its .civitai.info files.", category: ["Warp Studio", "Civitai Path Sources", "Archive Folder"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.customCheckpoint, name: "Checkpoint Paths", type: "text", defaultValue: "", tooltip: "Optional extra checkpoint roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "Checkpoint"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.customLora, name: "LoRA Paths", type: "text", defaultValue: "", tooltip: "Optional extra LoRA roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "LoRA"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.customVae, name: "VAE Paths", type: "text", defaultValue: "", tooltip: "Optional extra VAE roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "VAE"], onChange: () => scheduleSettingsSync() },
@@ -373,7 +379,10 @@ async function renderTab(el) {
         <div id="cu-tb-updates" data-tb-tab="updates"></div>
         <div class="cu-action-bar">
           <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
-          <button id="cu-scan" class="cu-btn cu-btn-ghost cu-tooltip" data-tooltip="Download missing .civitai.info sidecars and preview images. Files Civitai can't serve are looked up on the sources set under Preview Fallback in the settings. Files that already have metadata and a preview are skipped, and nothing is compared for updates.">Fetch Missing Metadata</button>
+          <div class="cu-more">
+            <button id="cu-more" type="button" class="cu-btn cu-btn-ghost" aria-label="More" aria-haspopup="true" aria-expanded="false">⋯</button>
+            <div id="cu-more-menu" class="cu-tb-menu cu-more-menu" hidden></div>
+          </div>
         </div>
         <div id="cu-sidecar-warnings" class="cu-sidecar-warnings"></div>
         <div id="cu-scan-report" class="cu-scan-report"></div>
@@ -447,6 +456,7 @@ async function renderTab(el) {
     app,
     query: () => state.galleryQuery,
     arrange: () => state.galleryArrange,
+    stats: () => state.modelStats,
     includeDownloadable: () => state.includeDownloadable,
     downloads: () => state.downloads,
     canTrash: () => state.canTrash,
@@ -545,6 +555,8 @@ async function loadCachedResults() {
     state.cachedJobId = resp.data.jobId;
     state.checkJobId = resp.data.jobId;
     state.checkSummary = resp.data.summary || null;
+    state.archiveInfo = resp.data.archive || null;
+    state.archiveError = "";
     state.cachedAt = resp.data.checkedAt || null;
     state.cacheFilesChanged = resp.data.filesChanged
       ? { added: resp.data.filesAdded || 0, removed: resp.data.filesRemoved || 0 }
@@ -634,9 +646,60 @@ async function recoverFromLostJob() {
   }
 }
 
+const SCAN_TOOLTIP =
+  "Download missing .civitai.info sidecars and preview images. Files Civitai can't serve are looked up on the sources set under Preview Fallback in the settings. Files that already have metadata and a preview are skipped, and nothing is compared for updates.";
+
+/* The ⋯ menu next to Check for Updates. It is filled each time it opens, so
+   the items follow the archive folder setting and whether a job is running. */
+function bindMoreMenu(root) {
+  const button = root.querySelector("#cu-more");
+  const menu = root.querySelector("#cu-more-menu");
+  const doc = root.ownerDocument;
+  const close = (refocus) => {
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    if (refocus) button.focus();
+  };
+  const open = () => {
+    const items = moreMenuItems({
+      archiveFolder: state.savedArchiveFolder,
+      busy: Boolean(state.currentJobId),
+    });
+    menu.innerHTML =
+      `<div class="cu-filter-panel cu-more-panel">` +
+      items
+        .map((item) => {
+          const title = item.key === "scan" ? ` title="${escapeHtml(SCAN_TOOLTIP)}"` : "";
+          return `<button type="button" class="cu-more-item" data-more="${item.key}"${title}${item.disabled ? " disabled" : ""}>${escapeHtml(item.label)}</button>`;
+        })
+        .join("") +
+      `</div>`;
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+  };
+  button.addEventListener("click", () => (menu.hidden ? open() : close(false)));
+  menu.addEventListener("click", (event) => {
+    const item = event.target.closest && event.target.closest("[data-more]");
+    if (!item || item.disabled) return;
+    close(true);
+    if (item.dataset.more === "scan") startJob("/warp-studio/updater/jobs/scan", "scan");
+    else startJob("/warp-studio/updater/jobs/check-updates", "check-updates", { includeArchive: true });
+  });
+  const onDocClick = (event) => {
+    if (!root.isConnected) return doc.removeEventListener("click", onDocClick);
+    if (!menu.hidden && !event.target.closest("#cu-more, #cu-more-menu")) close(false);
+  };
+  const onKey = (event) => {
+    if (!root.isConnected) return doc.removeEventListener("keydown", onKey);
+    if (event.key === "Escape" && !menu.hidden) close(true);
+  };
+  doc.addEventListener("click", onDocClick);
+  doc.addEventListener("keydown", onKey);
+}
+
 function bindEvents(root) {
   root.querySelector("#cu-check").addEventListener("click", async () => startJob("/warp-studio/updater/jobs/check-updates", "check-updates"));
-  root.querySelector("#cu-scan").addEventListener("click", async () => startJob("/warp-studio/updater/jobs/scan", "scan"));
+  bindMoreMenu(root);
   root.querySelector("#cu-pause").addEventListener("click", async () => togglePauseResume());
   root.querySelector("#cu-stop").addEventListener("click", async () => stopCurrentJob());
   root.querySelector("#cu-roots-toggle").addEventListener("click", () => {
@@ -916,6 +979,12 @@ function infoLines() {
       ? "Check in progress — previous results are shown until each model is re-checked."
       : "Check in progress…");
   }
+  // An archive that could not be checked keeps its last results: both are said.
+  if (state.archiveError) lines.push(state.archiveError);
+  if (state.archiveInfo?.checkedAt) {
+    const found = state.archiveInfo.withUpdates || 0;
+    lines.push(`Archive checked ${timeAgo(state.archiveInfo.checkedAt)} · ${found} with new versions`);
+  }
   const dirty = state.cacheFilesChanged;
   if (dirty) {
     const parts = [];
@@ -926,6 +995,14 @@ function infoLines() {
     lines.push(parts.length ? `Changes detected (${parts.join(", ")})` : "Changes detected");
   }
   return lines;
+}
+
+/* A check that included the archive reports how it went in its summary (see
+   archiveResult). A plain check says nothing new, so the last result stays. */
+function takeArchiveResult(summary) {
+  const next = archiveResult(summary, { info: state.archiveInfo, error: state.archiveError });
+  state.archiveInfo = next.info;
+  state.archiveError = next.error;
 }
 
 function infoPopoverHtml() {
@@ -1028,7 +1105,7 @@ function onToolbarAction(button) {
   startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
 }
 
-async function startJob(endpoint, type) {
+async function startJob(endpoint, type, { includeArchive = false } = {}) {
   if (state.currentJobId) {
     setStatus("A job is already running.", "error");
     return;
@@ -1045,7 +1122,9 @@ async function startJob(endpoint, type) {
     forceRehash,
   };
 
-  if (type === "check-updates" && !state.forceNextRecheck && !state.cacheFilesChanged && !forceRehash && state.cachedAt
+  if (includeArchive) payload.includeArchive = true;
+
+  if (type === "check-updates" && !includeArchive && !state.forceNextRecheck && !state.cacheFilesChanged && !forceRehash && state.cachedAt
       && coversSameScope(modelTypes)) {
     const ttl = Number(getSetting(SETTINGS.cacheTtlMinutes, 240)) * 60 * 1000;
     const age = Date.now() - new Date(state.cachedAt).getTime();
@@ -1181,6 +1260,7 @@ function pollJob(jobId) {
 
       if (state.currentJobType === "check-updates") {
         if (job.summary && Object.keys(job.summary).length > 0) state.checkSummary = job.summary;
+        takeArchiveResult(job.summary);
         if (countChanged) {
           for (const item of state.resultItems) {
             const path = (item.localVersions || [])[0]?.modelPath || "";
@@ -1234,7 +1314,9 @@ function pollJob(jobId) {
           // must run a check instead of serving them as the cache.
           if (status !== "completed") state.forceNextRecheck = true;
           if (job.summary && Object.keys(job.summary).length > 0) state.checkSummary = job.summary;
+          takeArchiveResult(job.summary);
           await loadResultPage(true);
+          loadModelStats();
         }
         if (state.currentJobType === "scan") {
           if (job.summary && Object.keys(job.summary).length > 0) state.scanSummary = job.summary;
@@ -1254,12 +1336,11 @@ function pollJob(jobId) {
         } else if (downloadJob) {
           setStatus(finishedText(job.summary));
         } else if (state.currentJobType === "check-updates") {
-          const updates = job.summary?.withUpdates || 0;
-          const hidden = job.summary?.hiddenUpdates || 0;
           state.cachedAt = new Date().toISOString();
           state.cacheFilesChanged = null;
           renderCacheInfo();
-          setStatus(`Done \u2014 ${updates} update${updates !== 1 ? "s" : ""} found${hidden ? `, ${hidden} hidden` : ""}`);
+          // An archive that could not be checked is said here too, not only in the info popover.
+          for (const [text, level] of checkDoneStatus(job.summary)) setStatus(text, level);
         } else {
           setStatus("Scan complete");
         }
@@ -1511,7 +1592,7 @@ function buildResultCard(item, cardIndex) {
     // last row of each run that shares it.
     const [nextKind, nextIndex] = order[position + 1] || [];
     const next = nextKind === "saved" ? localVersions[nextIndex] : null;
-    const showMessage = !next || !ISSUE_LABELS[next.status] || issueMessage(next) !== issueMessage(v);
+    const showMessage = !next || !rowIssue(next) || issueMessage(next) !== issueMessage(v);
     return renderLocalVersionRow(v, showMessage);
   }).join("");
 
@@ -1589,17 +1670,12 @@ function wireThumbImage(img, localPath, loadNow) {
   else showNoPreview();
 }
 
-const ISSUE_LABELS = {
-  error: { role: "error", label: "Error" },
-  not_found: { role: "nomatch", label: "No match" },
-};
-
 function renderLocalVersionRow(v, showMessage = true) {
-  const issue = ISSUE_LABELS[v.status];
+  // A D row whose same version is also in the archive is an issue of its own;
+  // an archived row never is (see check_results.js).
+  const issue = rowIssue(v);
   const date = v.publishedAt ? shortDate(v.publishedAt) : "";
-  const role = issue ? issue.role : (v.metadataOnly ? "metadata" : "saved");
-  const source = v.status === "not_found" ? FALLBACK_SOURCES[v.fallbackSource] : null;
-  const label = source ? FALLBACK_LABEL : (issue ? issue.label : (v.metadataOnly ? "Metadata" : "Saved"));
+  const { role, label } = rowLabel(v);
   const filePath = v.filePath || v.modelPath || "";
   // A file Civitai never identified has no version name; its file name is
   // what the user will recognize.
@@ -1614,18 +1690,6 @@ function renderLocalVersionRow(v, showMessage = true) {
           <span class="cu-ver-link cu-copy-path" data-path="${escapeHtml(filePath)}" title="${escapeHtml(copyPathTitle(filePath))}">${escapeHtml(name)}</span>
         </span>
       </div>${message}`;
-}
-
-function issueMessage(v) {
-  const source = FALLBACK_SOURCES[v.fallbackSource];
-  if (source && (v.status === "not_found" || v.status === "error")) {
-    const found = `${v.hasLocalPreview ? "Info and preview" : "Info"} from ${source.phrase}.`;
-    return v.status === "not_found" ? `Not on Civitai. ${found}` : `${v.error || "The lookup failed."} ${found}`;
-  }
-  if (v.status === "not_found") {
-    return "Civitai has no release with this file's hash. It may be converted, merged, private, or never uploaded.";
-  }
-  return v.error || "The lookup failed.";
 }
 
 function resultsSignature() {
@@ -1919,11 +1983,27 @@ function restoreScroll(mode) {
   });
 }
 
+/* Civitai's numbers for the stat sorts. A failed request keeps what is there
+   and says nothing; the sorts then fall back to name. */
+async function loadModelStats() {
+  try {
+    const data = await getJson("/warp-studio/updater/model-stats");
+    const next = new Map(Object.entries(data?.stats || {}));
+    state.modelStats = next;
+    if (state.galleryLoaded && STAT_SORTS.includes(state.galleryArrange.sort)) {
+      state.galleryView?.render();
+    }
+  } catch (_) {
+    // no numbers; the sorts fall back to name
+  }
+}
+
 function showGallery() {
   const view = state.galleryView;
   if (!view) return;
   if (!state.galleryLoaded) {
     state.galleryLoaded = true;
+    loadModelStats();
     view.refresh().catch(() => {});
     return;
   }
@@ -2308,7 +2388,7 @@ function renderRemoteVersionRow(item, version, hidden) {
     ? `<a class="cu-ver-link" href="${escapeHtml(version.versionUrl)}" target="_blank" rel="noreferrer noopener" title="${name}">${name}</a>`
     : `<span class="cu-ver-link" title="${name}">${name}</span>`;
   const action = hidden
-    ? `<button class="cu-inline-btn" data-archive-action="restore" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Unarchive</button>`
+    ? `<button class="cu-inline-btn" data-archive-action="restore" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Unhide</button>`
     : `<button class="cu-inline-btn" data-archive-action="archive" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Hide</button>`;
   const accessBadge = renderPaidBadge(version) || renderAvailabilityBadge(version.availability);
   const hiddenClass = hidden ? " is-hidden" : "";
@@ -2595,6 +2675,8 @@ async function hydrateSettingsFromBackend() {
     setSetting(SETTINGS.useComfyPaths, Boolean(cfg.useComfyPaths ?? true));
     setSetting(SETTINGS.useExtraModelPaths, Boolean(cfg.useExtraModelPaths ?? true));
     setSetting(SETTINGS.useCustomPaths, Boolean(cfg.useCustomPaths ?? true));
+    setSetting(SETTINGS.archiveFolder, String(cfg.archiveFolder || ""));
+    state.savedArchiveFolder = savedArchiveFolder(data);
     const custom = cfg.customPaths || {};
     setSetting(SETTINGS.customCheckpoint, listToSettingString(custom.checkpoint));
     setSetting(SETTINGS.customLora, listToSettingString(custom.lora));
@@ -2645,6 +2727,7 @@ async function syncSettingsToBackend() {
     fallbackHuggingFace: parsePathSetting(getSetting(SETTINGS.fallbackHuggingFace, "malcolmrey")),
     fallbackAiToolkitFolders: parsePathSetting(getSetting(SETTINGS.fallbackAiToolkitFolders, "")),
     fallbackOwnCreator: String(getSetting(SETTINGS.fallbackOwnCreator, "") || "").trim(),
+    archiveFolder: String(getSetting(SETTINGS.archiveFolder, "") || "").trim(),
     customPaths: {
       checkpoint: parsePathSetting(getSetting(SETTINGS.customCheckpoint, "")),
       lora: parsePathSetting(getSetting(SETTINGS.customLora, "")),
@@ -2673,6 +2756,8 @@ async function syncSettingsToBackend() {
       state.cacheFilesChanged = true;
     }
     state.roots = data.effectiveRoots || state.roots;
+    // A refused folder is not in the answer: the ⋯ menu stops offering it.
+    state.savedArchiveFolder = savedArchiveFolder(data);
     const pathWarnings = Array.isArray(data.pathWarnings) ? data.pathWarnings : [];
     if (pathWarnings.length) {
       console.warn("Civitai updater:", pathWarnings.join(" "));
@@ -2911,10 +2996,6 @@ function closeLightbox() {
     state.lightboxKeyHandler = null;
   }
 }
-
-// The server refuses requests without this header (see request_guard.py):
-// a browser sends it cross-origin only after a CORS preflight ComfyUI denies.
-const GUARD_HEADERS = { "X-Civitai-Updater": "1" };
 
 async function getJson(path) {
   const response = await api.fetchApi(path, { headers: GUARD_HEADERS });
@@ -3338,22 +3419,56 @@ function injectStyles() {
 
     .cu-action-bar {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1fr) auto;
       gap: 6px;
       margin-bottom: 9px;
+    }
+
+    /* The ⋯ button and its menu, which opens under it like the toolbar's. */
+    .cu-more {
+      position: relative;
+    }
+
+    .cu-more .cu-btn {
+      min-width: var(--cu-h-ctl);
+    }
+
+    .cu-more-menu .cu-filter-panel {
+      left: auto;
+      right: 0;
+      width: max-content;
+      max-width: 240px;
+      padding: 4px;
+    }
+
+    .cu-more-item {
+      display: block;
+      width: 100%;
+      padding: 6px 8px;
+      border: 0;
+      border-radius: 4px;
+      background: none;
+      color: var(--cu-bone);
+      font: inherit;
+      font-size: 11px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .cu-more-item:hover:not(:disabled),
+    .cu-more-item:focus-visible {
+      background: var(--cu-seam);
+    }
+
+    .cu-more-item:disabled {
+      color: var(--cu-dust);
+      cursor: default;
     }
 
     .cu-job-controls {
       flex: 0 0 auto;
       gap: 6px;
       align-items: center;
-    }
-
-    /* A narrow sidebar stacks the two buttons. */
-    @container (max-width: 330px) {
-      .cu-action-bar {
-        grid-template-columns: minmax(0, 1fr);
-      }
     }
 
     /* ---- Progress ---- */
@@ -4146,9 +4261,10 @@ function injectStyles() {
       background: var(--cu-seam);
     }
 
+    /* The label column fits the longest label, "Duplicate" or "Info only", on every row alike. */
     .cu-ver-row {
       display: grid;
-      grid-template-columns: 64px 60px minmax(0, 72px) minmax(0, 1fr);
+      grid-template-columns: 72px 60px minmax(0, 72px) minmax(0, 1fr);
       align-items: center;
       gap: 6px;
     }
@@ -4157,19 +4273,19 @@ function injectStyles() {
        --lead holds the columns before the name. The actions get what is left after the name's
        90px; below the width where that is too little, they move under the name, right-aligned. */
     .cu-versions .cu-ver-row.cu-ver-row-acts {
-      --lead: 64px 60px minmax(0, 72px);
-      grid-template-columns: var(--lead) minmax(0, 1fr) fit-content(max(0px, calc(100cqw - 310px)));
+      --lead: 72px 60px minmax(0, 72px);
+      grid-template-columns: var(--lead) minmax(0, 1fr) fit-content(max(0px, calc(100cqw - 318px)));
     }
 
     /* The sidebar is not the viewport: adapt columns to the panel width. */
 
     @container cu-root (max-width: 430px) {
       .cu-versions .cu-ver-row {
-        grid-template-columns: 64px 60px minmax(0, 1fr);
+        grid-template-columns: 72px 60px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        --lead: 64px 60px;
+        --lead: 72px 60px;
       }
 
       .cu-versions .cu-ver-base {
@@ -4179,11 +4295,11 @@ function injectStyles() {
 
     @container cu-root (max-width: 330px) {
       .cu-versions .cu-ver-row {
-        grid-template-columns: 64px minmax(0, 1fr);
+        grid-template-columns: 72px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        --lead: 64px;
+        --lead: 72px;
       }
 
       .cu-versions .cu-ver-date {
@@ -4191,7 +4307,7 @@ function injectStyles() {
       }
     }
 
-    @container cu-vers (max-width: 459px) {
+    @container cu-vers (max-width: 467px) {
       .cu-versions .cu-ver-row.cu-ver-row-acts {
         grid-template-columns: var(--lead) minmax(0, 1fr);
         row-gap: 3px;
@@ -4246,6 +4362,34 @@ function injectStyles() {
       border-color: var(--cu-dust);
     }
 
+    .cu-ver-label[data-role="archived"] {
+      color: var(--cu-ash);
+    }
+
+    .cu-ver-label[data-role="archived"]::before {
+      border-style: dashed;
+      border-color: var(--cu-ash);
+    }
+
+    .cu-ver-label[data-role="duplicate"] {
+      color: var(--cu-amber);
+    }
+
+    .cu-ver-label[data-role="duplicate"]::before {
+      background: var(--cu-amber);
+      border-color: var(--cu-amber);
+    }
+
+    /* An info file alone, its model in the archive: an issue, with a hollow dot (no weights). */
+    .cu-ver-label[data-role="infoonly"] {
+      color: var(--cu-amber);
+    }
+
+    .cu-ver-label[data-role="infoonly"]::before {
+      border-style: dashed;
+      border-color: var(--cu-amber);
+    }
+
     .cu-ver-label[data-role="new"] {
       color: var(--cu-red-soft);
     }
@@ -4288,7 +4432,7 @@ function injectStyles() {
     /* The reason sits under its row, aligned with the columns after the label. */
 
     .cu-issue-msg {
-      margin: -3px 0 1px 70px;
+      margin: -3px 0 1px 78px;
       font-family: var(--cu-mono);
       font-size: 9.5px;
       line-height: 1.4;
@@ -4873,6 +5017,29 @@ function injectStyles() {
       font-family: var(--cu-mono);
       font-size: 9px;
       line-height: 1;
+    }
+
+    /* Opposite the trigger badge, in the muted text colour. */
+    .cu-g-metric {
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      display: inline-flex;
+      align-items: center;
+      height: 16px;
+      padding: 0 5px;
+      border-radius: 3px;
+      border: 1px solid var(--cu-seam-strong);
+      background: rgba(19, 19, 22, 0.8);
+      color: var(--cu-ash);
+      font-family: var(--cu-mono);
+      font-size: 9px;
+      line-height: 1;
+    }
+
+    /* The "n versions ▾" chip (16px high, 6px up) holds the corner: the number sits above it. */
+    .cu-g-metric.cu-g-metric-stacked {
+      bottom: 26px;
     }
 
     .cu-g-creator,

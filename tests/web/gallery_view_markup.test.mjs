@@ -244,6 +244,28 @@ test("cardHtml always has the action slot and the state overlay, so heights matc
   }
 });
 
+test("cardHtml shows a metric badge on the thumbnail only when one is given", () => {
+  assert.ok(!cardHtml(model(), ui(), escapeHtml).includes("cu-g-metric"));
+  const html = cardHtml(model({ triggers: 2 }), ui({ metric: "↓ 11.6k" }), escapeHtml);
+  const thumb = html.slice(html.indexOf('<span class="cu-g-thumb">'), html.indexOf("</button>"));
+  assert.match(thumb, /<span class="cu-g-metric">↓ 11\.6k<\/span>/);
+  assert.ok(thumb.includes("cu-g-badge"));
+});
+
+test("on a stacked card the metric badge is lifted above the versions chip", () => {
+  const stacked = cardHtml(model(), ui({ versions: 3, metric: "↓ 11.6k" }), escapeHtml);
+  assert.match(stacked, /<span class="cu-g-metric cu-g-metric-stacked">↓ 11\.6k<\/span>/);
+  assert.ok(stacked.includes("3 versions ▾"));
+  const single = cardHtml(model(), ui({ versions: 1, metric: "↓ 11.6k" }), escapeHtml);
+  assert.ok(!single.includes("cu-g-metric-stacked"));
+  assert.ok(!cardHtml(model(), ui({ versions: 3 }), escapeHtml).includes("cu-g-metric"));
+});
+
+test("cardHtml escapes the metric", () => {
+  const html = cardHtml(model(), ui({ metric: "<b>" }), escapeHtml);
+  assert.ok(!html.includes("<b>"));
+});
+
 test("role=img is only on a mark span that shows a mark", () => {
   assert.ok(!cardHtml(model(), ui(), escapeHtml).includes('role="img"'));
   const on = cardHtml(model(), ui({ mark: "on" }), escapeHtml);

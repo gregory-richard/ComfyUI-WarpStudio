@@ -72,6 +72,9 @@ class _MissingModelClient:
 
 
 class _DatelessSidecarClient:
+    def model_stats(self, model_id):  # noqa: ARG002
+        return {}
+
     def get_model_versions_for_model(self, model_id):  # noqa: ARG002
         return (
             "artist",

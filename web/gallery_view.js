@@ -10,8 +10,11 @@ import {
   cardModel,
   filterEntries,
   foldedIn,
+  formatCount,
   galleryFacets,
   stackEntries,
+  statOf,
+  STAT_SORTS,
   toggleFolded,
 } from "./gallery_core.js";
 import { embeddings, forget, loras, missingLoras, models } from "./library.js";
@@ -96,7 +99,7 @@ function markHtml(mark, esc) {
  */
 export function cardHtml(model, ui, escapeHtml) {
   const esc = escaper(escapeHtml);
-  const { mark = null, versions = 1, versionLabel = "" } = ui || {};
+  const { mark = null, versions = 1, versionLabel = "", metric = "" } = ui || {};
   const thumb = model.thumbnail
     ? `<img src="${esc(model.thumbnail)}" alt="" loading="lazy" decoding="async">`
     : `<span class="cu-g-noimg">${esc(model.stem)}</span>`;
@@ -104,6 +107,9 @@ export function cardHtml(model, ui, escapeHtml) {
     model.triggers > 0
       ? `<span class="cu-g-badge" title="${esc(plural(model.triggers, "trigger word"))}">⊕ ${esc(model.triggers)}</span>`
       : "";
+  // The versions chip takes the same corner: the number sits above it.
+  const metricClass = versions > 1 ? "cu-g-metric cu-g-metric-stacked" : "cu-g-metric";
+  const metricBadge = metric ? `<span class="${metricClass}">${esc(metric)}</span>` : "";
   const url = safeUrl(model.url);
   const link = url
     ? `<a class="cu-g-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Open on Civitai" aria-label="${esc(`Open ${model.title} on Civitai`)}">↗</a>`
@@ -116,7 +122,7 @@ export function cardHtml(model, ui, escapeHtml) {
   return (
     `<div class="cu-g-card" data-g-key="${esc(model.key)}"${marked}${model.missing ? " data-missing" : ""}>` +
     `<button type="button" class="cu-g-pick" title="${esc(model.stem)}"${model.missing ? ' aria-disabled="true"' : ""}>` +
-    `<span class="cu-g-thumb">${thumb}${badge}</span>` +
+    `<span class="cu-g-thumb">${thumb}${badge}${metricBadge}</span>` +
     `<span class="cu-g-creator">${esc(model.creator)}</span>` +
     `<span class="cu-g-title">${esc(model.title)}</span>` +
     `<span class="cu-g-detail">${esc(model.detail)}</span>` +
@@ -244,12 +250,22 @@ function hookSelection(app) {
   };
 }
 
+const METRIC_GLYPHS = { downloads: "↓", likes: "♥", comments: "❝" };
+
+/** The badge text for a stat sort ("↓ 11.6k"); "" when not sorting by a number or none is known. */
+function metricOf(stack, sort, stats) {
+  if (!STAT_SORTS.includes(sort)) return "";
+  const value = statOf(stack, sort, stats);
+  return value === null ? "" : `${METRIC_GLYPHS[sort]} ${formatCount(value)}`;
+}
+
 const graphOf = (app) => app?.canvas?.graph ?? app?.graph ?? null;
 
 /* ---------------------------------------------------------------- the view */
 
 /* options: { escapeHtml, app, filter() -> { bases }, query() -> string,
-     arrange() -> { groupBy, sort }, includeDownloadable() -> boolean,
+     arrange() -> { groupBy, sort }, stats() -> Map of model id to { downloads, likes, comments },
+     includeDownloadable() -> boolean,
      onFacets(facets), onCount(), downloads() -> Map, canTrash() -> boolean,
      onDownload(name), onStop(requestId), onDelete(name, kind) -> Promise<"" | error> }
    Every option is optional; a missing one means its plain default.
@@ -650,6 +666,8 @@ export function renderGalleryView(el, options) {
      rebuilt only when what it draws changed; its mark is painted separately. */
   function cardsFor(stacks) {
     const nodeOf = nodeResolver();
+    const { sort = "name" } = options.arrange?.() || {};
+    const stats = options.stats?.();
     const wanted = stacks.map((stack) => {
       const member = shownOf(stack);
       const model = cardModel(member);
@@ -657,6 +675,7 @@ export function renderGalleryView(el, options) {
         mark: null,
         versions: stack.members.length,
         versionLabel: versionName(member),
+        metric: metricOf(stack, sort, stats),
       };
       return { stack, model, html: cardHtml(model, ui, options.escapeHtml) };
     });
@@ -721,7 +740,7 @@ export function renderGalleryView(el, options) {
       } else {
         const { groupBy = "base", sort = "name" } = options.arrange?.() || {};
         const folded = groupBy === "none" ? new Set() : foldedNow(all);
-        const bands = arrange(stacks, { groupBy, sort, fitting });
+        const bands = arrange(stacks, { groupBy, sort, fitting, stats: options.stats?.() });
         const title = fitTitle();
         content = fragment(
           bands

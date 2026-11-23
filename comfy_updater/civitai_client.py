@@ -82,6 +82,26 @@ class CivitaiClient:
         is_nsfw = bool(model.get("nsfw"))
         return (creator_name, versions, is_nsfw)
 
+    def model_stats(self, model_id: int | str) -> dict:
+        """The model's download, like and comment counts; {} when it is unknown or errored.
+
+        Reads the cached model, so it costs no request after a versions lookup.
+        """
+        model = self.get_model(model_id)
+        stats = model.get("stats") if isinstance(model, dict) else None
+        if not isinstance(stats, dict):
+            return {}
+
+        def count(key: str) -> int:
+            value = stats.get(key)
+            return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+        return {
+            "downloads": count("downloadCount"),
+            "likes": count("thumbsUpCount"),
+            "comments": count("commentCount"),
+        }
+
     def model_page_url(self, model_id: int | str) -> str:
         return f"{MODEL_PAGE_BASE_URL}/{model_id}"
 

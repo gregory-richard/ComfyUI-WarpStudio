@@ -32,7 +32,9 @@ def lora_roots() -> list[Path]:
 
 
 def _norm(path: object) -> str:
-    return os.path.normcase(os.path.normpath(str(path)))
+    # abspath, not just normpath: on Windows it drops trailing dots and spaces the
+    # way opening the file does, so a containment check compares what gets opened.
+    return os.path.normcase(os.path.abspath(str(path)))
 
 
 def _inside(root: Path, name: str) -> Optional[Path]:

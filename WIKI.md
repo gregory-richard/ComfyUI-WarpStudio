@@ -438,7 +438,7 @@ Your LoRAs as cards with their previews, grouped by base model. A switch at the 
 
 A card shows the creator, title and version read from the file name when it follows `creator - title - version (base)` (for example `maker - glow - v2 (krea2)`); otherwise Civitai's model name; otherwise the file name. All three types use the same card, with its preview, **↗** and **Delete**.
 
-**Toolbar.** 🔍 opens the search in place; **Esc**, or leaving it empty, closes it. It matches name, creator, version and Civitai's model name, so an old name still finds the card, and the 🔍 stays lit and shows the text while a search is active. **Filter** narrows by base model, and holds **Include downloadable** when it applies. **Sort** has **Group by** (**Base** or **None**, one flat grid) and **Sort** (**Name** or **Newest on disk**); the choice is remembered. The Gallery has no ⓘ.
+**Toolbar.** 🔍 opens the search in place; **Esc**, or leaving it empty, closes it. It matches name, creator, version and Civitai's model name, so an old name still finds the card, and the 🔍 stays lit and shows the text while a search is active. **Filter** narrows by base model, and holds **Include downloadable** when it applies. **Sort** has **Group by** (**Base** or **None**, one flat grid) and **Sort** (**Name**, **Newest on disk**, **Most downloaded**, **Most liked** or **Most comments**); the choice is remembered. The three counts are Civitai's, per model (all its versions), saved by **Check for Updates** and read from `GET /warp-studio/updater/model-stats`. While one is the sort, each card shows its number, such as `↓ 11.6k`, `♥ …` or `❝ …`. Sorting stays inside each base band, and models with no numbers (not on Civitai, or not checked since the counts were added) come last, by name. The Gallery has no ⓘ.
 
 **Bands.** Each base model is a band. A click on its header folds or unfolds it; folded bands are remembered per base across a reload, and a remembered base that is not there is ignored. The band whose base matches the model wired into the target node is marked **for this workflow** and comes first. Switching to another workflow tab, or opening a subgraph, re-targets and reorders, as selecting a node does. A click on a card never reorders the bands under the cursor. For Models there is no such band.
 
@@ -640,7 +640,46 @@ applied inside them.
 
 - Use `Hide` on a remote version row if you do not want to download that version.
 - Hidden versions stay hidden across future checks.
-- Enable `Show hidden` to review or unarchive them later.
+- Enable `Show hidden` to review them later; **Unhide** brings one back.
+
+### 10. Check with archive
+
+Models you moved to another drive can still be followed. Set **Settings → Warp
+Studio → Civitai Path Sources → Archive Folder** to the folder that holds them,
+laid out like the models folder (a top folder named like a model folder, such as
+`loras`, belongs to that type). With no folder set, nothing below shows.
+
+The toolbar of **Updates** and **Issues** has **Check for Updates** and a **⋯**
+menu. The menu always holds **Fetch Missing Metadata**; with an archive folder
+set it also holds **Check with archive**. That check runs the normal one, then
+looks up each archived model on Civitai, at the same pace (one lookup per model,
+`Delay between models` apart): about 7 minutes more for 1,100 models. Pause and
+Stop work as for any job. A plain **Check for Updates** does not look at the
+archive.
+
+- It only reads. The `.civitai.info` files in the archive give each model and
+  version id; nothing there is hashed, written, renamed or deleted. A model file
+  with no info file is skipped and counted.
+- A version you have in the archive is never offered as new: with v2 archived
+  and v1 on this drive, v2 is not an update. A model on this drive is checked as
+  usual, never as archived.
+- A new version of an archived model shows in **Updates** marked **Archived**,
+  with **Download** and **Hide**, and no **Replace**. **Download** puts the file on
+  this drive, in the folder for that model type and the same subfolder as in the
+  archive when there is one, else the type's folder.
+- The same Civitai version on both drives is listed in **Issues** as
+  **Duplicate**, with the archive file's name. An info file on this drive whose
+  model is in the archive is listed as **Info only**. Removing them is up to you.
+- Archived models Civitai removed or doesn't know never appear in **Issues**.
+- The results are kept apart, in `archive_check.json` in the data folder, so a
+  plain check keeps the archived rows. A row goes when its version is downloaded
+  to this drive or hidden. The ⓘ says when the archive was last checked and how
+  many archived models have a new version in **Updates**.
+- The archive folder can't be a model folder, lie inside one or hold one: such
+  a folder is not saved.
+- If the archive folder can't be reached (an unplugged drive), holds no folder
+  named like a model folder, or now overlaps a model folder, the check says so
+  and the last results stay.
 
 ### Previews from other sources
 
@@ -808,6 +847,9 @@ Under **Settings → Warp Studio** (the groups that start with "Civitai"):
   left out rather than quietly shrinking the list.
 - **Path sources** — ComfyUI's own folders, `extra_model_paths.yaml`, and
   custom roots per model type (checkpoint, LoRA, VAE, UNet, embedding).
+- **Archive Folder** — one absolute folder of models you moved elsewhere, for
+  **Check with archive** (see [Check with archive](#10-check-with-archive)). It
+  must exist and not be a whole drive. Empty by default. Only read.
 - **Naming model** — the text encoder the renamer runs. See
   [The naming model](#the-naming-model).
 
@@ -1240,10 +1282,27 @@ naming it rather than quietly dropping it.
 ## HTTP API
 
 Every route starts with `/warp-studio/`, and is registered on ComfyUI's own
-`PromptServer` at import. They exist for Warp Studio's frontend; nothing stops
-you calling them yourself. The first group serves the nodes and the Prompt
-Writer. The Warp Studio panel's routes, under `/warp-studio/updater/`, are
-[further down](#warp-studio-panel-routes).
+`PromptServer` at import. They exist for Warp Studio's frontend. The first group
+serves the nodes and the Prompt Writer. The Warp Studio panel's routes, under
+`/warp-studio/updater/`, are [further down](#warp-studio-panel-routes).
+
+Every route but the thumbnail asks for the header `X-Civitai-Updater: 1`, and a
+POST must be sent as `application/json`. A request from another site (by `Origin`
+or `Sec-Fetch-Site`) is refused with 403 even with the header. A browser sends a
+custom header to another site only after a CORS preflight, which ComfyUI refuses
+unless it runs with `--enable-cors-header`. The thumbnail route can't ask for the
+header, because an `<img>` sends none; it refuses `Sec-Fetch-Site: cross-site` and
+`same-site` instead, and serves only the preview beside a model file (`name` must
+end in a model extension) in one of ComfyUI's model folders. A `name` with a
+drive, a leading slash or a `..` step finds nothing. The guard doesn't stop DNS
+rebinding, and neither does ComfyUI's own server, so keep ComfyUI off untrusted
+networks.
+
+The Prompt Writer sends only to NanoGPT, to `localhost` / `127.0.0.1` / `::1`, or
+to a host you saved a key for through `POST /warp-studio/llm/key`. Any other
+`base_url` gets `<host> has no saved key.` A provider that needs no key works once any text is saved as its key; it is sent as `Authorization: Bearer <text>`, which such a server ignores.
+A `base_url` with a user name, a backslash, `?` or `#` is refused, and so is a
+redirect from a remote provider to this computer or the local network.
 
 If `aiohttp` or `server` cannot be imported — running the module outside
 ComfyUI, for tests or a lint — registration is skipped and the nodes still work.
@@ -1456,6 +1515,7 @@ Every field is optional; only the fields present in the request are updated.
 - `fallbackHuggingFace`, `fallbackAiToolkitFolders`: a list or a string separated by `;` or new lines. Hugging Face authors or `owner/name` repos; folders that hold ai-toolkit runs
 - `fallbackOwnCreator`: string, the creator name your own trainings are filed under
 - `customPaths`: object keyed by model type (`checkpoint|lora|vae|unet|embedding`); a value is a list of paths or a string separated by `;` or new lines. Only the keys present in the request are updated.
+- `archiveFolder`: string, one absolute folder of archived models (`""` clears it). It is checked like a custom path: it must exist, not be a whole drive, and not be, lie inside or hold a model folder, or it is left out and `pathWarnings` says why.
 
 A newly added custom path must be an existing absolute folder and not a whole
 drive or the filesystem root. Paths that fail this are left out of the saved
@@ -1481,9 +1541,22 @@ Response: `jobId`. Returns HTTP 409 with `error` when another job is running.
 
 Starts an update-check job.
 
-Request body: same as the scan job.
+Request body: same as the scan job, plus
+
+- `includeArchive`: boolean (defaults to `false`). When `true` and an archive
+  folder is set, the archive is checked after the drive's check ran to its end
+  (**Check with archive**).
 
 Response: `jobId`, or HTTP 409 as above.
+
+The archive pass only reads the archive's `.civitai.info` files. Its items are
+saved in `archive_check.json` in the data folder, never in `last_check.json`, and
+a check without `includeArchive` keeps them. The job's `summary` then carries
+`archive` (when the archive was last checked, with its counts; `withUpdates` is
+the archived-only models with a new version Updates shows, after Hide). When the
+folder can't be reached, holds no folder named like a model folder, or overlaps a
+model folder, it also carries `archiveError` and the saved results stay. A
+stopped archive pass saves nothing.
 
 The job is seeded with every item of the previous check so the panel keeps
 showing them (marked provisional) while models are re-checked. Once the job has
@@ -1564,6 +1637,9 @@ version is represented only by a valid `.civitai.info` sidecar. `modelPath` is
 the file the entry was found through (the sidecar, for a metadata-only entry);
 `filePath` is always the weights file, where it would be for a metadata-only
 entry, with the extension the sidecar names (`.safetensors` when it names none).
+`archived` marks a file in the archive folder; a version on this drive that is
+also archived carries `alsoArchived` (the archive file's name), and `infoOnly`
+when only its `.civitai.info` is on this drive.
 
 #### `GET /warp-studio/updater/last-check`
 
@@ -1573,10 +1649,21 @@ Returns `sidecarWarnings` and `data`:
   saved file is from an older schema
 - while a check is running: `jobId`, `checkedAt`, `summary`, `itemCount`, `inProgress: true`
 - otherwise the saved check: `jobId` (always `cached`), `checkedAt`, `summary`,
-  `itemCount`, `inProgress: false`, `filesChanged`, `filesAdded`, `filesRemoved`
+  `itemCount`, `inProgress: false`, `filesChanged`, `filesAdded`, `filesRemoved`,
+  and `archive`: when the archive was last checked (`checkedAt`) with its counts
+  (`withUpdates` as in the check job's summary), or `null` when there is no
+  archive folder or no saved archive check for it
 
 The saved check is loaded as a job with id `cached`, so its items can be paged
 through `GET /warp-studio/updater/jobs/cached/items`.
+
+#### `GET /warp-studio/updater/model-stats`
+
+Civitai's numbers for each model, for the Gallery's sorts. Returns
+`{"stats": {"<modelId>": {"downloads": n, "likes": n, "comments": n}}}`, one
+entry per model id the saved checks hold numbers for, and `{"stats": {}}` before
+any. They come from the last check; the drive's results win over the archive's
+for a model in both.
 
 #### `POST /warp-studio/updater/archived-updates`
 
