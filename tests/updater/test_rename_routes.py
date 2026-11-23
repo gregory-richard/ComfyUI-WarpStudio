@@ -1013,6 +1013,45 @@ class RevealRouteTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertEqual([["explorer", "/select,", str(model)]], self.launched)
 
+    def _reveal_in_check(self, items, path):
+        import asyncio
+
+        check = JobRecord(id="check", type="check-updates", status="completed", items=items)
+        response = asyncio.run(
+            reveal_response(
+                _RevealRequest({"jobId": "check", "path": str(path)}),
+                lambda job_id: check if job_id == "check" else None, launch=self.launched.append, platform="win32",
+            )
+        )
+        return response.status, json.loads(response.text)
+
+    def test_reveals_an_archived_row_by_its_weights_path(self) -> None:
+        # The panel's row links name the weights; the item is listed by its info file.
+        archive = Path(self._tmp.name) / "Z" / "Lora"
+        archive.mkdir(parents=True)
+        info = archive / "old.civitai.info"
+        weights = archive / "old.safetensors"
+        for path in (info, weights):
+            path.write_text("x", encoding="utf-8")
+        item = {"modelPath": str(info), "filePath": str(weights), "archived": True, "metadataOnly": True}
+
+        status, body = self._reveal_in_check([item], weights)
+
+        self.assertEqual(200, status, body)
+        self.assertEqual([["explorer", "/select,", str(weights)]], self.launched)
+
+    def test_an_info_only_row_shows_its_info_file(self) -> None:
+        # Only the info file is on the drive: the folder opens with it selected.
+        info = self.folder / "stub.civitai.info"
+        info.write_text("{}", encoding="utf-8")
+        weights = self.folder / "stub.safetensors"
+        item = {"modelPath": str(info), "filePath": str(weights), "metadataOnly": True}
+
+        status, body = self._reveal_in_check([item], weights)
+
+        self.assertEqual(200, status, body)
+        self.assertEqual([["explorer", "/select,", str(info)]], self.launched)
+
     def test_unknown_job_and_missing_fields(self) -> None:
         self.assertEqual(404, self.reveal({"jobId": "other", "key": str(self.copy).lower()})[0])
         self.assertEqual(400, self.reveal({"jobId": "dry"})[0])

@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 from typing import Callable
 
-from .archive import list_archive_entries
+from .archive import ARCHIVE_NO_MODEL_FOLDERS_ERROR, list_archive_entries
 from .civitai_client import CivitaiClient, CivitaiRequestError
 from .fallback_http import FallbackHttp
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
@@ -273,13 +273,17 @@ class UpdaterService:
         metadata_only: bool = False,
         should_stop=None,
         read_only: bool = False,
+        existing_info: dict | None = None,
     ) -> dict:
         # read_only is for the archive: nothing next to its files may be
         # written, so no info file rewrite and no preview download.
+        # existing_info is the info file as already read (the archive's
+        # listing), so a drive lost since does not turn the model unknown.
         info_path = info_path or info_sidecar_path(model_path)
         preview_path = preview_path or preview_sidecar_path(model_path)
 
-        existing_info = read_json(info_path)
+        if existing_info is None:
+            existing_info = read_json(info_path)
         # A sidecar identifies a model only when it carries both ids. The stub
         # written for a not_found file records the hash but no identity, so it
         # must not count as "metadata already fetched".
@@ -615,6 +619,10 @@ class UpdaterService:
 
         type_roots = resolve_model_roots(config, model_types, include_custom_paths=include_custom)
         entries, counts = list_archive_entries(archive_root, type_roots)
+        if not counts["typeFolders"]:
+            # Not laid out like the models folder (or an empty, unmounted mount
+            # point): reporting every archived model gone would be wrong.
+            return {"mode": "archive", "archiveError": ARCHIVE_NO_MODEL_FOLDERS_ERROR}, []
         entries = [entry for entry in entries if entry["modelType"] in model_types]
         total = len(entries)
         progress(0, total, f"Discovered {total} archived models")
@@ -650,11 +658,12 @@ class UpdaterService:
                     metadata_only=True,
                     should_stop=should_stop,
                     read_only=True,
+                    existing_info=entry["info"],
                 )
             except HashingCancelled:
                 break
             except Exception as exc:  # noqa: BLE001 - return per-file errors without killing the whole job
-                info = read_json(info_path)
+                info = entry["info"]
                 item = {
                     "modelPath": str(entry["path"]),
                     "modelType": entry["modelType"],

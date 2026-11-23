@@ -22,6 +22,7 @@ from .path_resolver import _read_identifying_sidecar
 from .sidecar import model_file_path, read_data_file, write_json
 
 ARCHIVE_RESULTS_FILENAME = "archive_check.json"
+ARCHIVE_NO_MODEL_FOLDERS_ERROR = "No model folders found in the archive folder."
 
 
 def archive_type_folders(
@@ -56,11 +57,14 @@ def list_archive_entries(
 ) -> tuple[list[dict], dict]:
     """One entry per .civitai.info in the archive that identifies a model.
 
-    Also counts the weights files that have no info file beside them, which the
-    check cannot say anything about.
+    Each entry carries the info it was read from, so the check needs the drive
+    no more once this listing is done. Also counts the weights files that have
+    no info file beside them, which the check cannot say anything about, and
+    the archive folders that matched a model type (none: nothing to check).
     """
     entries: list[dict] = []
     without_info = 0
+    type_folders = 0
     for model_type, pairs in archive_type_folders(archive_root, type_roots).items():
         # Two roots on D may share a name; their one archive folder is listed once.
         seen_folders: set[str] = set()
@@ -69,6 +73,7 @@ def list_archive_entries(
             if seen_key in seen_folders:
                 continue
             seen_folders.add(seen_key)
+            type_folders += 1
             for dir_path, dir_names, file_names in os.walk(archive_folder):
                 dir_names.sort(key=str.casefold)
                 names = sorted(file_names, key=str.casefold)
@@ -101,9 +106,34 @@ def list_archive_entries(
                             "previewPath": info_path.with_name(f"{stem}{PREVIEW_SIDECAR_SUFFIX}"),
                             "metadataOnly": True,
                             "archived": True,
+                            "info": info,
                         }
                     )
-    return entries, {"models": len(entries), "withoutInfo": without_info}
+    return entries, {"models": len(entries), "withoutInfo": without_info, "typeFolders": type_folders}
+
+
+def overlaps_model_root(archive_folder: str, model_roots: dict) -> bool:
+    """Whether the archive folder is a model folder, lies inside one or holds one.
+
+    ``model_roots`` maps each model type to its folders, as the effective roots
+    are given. Any of the three would let the check, a rename or a download
+    write in the archive, and would count every model as its own duplicate.
+    """
+    archive = _absolute_key(archive_folder)
+    for roots in model_roots.values():
+        for root in roots or []:
+            key = _absolute_key(str(root))
+            try:
+                common = os.path.commonpath([archive, key])
+            except ValueError:  # on another drive
+                continue
+            if common in (archive, key):
+                return True
+    return False
+
+
+def _absolute_key(folder: str) -> str:
+    return folder_key(os.path.abspath(os.path.expanduser(folder.strip())))
 
 
 def archive_reference_path(
@@ -137,19 +167,28 @@ def archive_reference_path(
     return None
 
 
-def load_archive_items(data_dir: Path, archive_folder: str) -> list[dict]:
-    """The saved archive check's items, or nothing when they are missing, outdated or for another folder."""
+def load_archive_results(data_dir: Path, archive_folder: str) -> tuple[list[dict], dict]:
+    """The saved archive check's items and its summary with when it ran, from one read.
+
+    Both are empty when the results are missing, outdated or for another folder.
+    """
     data = _load_results(data_dir, archive_folder)
     items = data.get("items") if data else None
-    return items if isinstance(items, list) else []
+    summary = data.get("summary") if data else None
+    return (
+        items if isinstance(items, list) else [],
+        {"checkedAt": data.get("checkedAt", ""), **summary} if isinstance(summary, dict) else {},
+    )
+
+
+def load_archive_items(data_dir: Path, archive_folder: str) -> list[dict]:
+    """The saved archive check's items, or nothing when they are missing, outdated or for another folder."""
+    return load_archive_results(data_dir, archive_folder)[0]
 
 
 def load_archive_summary(data_dir: Path, archive_folder: str) -> dict:
     """The saved archive check's summary and when it ran, under the same rules as the items."""
-    data = _load_results(data_dir, archive_folder)
-    if not data or not isinstance(data.get("summary"), dict):
-        return {}
-    return {"checkedAt": data.get("checkedAt", ""), **data["summary"]}
+    return load_archive_results(data_dir, archive_folder)[1]
 
 
 def save_archive_results(data_dir: Path, archive_folder: str, summary: dict, items: list[dict]) -> None:

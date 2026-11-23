@@ -80,6 +80,21 @@ class LocalPreviewRouteTests(unittest.TestCase):
         status, body, _ = self.call({"jobId": "j", "path": str(info)})
         self.assertEqual((200, PNG_BYTES), (status, body))
 
+    def test_an_info_only_row_is_found_by_its_weights_path(self) -> None:
+        info = self.folder / "someone.civitai.info"
+        self.job.items = [{"modelPath": str(info), "filePath": str(self.folder / "someone.safetensors")}]
+        status, body, _ = self.call({"jobId": "j", "path": str(self.folder / "someone.safetensors")})
+        self.assertEqual((200, PNG_BYTES), (status, body))
+
+    def test_nothing_is_served_for_an_archived_row(self) -> None:
+        # Only the archive's .civitai.info files are read, never its previews.
+        info = self.folder / "someone.civitai.info"
+        self.job.items = [{"modelPath": str(info), "filePath": str(self.model), "archived": True}]
+        for path in (info, self.model):
+            with self.subTest(path=path.name):
+                status, body = self.error({"jobId": "j", "path": str(path)})
+                self.assertEqual((404, {"error": "This file has no local preview."}), (status, body))
+
     def test_serves_remote_peer_too(self) -> None:
         status, body, _ = self.call({"jobId": "j", "path": str(self.model)}, remote="192.168.1.5")
         self.assertEqual((200, PNG_BYTES), (status, body))

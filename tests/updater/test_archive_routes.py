@@ -13,11 +13,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from comfy_updater import routes as routes_module
 from comfy_updater.archive import ARCHIVE_RESULTS_FILENAME, folder_key, save_archive_results
+from comfy_updater.archived_updates import ArchivedUpdateStore
 from comfy_updater.config_store import ConfigStore
 from comfy_updater.constants import CACHE_SCHEMA_VERSION
 from comfy_updater.download_queue import DownloadQueue
-from comfy_updater.jobs import JobManager, JobRecord
+from comfy_updater.jobs import JobManager, JobRecord, _group_items_by_model
 from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
 from comfy_updater.routes import (
     _drop_refused_archive_folder,
@@ -30,6 +32,8 @@ from comfy_updater.routes import (
 from comfy_updater.sidecar import read_data_file, write_json
 
 UNREACHABLE = "The archive folder can't be reached."
+NO_MODEL_FOLDERS = "No model folders found in the archive folder."
+OVERLAPS = "The archive folder overlaps a model folder."
 NO_MATCHING_FOLDER = "This archived model has no matching folder on this drive."
 CHECK_ROUTE = "/warp-studio/updater/jobs/check-updates"
 LAST_CHECK_ROUTE = "/warp-studio/updater/last-check"
@@ -110,6 +114,7 @@ class _FakeService:
         self.archive_roots: list = []
         self.seeds_after_sync = None  # the job's items once the D walk was synced
         self.stop_during = ""
+        self.archive_error = ""  # a pass that failed before any lookup
 
     def run_check_updates(self, payload, progress, item_callback=None, control=None, files_callback=None):
         if files_callback:
@@ -124,6 +129,8 @@ class _FakeService:
 
     def run_archive_check(self, payload, progress, item_callback=None, control=None, *, archive_root):
         self.archive_roots.append(archive_root)
+        if self.archive_error:
+            return {"mode": "archive", "archiveError": self.archive_error}, []
         for item in self.archive_items:
             item_callback(dict(item))
         if self.stop_during == "archive":
@@ -337,13 +344,85 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
         self.assertEqual(UNREACHABLE, job.summary["archiveError"])
         self.assertEqual(before, self.archive_file())
         self.assertEqual(saved["checkedAt"], job.summary["archive"]["checkedAt"])
-        self.assertEqual(7, job.summary["archive"]["withUpdates"])
+        # Counted from the rows (the saved summary says 7): model 301 has a new version.
+        self.assertEqual(1, job.summary["archive"]["withUpdates"])
         self.assertEqual(self.paths([self.d_item(), self.z_item()]), self.paths(job.items))
         archived = [item for item in job.items if item.get("archived")]
         self.assertEqual("401", archived[0]["localVersionId"])
         # The normal part still finished and was saved, without archive fields.
         self.assertEqual([self.d_path], self.paths(self.last_check()["items"]))
         self.assertNotIn("archiveError", self.last_check()["summary"])
+
+    def test_an_archive_without_model_folders_keeps_the_previous_results(self) -> None:
+        self.write_last_check([self.d_item()])
+        saved = self.save_archive([self.z_item()])
+        before = self.archive_file()
+        self.service.d_items = [self.d_item(localVersionId="202")]
+        self.service.archive_error = NO_MODEL_FOLDERS
+
+        job = self.check(includeArchive=True)
+
+        self.assertEqual([self.archive], self.service.archive_roots)
+        self.assertEqual("completed", job.status)
+        self.assertEqual(NO_MODEL_FOLDERS, job.summary["archiveError"])
+        self.assertEqual(before, self.archive_file())
+        self.assertEqual(saved["checkedAt"], job.summary["archive"]["checkedAt"])
+        self.assertEqual(self.paths([self.d_item(), self.z_item()]), self.paths(job.items))
+        archived = [item for item in job.items if item.get("archived")]
+        self.assertEqual(("401", None), (archived[0]["localVersionId"], archived[0].get("_seeded")))
+        self.assertEqual("202", self.last_check()["items"][0]["localVersionId"])
+        self.assertNotIn("archiveError", self.last_check()["summary"])
+
+    def test_an_archive_folder_over_a_model_folder_fails_the_pass(self) -> None:
+        saved = self.save_archive([self.z_item()])
+        before = self.archive_file()
+        self.service.d_items = [self.d_item()]
+        self.service.archive_items = [self.z_item(localVersionId="402")]
+        # The model folders changed after the archive folder was saved.
+        for relation, root in (("equal", self.archive), ("holds", self.archive / "Lora"), ("inside", self.root)):
+            with self.subTest(relation=relation):
+                self.service.effective_roots = {"vae": [], "lora": [str(root)]}
+
+                job = self.check(includeArchive=True)
+
+                self.assertEqual([], self.service.archive_roots)
+                self.assertEqual("completed", job.status)
+                self.assertEqual(OVERLAPS, job.summary["archiveError"])
+                self.assertEqual(before, self.archive_file())
+                self.assertEqual(saved["checkedAt"], job.summary["archive"]["checkedAt"])
+                archived = [item for item in job.items if item.get("archived")]
+                self.assertEqual(["401"], [item["localVersionId"] for item in archived])
+
+    def test_the_archive_count_is_archived_models_with_a_visible_new_version(self) -> None:
+        store = ArchivedUpdateStore(self.data_dir)
+        self.jobs.archive_store = store
+        d_copy = self.d_item(
+            modelPath=str(self.d_lora / "newer.safetensors"),
+            modelId="303",
+            localVersionId="402",
+            remoteVersions=[_remote("402", "2026-03-01T00:00:00.000Z")],
+        )
+        d_items = [self.d_item(), d_copy]
+        self.write_last_check(d_items)
+        lora = self.archive / "Lora"
+        self.save_archive(  # each row says hasUpdate, and the saved summary says 7
+            [
+                self.z_item(),  # model 301: its v402 is new
+                self.z_item(modelPath=str(lora / "hidden.civitai.info"), modelId="302"),
+                self.z_item(modelPath=str(lora / "on_d.civitai.info"), modelId="303"),
+            ]
+        )
+        store.archive("302", ["402"])  # hidden with Hide
+        self.service.current_paths = {str(item["modelPath"]).lower() for item in d_items}
+
+        _status, body = self.call("GET", LAST_CHECK_ROUTE)
+        self.assertEqual(1, body["data"]["archive"]["withUpdates"])
+
+        self.service.d_items = d_items
+        job = self.check()
+        self.assertEqual(1, job.summary["archive"]["withUpdates"])
+        # The drive's own count is left as it was: no archived model in it.
+        self.assertEqual(0, job.summary["withUpdates"])
 
     def test_a_plain_check_keeps_the_archived_rows(self) -> None:
         self.write_last_check([self.d_item()])
@@ -356,11 +435,14 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
         job = self.check()
 
         self.assertEqual([], self.service.archive_roots)
-        # Seeded with the saved archive rows, and syncing with D kept them.
+        # Started with the saved archive rows, and syncing with D kept them. A plain check
+        # never re-checks them, so they are not seeds: their cards aren't provisional.
         seeds = {item["modelPath"]: item for item in self.service.seeds_after_sync}
         self.assertIn(self.z_path, seeds)
-        self.assertTrue(seeds[self.z_path]["_seeded"])
+        self.assertNotIn("_seeded", seeds[self.z_path])
         self.assertTrue(seeds[self.z_path]["archived"])
+        cards = _group_items_by_model(self.service.seeds_after_sync, provisional=True)
+        self.assertEqual([False], [card["isProvisional"] for card in cards if card["archived"]])
         self.assertEqual("completed", job.status)
         self.assertEqual(self.paths([self.d_item(), self.z_item()]), self.paths(job.items))
         archived = [item for item in job.items if item.get("archived")]
@@ -389,6 +471,9 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
 
         job = self.check(includeArchive=True)
 
+        # Until the pass re-checks it, the saved row is a seed.
+        seeds = {item["modelPath"]: item for item in self.service.seeds_after_sync}
+        self.assertTrue(seeds[self.z_path]["_seeded"])
         # One row per archived file while the pass streams, the fresh one.
         self.assertEqual([self.z_path], self.paths(seen))
         self.assertEqual("402", seen[0]["localVersionId"])
@@ -467,13 +552,28 @@ class LastCheckAndStatsTests(_ArchiveRoutesCase):
 
         self.assertEqual(200, status)
         data = body["data"]
-        self.assertEqual({"checkedAt": saved["checkedAt"], **saved["summary"]}, data["archive"])
+        # withUpdates counts the archived models with a new version the list shows.
+        self.assertEqual(
+            {"checkedAt": saved["checkedAt"], **saved["summary"], "withUpdates": 1}, data["archive"]
+        )
         # The archive is not a change on D.
         self.assertFalse(data["filesChanged"])
         self.assertEqual((0, 0), (data["filesAdded"], data["filesRemoved"]))
         self.assertNotIn("archive", data["summary"])
         cached = self.jobs.get(data["jobId"])
         self.assertEqual(self.paths([self.d_item(), self.z_item()]), self.paths(cached.items))
+
+    def test_last_check_reads_the_archive_results_once(self) -> None:
+        self.write_last_check([self.d_item()])
+        self.save_archive([self.z_item()])
+
+        with mock.patch("comfy_updater.archive.read_data_file", wraps=read_data_file) as read:
+            status, body = self.call("GET", LAST_CHECK_ROUTE)
+
+        self.assertEqual(200, status)
+        self.assertEqual(1, read.call_count)
+        self.assertEqual(self.paths([self.d_item(), self.z_item()]), self.paths(self.jobs.get("cached").items))
+        self.assertIn("checkedAt", body["data"]["archive"])
 
     def test_last_check_without_an_archive_folder(self) -> None:
         self.write_last_check([self.d_item()])
@@ -695,6 +795,50 @@ class RegisteredRoutesTests(unittest.TestCase):
             load = routes.handlers[("GET", "/warp-studio/updater/config")]
             body = json.loads(asyncio.run(load(_Request("GET"))).text)
             self.assertEqual(str(archive), body["config"]["archiveFolder"])
+
+    def test_saving_refuses_an_archive_folder_over_a_model_folder_and_checks_off_the_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            models = Path(tmp) / "models"
+            (models / "Lora").mkdir(parents=True)
+            vae = Path(tmp) / "vae"
+            vae.mkdir()
+            store = ConfigStore(Path(tmp) / "data")
+            jobs = JobManager()
+            service = _FakeService(jobs)
+            service.effective_roots = {"lora": [str(models / "Lora")]}
+            routes = _Routes()
+            server = SimpleNamespace(instance=SimpleNamespace(routes=routes))
+            with mock.patch("comfy_updater.routes.PromptServer", server), mock.patch(
+                "comfy_updater.routes._ROUTES_REGISTERED", False
+            ):
+                register_routes(store, service, jobs, None)
+            save = routes.handlers[("POST", "/warp-studio/updater/config")]
+            threads: list = []
+            real_problem = routes_module.custom_path_problem
+            real_overlap = routes_module.overlaps_model_root
+
+            def problem(path):
+                threads.append(("problem", threading.current_thread()))
+                return real_problem(path)
+
+            def overlap(folder, roots):
+                threads.append(("overlap", threading.current_thread()))
+                return real_overlap(folder, roots)
+
+            with mock.patch("comfy_updater.routes.custom_path_problem", problem), mock.patch(
+                "comfy_updater.routes.overlaps_model_root", overlap
+            ):
+                payload = {"archiveFolder": str(models), "customPaths": {"vae": [str(vae)]}}
+                body = json.loads(asyncio.run(save(_Request("POST", payload))).text)
+
+            self.assertEqual("", body["config"]["archiveFolder"])
+            self.assertEqual([str(vae)], body["config"]["customPaths"]["vae"])
+            self.assertEqual(
+                [f"Archive folder {models} was not saved: it overlaps a model folder."], body["pathWarnings"]
+            )
+            # The checks look at the disk: never on the server's event loop (this thread).
+            self.assertEqual({"problem", "overlap"}, {name for name, _thread in threads})
+            self.assertNotIn(threading.current_thread(), [thread for _name, thread in threads])
 
 
 class ArchiveFolderSettingTests(unittest.TestCase):

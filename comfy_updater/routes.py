@@ -20,7 +20,9 @@ from .archive import (
     archive_reference_path,
     folder_key,
     load_archive_items,
+    load_archive_results,
     load_archive_summary,
+    overlaps_model_root,
     save_archive_results,
 )
 from .civitai_client import CivitaiClient
@@ -137,14 +139,19 @@ def register_routes(
     async def save_config(request):
         payload = await _read_json(request)
         incoming = _normalize_config_payload(payload)
-        # Refused folders are left out and reported; the rest of the
-        # settings (API key, other paths) are still saved.
-        path_warnings = _drop_refused_custom_paths(
-            incoming, config_store.get().get("customPaths")
-        )
-        path_warnings += _drop_refused_archive_folder(
-            incoming, config_store.get().get("archiveFolder", "")
-        )
+        stored = config_store.get()
+
+        def refuse() -> list[str]:
+            # Refused folders are left out and reported; the rest of the
+            # settings (API key, other paths) are still saved.
+            warnings = _drop_refused_custom_paths(incoming, stored.get("customPaths"))
+            warnings += _drop_refused_archive_folder(
+                incoming, stored.get("archiveFolder", ""), updater_service.get_effective_roots()
+            )
+            return warnings
+
+        # The checks look at the disk, which may be a slow or sleeping drive.
+        path_warnings = await asyncio.to_thread(refuse)
         updated = config_store.update(incoming)
         public = dict(updated)
         public["apiKey"] = ""
@@ -152,7 +159,7 @@ def register_routes(
         return web.json_response(
             {
                 "config": public,
-                "effectiveRoots": updater_service.get_effective_roots(),
+                "effectiveRoots": await asyncio.to_thread(updater_service.get_effective_roots),
                 "pathWarnings": path_warnings,
             }
         )
@@ -430,12 +437,14 @@ def _drop_refused_custom_paths(incoming: dict, stored_paths=None) -> list[str]:
     return warnings
 
 
-def _drop_refused_archive_folder(incoming: dict, stored_folder: str = "") -> list[str]:
-    """Remove a newly set archive folder that is not a real, absolute folder.
+def _drop_refused_archive_folder(incoming: dict, stored_folder: str = "", model_roots=None) -> list[str]:
+    """Remove a newly set archive folder that is not a real, absolute folder apart from the model folders.
 
-    Like the custom paths, the stored value is kept as it is: the panel sends
-    every setting on each sync, and an archive drive that is unplugged must not
-    be forgotten. An empty value (no archive) is always allowed.
+    ``model_roots`` are the effective roots by type: an archive that is one of
+    them, lies inside one or holds one would be written to. Like the custom
+    paths, the stored value is kept as it is: the panel sends every setting on
+    each sync, and an archive drive that is unplugged must not be forgotten.
+    An empty value (no archive) is always allowed.
     """
     folder = incoming.get("archiveFolder")
     if not isinstance(folder, str) or not folder.strip():
@@ -445,6 +454,8 @@ def _drop_refused_archive_folder(incoming: dict, stored_folder: str = "") -> lis
     if stored and folder_key(folder.strip()) == folder_key(stored):
         return []
     problem = custom_path_problem(folder)
+    if not problem and model_roots and overlaps_model_root(folder, model_roots):
+        problem = "it overlaps a model folder."
     if not problem:
         return []
     del incoming["archiveFolder"]
@@ -559,6 +570,7 @@ def _normalize_archive_payload(payload: dict) -> tuple[str, list[str]]:
 # --- the check and its saved results ---------------------------------------------
 
 ARCHIVE_UNREACHABLE_ERROR = "The archive folder can't be reached."
+ARCHIVE_OVERLAP_ERROR = "The archive folder overlaps a model folder."
 _STAT_KEYS = ("downloads", "likes", "comments")
 
 
@@ -695,30 +707,44 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
             archive_items = saved_archive_items
             if payload["includeArchive"] and archive_folder and not control.is_cancelled():
                 archive_root = Path(archive_folder)
-                if not _reachable(archive_root):
+                if overlaps_model_root(archive_folder, updater_service.get_effective_roots()):
+                    # The model folders changed since it was saved: the pass would read a model
+                    # folder as the archive. Its last results stay.
+                    job_summary["archiveError"] = ARCHIVE_OVERLAP_ERROR
+                elif not _reachable(archive_root):
                     # An unplugged drive: its last results stay.
                     job_summary["archiveError"] = ARCHIVE_UNREACHABLE_ERROR
                 else:
                     archive_summary, fresh_items = updater_service.run_archive_check(
                         payload, progress, item_cb_with_progress, control, archive_root=archive_root,
                     )
+                    if archive_summary.get("archiveError"):
+                        # Nothing was looked up (no model folders in it): its last results stay.
+                        job_summary["archiveError"] = archive_summary["archiveError"]
                     # A stopped pass saves nothing, so a reload shows the saved results; like a
                     # stopped check, the job keeps what it gathered (the job ignores what a
                     # cancelled runner returns).
-                    if not control.is_cancelled():
+                    elif not control.is_cancelled():
                         archive_summary, archive_items = _merge_archive_results(
                             saved_archive_items, fresh_items, archive_summary, payload["modelTypes"]
                         )
                         save_archive_results(data_dir, archive_folder, archive_summary, archive_items)
             archive_info = load_archive_summary(data_dir, archive_folder)
             if archive_info:
+                # Counted as the Updates list shows them: after Hide, and not when on the drive.
+                archive_info["withUpdates"] = job_manager.archived_update_count(items + list(archive_items))
                 job_summary["archive"] = archive_info
             progress_path.unlink(missing_ok=True)
             return job_summary, items + list(archive_items)
 
-        job_ref = job_manager.start(
-            "check-updates", runner, seed_items=seed_items + _as_seeds(saved_archive_items)
+        # A plain check never re-checks the archived rows: they join as they are, not as
+        # seeds, so their cards don't look provisional for the whole check.
+        archive_rows = (
+            _as_seeds(saved_archive_items)
+            if payload["includeArchive"]
+            else [dict(item) for item in saved_archive_items]
         )
+        job_ref = job_manager.start("check-updates", runner, seed_items=seed_items + archive_rows)
         if not job_ref:
             return web.json_response({"error": "A job is already running."}, status=409)
         job_holder["job"] = job_ref
@@ -762,13 +788,11 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
             )
         data_dir = config_store.data_dir
         archive_folder = _archive_folder(config_store)
-        archive_items, archive_info = await asyncio.to_thread(
-            lambda: (
-                load_archive_items(data_dir, archive_folder),
-                load_archive_summary(data_dir, archive_folder),
-            )
-        )
+        archive_items, archive_info = await asyncio.to_thread(load_archive_results, data_dir, archive_folder)
         job = job_manager.load_cached_check(data, extra_items=archive_items)
+        if archive_info:
+            # Counted as the Updates list shows them: after Hide, and not when on the drive.
+            archive_info["withUpdates"] = await asyncio.to_thread(job_manager.archived_update_count, job.items)
 
         # Files on D only: the archive's rows are not in last_check.json.
         cached_paths = {str(item.get("modelPath", "")).lower() for item in data.get("items", []) if item.get("modelPath")}
@@ -1689,15 +1713,19 @@ def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
-def _job_file(job, wanted: str) -> Optional[str]:
-    """``wanted`` when the job's own results list it (a checked file, a dry run row or its kept copy)."""
+def _job_entry(job, wanted: str) -> Optional[tuple[str, dict]]:
+    """``wanted`` as the job's own results list it, with the item that lists it.
+
+    That is a checked file or the weights it names (an info file alone on this
+    drive, an archived row), a dry run row or its kept copy.
+    """
     for item in job.items:
         if not isinstance(item, dict):
             continue
-        for field in ("modelPath", "survivorPath"):
+        for field in ("modelPath", "filePath", "survivorPath"):
             value = item.get(field)
             if isinstance(value, str) and value and _same_path(value, wanted):
-                return value
+                return value, item
     return None
 
 
@@ -1729,10 +1757,14 @@ async def local_preview_response(request, get_job) -> web.Response:
     job = get_job(job_id.strip())
     if job is None:
         return web.json_response({"error": "job not found"}, status=404)
-    listed = _job_file(job, wanted)
-    if listed is None:
+    entry = _job_entry(job, wanted)
+    if entry is None:
         return web.json_response({"error": "That file is not in these results."}, status=400)
-    data = await asyncio.to_thread(_read_capped, preview_path_for(Path(listed)), _MAX_LOCAL_PREVIEW_BYTES)
+    listed, item = entry
+    # Of the archive only its .civitai.info files are read, never a preview.
+    data = None
+    if not item.get("archived"):
+        data = await asyncio.to_thread(_read_capped, preview_path_for(Path(listed)), _MAX_LOCAL_PREVIEW_BYTES)
     if data is None:
         return web.json_response({"error": "This file has no local preview."}, status=404)
     if len(data) > _MAX_LOCAL_PREVIEW_BYTES:
@@ -1762,9 +1794,14 @@ async def reveal_response(request, get_job, *, launch=_launch_detached, platform
     if job is None:
         return web.json_response({"error": "job not found"}, status=404)
     if by_path:
-        target = _job_file(job, wanted)
-        if target is None:
+        entry = _job_entry(job, wanted)
+        if entry is None:
             return web.json_response({"error": "That file is not in these results."}, status=400)
+        target, item = entry
+        info = item.get("modelPath")
+        # The weights of an info file alone on the drive aren't there: show the info file.
+        if target == item.get("filePath") and isinstance(info, str) and info and not os.path.lexists(target):
+            target = info
     else:
         row = next((item for item in job.items if isinstance(item, dict) and item.get("key") == key), None)
         if row is None:

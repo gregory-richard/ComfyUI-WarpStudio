@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from comfy_updater import updater_service
 from comfy_updater.civitai_client import CivitaiClient, CivitaiRequestError
 from comfy_updater.config_store import ConfigStore
 from comfy_updater.updater_service import UpdaterService
@@ -147,6 +149,49 @@ class ArchiveCheckTests(unittest.TestCase):
         self.assertTrue(items[0]["archived"])
         self.assertNotIn("modelStats", items[0])
         self.assertEqual(1, summary["errors"])
+
+    def _unplug_after_listing(self):
+        """The real listing, then the archive drive drops out before any lookup."""
+        real_listing = updater_service.list_archive_entries
+
+        def listing(archive_root, type_roots):
+            listed = real_listing(archive_root, type_roots)
+            shutil.rmtree(self.archive)
+            return listed
+
+        return patch("comfy_updater.updater_service.list_archive_entries", listing)
+
+    def test_a_drive_lost_after_listing_still_checks_what_was_listed(self) -> None:
+        client = FakeModelClient(_model(downloadCount=5))
+
+        with self._unplug_after_listing():
+            summary, items, _messages = self._run(client)
+
+        self.assertFalse(self.archive.exists())
+        self.assertEqual([("ok", "123", "456")], [(i["status"], i["modelId"], i["localVersionId"]) for i in items])
+        self.assertEqual((1, 0), (summary["resolved"], summary["notFound"]))
+
+    def test_an_unexpected_failure_after_the_drive_is_lost_keeps_the_model_id(self) -> None:
+        client = FakeModelClient(_model())
+        client.get_model = lambda model_id, *, raise_on_error=False: 1 / 0  # noqa: ARG005
+
+        with self._unplug_after_listing():
+            _summary, items, _messages = self._run(client)
+
+        self.assertEqual([("error", "123")], [(item["status"], item["modelId"]) for item in items])
+
+    def test_an_archive_without_model_folders_fails_and_looks_nothing_up(self) -> None:
+        (self.archive / "Lora").rename(self.archive / "Stuff")
+        for layout in ("renamed", "empty"):  # an unmounted mount point is an empty folder
+            if layout == "empty":
+                shutil.rmtree(self.archive / "Stuff")
+            with self.subTest(layout=layout):
+                client = FakeModelClient(error="must not be asked")
+
+                summary, items, _messages = self._run(client)
+
+                self.assertEqual("No model folders found in the archive folder.", summary["archiveError"])
+                self.assertEqual([], items)
 
     def test_plain_check_items_carry_model_stats(self) -> None:
         models = self.tmp / "D" / "Lora"

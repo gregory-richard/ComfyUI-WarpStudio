@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from comfy_updater.archive import (
     ARCHIVE_RESULTS_FILENAME,
@@ -11,11 +12,14 @@ from comfy_updater.archive import (
     archive_type_folders,
     list_archive_entries,
     load_archive_items,
+    load_archive_results,
     load_archive_summary,
+    overlaps_model_root,
     save_archive_results,
 )
 from comfy_updater.config_store import ConfigStore
 from comfy_updater.routes import _drop_refused_archive_folder, _normalize_config_payload
+from comfy_updater.sidecar import read_data_file
 
 
 def _write(path: Path, text: str = "") -> Path:
@@ -47,7 +51,9 @@ class ArchiveListingTests(unittest.TestCase):
         self.assertTrue(entry["metadataOnly"])
         self.assertEqual(archive / "Lora" / "sdxl" / "a.civitai.info", entry["infoPath"])
         self.assertEqual(archive / "Lora" / "sdxl" / "a.safetensors", entry["filePath"])
-        self.assertEqual({"models": 1, "withoutInfo": 1}, counts)
+        # The info read here is what the check uses: it never reads the drive again.
+        self.assertEqual({"modelId": 1, "id": 10}, entry["info"])
+        self.assertEqual({"models": 1, "withoutInfo": 1, "typeFolders": 1}, counts)
 
     def test_an_existing_weights_file_is_the_file_path(self) -> None:
         archive = self.tmp / "Z"
@@ -79,7 +85,18 @@ class ArchiveListingTests(unittest.TestCase):
         d_lora.mkdir(parents=True)
         entries, counts = list_archive_entries(self.tmp / "gone", {"lora": [d_lora]})
         self.assertEqual([], entries)
-        self.assertEqual({"models": 0, "withoutInfo": 0}, counts)
+        self.assertEqual({"models": 0, "withoutInfo": 0, "typeFolders": 0}, counts)
+
+    def test_top_folders_that_match_no_type_are_counted_as_none(self) -> None:
+        archive = self.tmp / "Z"
+        _write(archive / "Stuff" / "a.civitai.info", json.dumps({"modelId": 1, "id": 10}))
+        d_lora = self.tmp / "D" / "Lora"
+        d_lora.mkdir(parents=True)
+
+        entries, counts = list_archive_entries(archive, {"lora": [d_lora]})
+
+        self.assertEqual([], entries)
+        self.assertEqual(0, counts["typeFolders"])
 
 
 class ArchiveReferencePathTests(unittest.TestCase):
@@ -146,6 +163,16 @@ class ArchiveResultsTests(unittest.TestCase):
         self.assertEqual(1, summary["models"])
         self.assertTrue(summary["checkedAt"])
 
+    def test_items_and_summary_come_from_one_read(self) -> None:
+        save_archive_results(self.data_dir, r"Z:\models", {"models": 1}, [{"id": 1}])
+        with mock.patch("comfy_updater.archive.read_data_file", wraps=read_data_file) as read:
+            items, summary = load_archive_results(self.data_dir, r"Z:\models")
+        self.assertEqual(1, read.call_count)
+        self.assertEqual([{"id": 1}], items)
+        self.assertEqual(1, summary["models"])
+        self.assertTrue(summary["checkedAt"])
+        self.assertEqual(([], {}), load_archive_results(self.data_dir, r"Y:\models"))
+
     def test_results_for_another_folder_are_not_loaded(self) -> None:
         save_archive_results(self.data_dir, r"Z:\models", {"models": 1}, [{"id": 1}])
         self.assertEqual([], load_archive_items(self.data_dir, r"Y:\models"))
@@ -208,6 +235,49 @@ class ArchiveConfigTests(unittest.TestCase):
         self.store.update({"archiveFolder": gone})
         self.assertEqual([], self._save({"archiveFolder": gone}))
         self.assertEqual(gone, self.store.get()["archiveFolder"])
+
+
+class ArchiveOverlapTests(unittest.TestCase):
+    """An archive folder that is, holds or lies inside a model folder would be written to."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.models = self.tmp / "D" / "models"
+        self.d_lora = self.models / "Lora"
+        (self.d_lora / "old").mkdir(parents=True)
+        self.archive = self.tmp / "Z" / "models"
+        self.archive.mkdir(parents=True)
+        self.roots = {"lora": [str(self.d_lora)], "vae": []}
+
+    def test_overlap_is_equal_inside_or_holding(self) -> None:
+        for folder in (self.d_lora, self.d_lora / "old", self.models, Path(str(self.d_lora) + "/")):
+            with self.subTest(folder=folder):
+                self.assertTrue(overlaps_model_root(str(folder), self.roots))
+        for folder in (self.archive, self.tmp / "D" / "models2", self.tmp / "D" / "models" / "Lor"):
+            with self.subTest(folder=folder):
+                self.assertFalse(overlaps_model_root(str(folder), self.roots))
+        self.assertFalse(overlaps_model_root(str(self.d_lora), {}))
+
+    def test_an_overlapping_folder_is_refused_at_save(self) -> None:
+        for relation, folder in (
+            ("equal", self.d_lora),
+            ("inside", self.d_lora / "old"),
+            ("holding", self.models),
+        ):
+            with self.subTest(relation=relation):
+                incoming = {"archiveFolder": str(folder)}
+                warnings = _drop_refused_archive_folder(incoming, "", self.roots)
+                self.assertEqual(
+                    [f"Archive folder {folder} was not saved: it overlaps a model folder."], warnings
+                )
+                self.assertNotIn("archiveFolder", incoming)
+
+    def test_a_folder_apart_from_the_model_folders_is_saved(self) -> None:
+        incoming = {"archiveFolder": str(self.archive)}
+        self.assertEqual([], _drop_refused_archive_folder(incoming, "", self.roots))
+        self.assertEqual(str(self.archive), incoming["archiveFolder"])
 
 
 if __name__ == "__main__":

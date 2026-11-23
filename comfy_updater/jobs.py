@@ -299,6 +299,15 @@ class JobManager:
         merged["hiddenUpdates"] = hidden_updates
         return merged
 
+    def archived_update_count(self, items: list[dict]) -> int:
+        """How many models held only in the archive have a new version the Updates list shows.
+
+        ``items`` are the drive's and the archive's together: a version on the
+        drive is not new, and the Hide list applies, as in the list itself.
+        """
+        grouped = _group_items_by_model(items, archived_versions=self._archived_snapshot(), provisional=False)
+        return sum(1 for group in grouped if group.get("archived") and group.get("hasUpdate"))
+
     def job_ids(self, job_type: str) -> list[str]:
         """Ids of every job of this type still held, finished or not."""
         with self._lock:
@@ -780,7 +789,8 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
                 }
 
     # The same release held on the drive and in the archive is a duplicate:
-    # the drive copy is flagged with the archived file's name.
+    # the drive copy is flagged with the archived file's name. When the drive
+    # holds only its info file, that leftover is flagged as such.
     archived_names: dict[str, str] = {}
     for local_version in local_versions:
         version_id = local_version.get("versionId", "")
@@ -792,6 +802,8 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
         version_id = local_version.get("versionId", "")
         if not local_version.get("archived") and version_id in archived_names:
             local_version["alsoArchived"] = archived_names[version_id]
+            if local_version.get("metadataOnly"):
+                local_version["infoOnly"] = True
     archived_only = bool(local_versions) and all(version.get("archived") for version in local_versions)
 
     # A local version without a date cannot be compared, and an empty newest
