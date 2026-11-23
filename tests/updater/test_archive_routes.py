@@ -397,9 +397,11 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
 
     def test_a_stopped_archive_pass_keeps_the_saved_results(self) -> None:
         self.write_last_check([self.d_item()])
-        self.save_archive([self.z_item()])
+        later_path = str(self.archive / "Lora" / "later.civitai.info")
+        self.save_archive([self.z_item(), self.z_item(modelPath=later_path, modelId="302")])
         before = self.archive_file()
         self.service.d_items = [self.d_item(localVersionId="202")]
+        # Stopped after the first archived row: the second one was never re-checked.
         self.service.archive_items = [self.z_item(localVersionId="402")]
         self.service.stop_during = "archive"
 
@@ -409,6 +411,12 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
         self.assertEqual(before, self.archive_file())
         # The normal part had finished: its results were saved.
         self.assertEqual("202", self.last_check()["items"][0]["localVersionId"])
+        # Like a stopped check, the job keeps what it gathered: the fresh rows and the seeds not yet replaced.
+        self.assertEqual(sorted([self.d_path, self.z_path, later_path]), self.paths(job.items))
+        rows = {item["modelPath"]: item for item in job.items}
+        self.assertEqual(("202", None), (rows[self.d_path]["localVersionId"], rows[self.d_path].get("_seeded")))
+        self.assertEqual(("402", None), (rows[self.z_path]["localVersionId"], rows[self.z_path].get("_seeded")))
+        self.assertEqual(("401", True), (rows[later_path]["localVersionId"], rows[later_path].get("_seeded")))
 
     def test_a_stopped_check_skips_the_archive_pass(self) -> None:
         self.save_archive([self.z_item()])
@@ -585,6 +593,40 @@ class ArchivedDownloadTests(_ArchiveRoutesCase):
 
         status, body = self.post_download()
         self.assertEqual(200, status, body)
+        _join_job_threads()
+
+        self.assertEqual(
+            [self.d_lora / "sdxl" / "old.civitai.info"],
+            [Path(request.reference_path) for request in self.requests],
+        )
+
+    def test_register_routes_gives_downloads_the_archive_reference(self) -> None:
+        routes = _Routes()
+        server = SimpleNamespace(instance=SimpleNamespace(routes=routes))
+        with mock.patch("comfy_updater.routes.PromptServer", server), mock.patch(
+            "comfy_updater.routes._ROUTES_REGISTERED", False
+        ):
+            register_routes(
+                self.config_store,
+                self.service,
+                self.jobs,
+                None,
+                decisions=DecisionStore(self.data_dir),
+                base_codes=BaseCodeStore(self.data_dir),
+                answer_cache=AnswerCache(self.data_dir),
+                journal=RenameJournal(self.data_dir),
+            )
+        payload = {
+            "source": "updates",
+            "jobId": "check-1",
+            "modelId": "301",
+            "versionId": "402",
+            "modelPath": self.z_path,
+        }
+
+        handler = routes.handlers[("POST", "/warp-studio/updater/downloads")]
+        response = asyncio.run(handler(_Request("POST", payload)))
+        self.assertEqual(200, response.status, response.text)
         _join_job_threads()
 
         self.assertEqual(

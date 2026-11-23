@@ -691,6 +691,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
             # The archive comes after the drive, and only once the drive's
             # check ran to its end. Its results never go into last_check.json.
             job_summary = dict(summary)
+            # A check that doesn't run the pass (plain, or the archive unreachable) ends with the saved rows.
             archive_items = saved_archive_items
             if payload["includeArchive"] and archive_folder and not control.is_cancelled():
                 archive_root = Path(archive_folder)
@@ -701,7 +702,9 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
                     archive_summary, fresh_items = updater_service.run_archive_check(
                         payload, progress, item_cb_with_progress, control, archive_root=archive_root,
                     )
-                    # A stopped pass checked only part of it: the last results stay.
+                    # A stopped pass saves nothing, so a reload shows the saved results; like a
+                    # stopped check, the job keeps what it gathered (the job ignores what a
+                    # cancelled runner returns).
                     if not control.is_cancelled():
                         archive_summary, archive_items = _merge_archive_results(
                             saved_archive_items, fresh_items, archive_summary, payload["modelTypes"]
@@ -1466,7 +1469,7 @@ def _register_model_action_routes(
             return refused(problem)
         if payload["source"] == "updates":
             job = job_manager.get(payload["jobId"]) if payload["jobId"] else None
-            # An archived row looks in the archive and the model folders: off the event loop.
+            # An archived row looks for its subfolder in the model folders: off the event loop.
             made = await asyncio.to_thread(
                 updates_request,
                 payload,
