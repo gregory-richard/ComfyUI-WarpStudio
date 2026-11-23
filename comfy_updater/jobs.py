@@ -209,11 +209,14 @@ class JobManager:
                 return None
             items = list(job.items)
             provisional = job.status in ("running", "queued", "paused")
+            # A row stamped after the check finished came from a download since.
+            finished_at = None if provisional else job.finishedAt
 
         all_groups = _group_items_by_model(
             items,
             archived_versions=self._archived_snapshot(),
             provisional=provisional,
+            downloaded_after=_parse_iso(finished_at or ""),
         )
 
         grouped = all_groups
@@ -238,8 +241,11 @@ class JobManager:
         # What each view would list under the same filters, so the panel can
         # label its Updates / Issues switch without a second request.
         filtered_all, _ = _filter_groups(all_groups, model_types, base_models, mature_mode)
+        # Updates counts models with a new version, not the ones kept for a download.
         mode_counts = {
-            name: sum(1 for group in filtered_all if _in_mode(group, name, show_hidden))
+            name: sum(
+                1 for group in filtered_all if _in_mode(group, name, show_hidden, with_downloaded=False)
+            )
             for name in RESULT_MODES
         }
 
@@ -699,6 +705,7 @@ def _group_items_by_model(
     items: list[dict],
     archived_versions: dict[str, set[str]] | None = None,
     provisional: bool = False,
+    downloaded_after: datetime | None = None,
 ) -> list[dict]:
     groups: dict[str, list[dict]] = {}
     ungrouped: list[dict] = []
@@ -719,7 +726,11 @@ def _group_items_by_model(
     archived_versions = archived_versions or {}
 
     for model_id, members in groups.items():
-        result.append(_build_group(model_id, members, archived_versions.get(model_id, set()), provisional))
+        result.append(
+            _build_group(
+                model_id, members, archived_versions.get(model_id, set()), provisional, downloaded_after
+            )
+        )
 
     for item in ungrouped:
         result.append(_build_ungrouped_item(item, provisional))
@@ -727,7 +738,26 @@ def _group_items_by_model(
     return result
 
 
-def _build_group(model_id: str, members: list[dict], archived_ids: set[str], provisional: bool) -> dict:
+def _added_after(member: dict, after: datetime | None) -> bool:
+    """A drive row stamped after ``after``: a download made since the check finished.
+
+    A check stamps its rows while it runs; ``check_records.downloaded_item`` stamps
+    the download's time. Archived rows never count: the archive pass stamps them
+    after the drive's pass has ended.
+    """
+    if after is None or member.get("archived"):
+        return False
+    stamp = _parse_iso(member.get("lastCheckedAt", ""))
+    return stamp is not None and stamp > after
+
+
+def _build_group(
+    model_id: str,
+    members: list[dict],
+    archived_ids: set[str],
+    provisional: bool,
+    downloaded_after: datetime | None = None,
+) -> dict:
     representative = members[0]
     creator_name = ""
     model_url = ""
@@ -764,6 +794,7 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
                     "hasLocalPreview": bool(member.get("hasLocalPreview")),
                     "status": member.get("status", ""),
                     "error": member.get("error", ""),
+                    "downloaded": _added_after(member, downloaded_after),
                 }
             )
         if local_version_id:
@@ -884,6 +915,8 @@ def _build_group(model_id: str, members: list[dict], archived_ids: set[str], pro
         "hasUpdate": bool(new_versions),
         "hasHiddenUpdates": bool(hidden_versions),
         "hasAnyUpdate": bool(new_versions or hidden_versions),
+        # Kept in Updates until the next check, so the old versions can still be deleted.
+        "downloaded": any(version["downloaded"] for version in local_versions),
         "newestLocalVersionDate": newest_local_date,
         "localVersions": local_versions,
         "newVersions": new_versions,
@@ -996,9 +1029,13 @@ def _sort_grouped(items: list[dict], sort: str | None) -> list[dict]:
     return items
 
 
-def _in_mode(group: dict, mode: str, show_hidden: bool) -> bool:
+def _in_mode(group: dict, mode: str, show_hidden: bool, *, with_downloaded: bool = True) -> bool:
     if mode == "updates":
-        return bool(group.get("hasUpdate") or (show_hidden and group.get("hasHiddenUpdates")))
+        return bool(
+            group.get("hasUpdate")
+            or (show_hidden and group.get("hasHiddenUpdates"))
+            or (with_downloaded and group.get("downloaded"))
+        )
     if mode == "issues":
         return bool(group.get("issueCount"))
     return True
