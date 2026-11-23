@@ -1394,6 +1394,40 @@ class DownloadRouteTests(_Dirs):
         after = self.jobs.get_items("check-2", mode="updates", limit=50)["items"]
         self.assertEqual([["202"]], [[v["versionId"] for v in card["newVersions"]] for card in after])
 
+    def test_delete_file_serves_only_a_check_job(self) -> None:
+        Path(self.v1).write_bytes(b"x")
+        self.jobs.restore_job(
+            "rename-dry-run", "dry-1", startedAt="", finishedAt="", summary={}, items=[self.item()]
+        )
+
+        status, body = self.delete_file(self.v1, job_id="dry-1")
+
+        self.assertEqual((404, "job not found"), (status, body["error"]))
+        self.assertTrue(Path(self.v1).exists())
+
+    def finished_download(self, version_id: str) -> None:
+        request = DownloadRequest(
+            key=f"version:{version_id}", source="updates", model_id="101", version_id=version_id, model_type="lora"
+        )
+        self.queue.submit(request)
+        self.queue.take_next()
+        self.queue.finish(request, "done")
+        self.queue.take_next()
+
+    def test_deleting_a_downloaded_version_forgets_its_finished_download(self) -> None:
+        # Its row is new again: it must offer Download, not say Downloaded.
+        new_path = self.folder / "glow v2.safetensors"
+        new_path.write_bytes(b"x")
+        self.listed_job(self.item(modelPath=str(new_path), filePath=str(new_path), localVersionId="202"))
+        self.finished_download("202")
+        self.finished_download("203")
+
+        status, body = self.delete_file(str(new_path), job_id="check-2")
+
+        self.assertEqual(200, status, body)
+        _status, downloads = self.call("GET", "/warp-studio/updater/downloads")
+        self.assertEqual(["version:203"], [record["key"] for record in downloads["requests"]])
+
     def test_delete_resolves_in_the_kind_folder(self) -> None:
         diffusion = self.root / "diffusion_models"
         diffusion.mkdir()

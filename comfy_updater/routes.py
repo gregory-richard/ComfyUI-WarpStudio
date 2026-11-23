@@ -1589,7 +1589,7 @@ def _register_model_action_routes(
         if not isinstance(job_id, str) or not job_id.strip() or not isinstance(wanted, str) or not wanted.strip():
             return web.json_response({"error": "jobId and the path of a listed file are required"}, status=400)
         job = job_manager.get(job_id.strip())
-        if job is None:
+        if job is None or job.type != CHECK_JOB:
             return web.json_response({"error": "job not found"}, status=404)
         entry = _job_entry(job, wanted)
         if entry is None:
@@ -1618,6 +1618,10 @@ def _register_model_action_routes(
             )
         except DownloadError as exc:
             return web.json_response({"error": str(exc)}, status=500)
+        version_id = str(item.get("localVersionId") or "")
+        if version_id:
+            # Its release is new again: its card offers Download, not "Downloaded".
+            queue.forget_finished(f"version:{version_id}")
         return web.json_response(result)
 
     return queue

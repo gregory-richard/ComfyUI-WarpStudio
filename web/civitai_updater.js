@@ -1750,6 +1750,13 @@ async function onRowDelete(button) {
   // Success: the refresh redraws the card without this row. Never repaint Delete under the cursor
   // in between; only a row the server kept turns back afterwards.
   rowAsking.delete(path);
+  // The server forgot that version's finished download: read the records again, so a
+  // release that is new again offers Download instead of saying Downloaded.
+  try {
+    await loadDownloads();
+  } catch {
+    /* the list still refreshes; the slot catches up at the next read */
+  }
   await refreshAfterAction();
   setRowAsking(path, null);
 }
