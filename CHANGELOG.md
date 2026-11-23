@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.0] - 2026-11-23
+
+### Security
+
+- **The Prompt Writer's and the Gallery's routes now need the panel's header**, as the updater's always did. Before, another web page open in the same browser could save a Prompt Writer key, or have ComfyUI send a prompt with pictures from its output folder to an address of that page's choosing. All `/warp-studio/llm/*` routes, `/warp-studio/loras`, `/models`, `/embeddings`, `/loras/missing` and `/model/base` refuse a request without `X-Civitai-Updater: 1`, a cross-site request, and a POST that isn't `application/json`
+- **Model names stay inside the model folders**: a name with a drive, a leading slash or a `..` step finds nothing, and a lookup that answers with a path outside ComfyUI's folders for that type is refused. This covers `/warp-studio/model/base`, the thumbnails and the LoRA tags in prompts
+- A **Network and privacy** section in the README lists every host Warp Studio talks to and what it sends
 
 ### Added
 

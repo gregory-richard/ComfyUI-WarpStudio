@@ -1129,14 +1129,20 @@ def key_status(base_url: str, *, env, key_file) -> dict:
     return {"set": bool(source), "source": source, "host": sorted(hosts)[0]}
 
 
-def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None:
-    """Attach the /warp-studio/llm routes. Blocking work runs in a thread."""
+def register(routes, web, *, user_dir: str, settings_loader, image_path, guard) -> None:
+    """Attach the /warp-studio/llm routes. Blocking work runs in a thread.
+
+    ``guard`` wraps every handler. It refuses requests that did not come from the
+    ComfyUI page (see comfy_updater/request_guard.py), so no other web page the
+    user has open can save a key or have a prompt or picture sent anywhere.
+    """
     import asyncio
 
     key_file = Path(user_dir) / KEY_FILE_NAME
     log_path = Path(user_dir) / LOG_FILE_NAME
 
     @routes.get("/warp-studio/llm/models")
+    @guard
     async def _models(request):
         base_url = request.query.get("base_url", "") or DEFAULT_BASE_URL
         refresh = request.query.get("refresh") == "1"
@@ -1146,12 +1152,14 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None
         return web.json_response(out)
 
     @routes.get("/warp-studio/llm/key_status")
+    @guard
     async def _key_status(request):
         base_url = request.query.get("base_url", "") or DEFAULT_BASE_URL
         out = await asyncio.to_thread(key_status, base_url, env=os.environ, key_file=key_file)
         return web.json_response(out)
 
     @routes.post("/warp-studio/llm/key")
+    @guard
     async def _save_key(request):
         try:
             body = await request.json()
@@ -1166,6 +1174,7 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None
         return web.json_response(out)
 
     @routes.get("/warp-studio/llm/system_prompt")
+    @guard
     async def _system_prompt(request):
         settings = await asyncio.to_thread(settings_loader, request)
         name = request.query.get("name", "")
@@ -1173,11 +1182,13 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None
         return web.json_response(out)
 
     @routes.get("/warp-studio/llm/system_prompts")
+    @guard
     async def _system_prompts(request):
         settings = await asyncio.to_thread(settings_loader, request)
         return web.json_response(handle_system_prompts(settings))
 
     @routes.post("/warp-studio/llm/title")
+    @guard
     async def _title(request):
         try:
             body = await request.json()
@@ -1187,6 +1198,7 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path) -> None
         return web.json_response(out)
 
     @routes.post("/warp-studio/llm/write")
+    @guard
     async def _write(request):
         try:
             body = await request.json()

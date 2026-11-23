@@ -1240,10 +1240,19 @@ naming it rather than quietly dropping it.
 ## HTTP API
 
 Every route starts with `/warp-studio/`, and is registered on ComfyUI's own
-`PromptServer` at import. They exist for Warp Studio's frontend; nothing stops
-you calling them yourself. The first group serves the nodes and the Prompt
-Writer. The Warp Studio panel's routes, under `/warp-studio/updater/`, are
-[further down](#warp-studio-panel-routes).
+`PromptServer` at import. They exist for Warp Studio's frontend. The first group
+serves the nodes and the Prompt Writer. The Warp Studio panel's routes, under
+`/warp-studio/updater/`, are [further down](#warp-studio-panel-routes).
+
+Every route but the thumbnail asks for the header `X-Civitai-Updater: 1`, and a
+POST must be sent as `application/json`. A request from another site (by `Origin`
+or `Sec-Fetch-Site`) is refused with 403 even with the header. A browser sends a
+custom header to another site only after a CORS preflight, which ComfyUI refuses
+unless it runs with `--enable-cors-header`, so no other web page you have open can
+call these routes. The thumbnail route stays open because an `<img>` sends no
+header; it serves only a preview that sits next to a file in one of ComfyUI's
+model folders. A `name` with a drive, a leading slash or a `..` step finds
+nothing.
 
 If `aiohttp` or `server` cannot be imported — running the module outside
 ComfyUI, for tests or a lint — registration is skipped and the nodes still work.

@@ -16,6 +16,8 @@ import { galleryOnlyBases } from "./gallery_core.js";
 import { infoHtml, menuHtml, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
+// The server refuses requests without this header (see request_guard.js).
+import { GUARD_HEADERS } from "./request_guard.js";
 
 const TAB_ID = "warp-studio-updater";
 const EXTENSION_NAME = "warpstudio.updater";
@@ -2911,10 +2913,6 @@ function closeLightbox() {
     state.lightboxKeyHandler = null;
   }
 }
-
-// The server refuses requests without this header (see request_guard.py):
-// a browser sends it cross-origin only after a CORS preflight ComfyUI denies.
-const GUARD_HEADERS = { "X-Civitai-Updater": "1" };
 
 async function getJson(path) {
   const response = await api.fetchApi(path, { headers: GUARD_HEADERS });

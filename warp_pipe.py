@@ -15,8 +15,10 @@ from typing import Any, ClassVar, Optional
 
 try:
     from .comfy_updater import model_files
+    from .comfy_updater.request_guard import guarded
 except ImportError:
     from comfy_updater import model_files
+    from comfy_updater.request_guard import guarded
 
 logger = logging.getLogger("WarpPipe")
 
@@ -1247,18 +1249,51 @@ def model_autov2(file_path: Optional[str]) -> Optional[str]:
     return sha[:AUTOV2_LENGTH].lower() if sha else None
 
 
+def _safe_model_name(name: Any) -> bool:
+    """A name relative to a model folder: no drive, no leading slash, no ``..`` step."""
+    if not isinstance(name, str) or not name or "\0" in name:
+        return False
+    if os.path.isabs(name) or name[:1] in "/\\" or (len(name) > 1 and name[1] == ":"):
+        return False
+    return ".." not in re.split(r"[\\/]", name)
+
+
+def _within(root: str, path: str) -> bool:
+    """True when ``path`` sits inside ``root``, compared as written (a link stays the user's)."""
+    base = os.path.normcase(os.path.abspath(root))
+    target = os.path.normcase(os.path.abspath(path))
+    try:
+        return target != base and os.path.commonpath([base, target]) == base
+    except ValueError:  # another drive
+        return False
+
+
 def _resolve_model_path(folder: str, name: Optional[str]) -> Optional[str]:
-    if not name:
+    """The file ``name`` names in one of ComfyUI's ``folder`` folders, never a path outside them."""
+    if not _safe_model_name(name):
         return None
     try:
         import folder_paths
     except ImportError:
         return None
     try:
-        return folder_paths.get_full_path(folder, name)
+        path = folder_paths.get_full_path(folder, name)
     except Exception as exc:
         logger.debug("Could not resolve %s/%s: %s", folder, name, exc)
         return None
+    if not path:
+        return None
+    # ComfyUI keeps its lookup inside its folders already; checked again here so
+    # no route of ours depends on that alone.
+    get_roots = getattr(folder_paths, "get_folder_paths", None)
+    if get_roots is not None:
+        try:
+            roots = get_roots(folder)
+        except Exception:
+            return None
+        if not any(_within(root, path) for root in roots):
+            return None
+    return path
 
 
 def _as_float(value: Any, default: float = 1.0) -> float:
@@ -2407,23 +2442,30 @@ def _register_routes() -> None:
     if routes is None:
         return
 
+    # Every JSON route needs the panel's header (see request_guard). The
+    # thumbnail route cannot ask for it, since an <img> sends none.
     @routes.get("/warp-studio/loras")
+    @guarded
     async def _loras(request):
         return web.json_response({"loras": lora_index()})
 
     @routes.get("/warp-studio/models")
+    @guarded
     async def _models(request):
         return web.json_response({"models": await asyncio.to_thread(models_index)})
 
     @routes.get("/warp-studio/loras/missing")
+    @guarded
     async def _missing_loras(request):
         return web.json_response({"loras": await asyncio.to_thread(missing_lora_index)})
 
     @routes.get("/warp-studio/embeddings")
+    @guarded
     async def _embeddings(request):
         return web.json_response({"embeddings": embedding_index()})
 
     @routes.get("/warp-studio/model/base")
+    @guarded
     async def _model_base(request):
         """The base model of an arbitrary model file, for matching LoRAs to it."""
         name = request.query.get("name", "")
@@ -2503,6 +2545,7 @@ def _register_prompt_writer_routes(routes, web, instance) -> None:
         user_dir=folder_paths.get_user_directory(),
         settings_loader=settings_loader,
         image_path=image_path,
+        guard=guarded,
     )
     logger.info("WarpPipe Prompt Writer routes registered (/warp-studio/llm)")
 

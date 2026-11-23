@@ -75,7 +75,7 @@ from .renamer import (
 )
 from .rename_folders import plan_moves, recheck_folder_flags
 from .rename_store import RenameLog
-from .request_guard import request_rejection
+from .request_guard import guarded
 from .sidecar import preview_path_for, read_data_file, write_json
 from .updater_service import sidecar_seed_item
 
@@ -88,17 +88,8 @@ except ModuleNotFoundError:  # pragma: no cover - only outside ComfyUI
 _ROUTES_REGISTERED = False
 
 
-def _guarded(handler):
-    """Refuse requests that did not come from the updater panel (see request_guard)."""
-
-    @functools.wraps(handler)
-    async def wrapper(request):
-        reason = request_rejection(request.method, request.headers, request.host)
-        if reason:
-            return web.json_response({"error": reason}, status=403)
-        return await handler(request)
-
-    return wrapper
+# Refuse requests that did not come from the panel (see request_guard).
+_guarded = guarded
 
 
 def register_routes(

@@ -278,6 +278,25 @@ them. Every move is recorded in `ComfyUI/user/warp-studio/updater/rename_log.jso
 What is never renamed, and the rest of the details, are in the
 [wiki](WIKI.md#warp-studio-panel).
 
+## Network and privacy
+
+Warp Studio talks to the internet only for the features below, and only to these hosts:
+
+| Feature | Goes to | What is sent |
+| --- | --- | --- |
+| Updates, metadata, previews | Civitai (`civitai.com`, `civitai.red`) | Your files' SHA-256 hashes and the Civitai ids in their info files. Your Civitai API key, if you set one, goes to Civitai and nowhere else |
+| Download and Replace | Civitai, then the public https download host it redirects to | The file request. The key is dropped when the redirect leaves Civitai, and every file is checked against Civitai's SHA-256 |
+| Previews from other sources (off until you set them up) | `huggingface.co`, `*.hf.co`, `civarchive.com`, `c.genur.art` | Hashes, and the author or repo names you entered |
+| Prompt Writer | The AI provider in your settings (NanoGPT by default) | Your idea, the chat so far, the LoRAs you picked, and the pictures you attach. Pictures come only from ComfyUI's input, output and temp folders. A key goes only to the host it was saved for. Plain http only to this computer |
+| Renaming | Nothing: it runs a local model through ComfyUI's own queue | |
+
+On your computer, Warp Studio reads, moves and deletes files only inside
+ComfyUI's model folders, and Delete sends them to the Recycle Bin. **Show in
+folder** works only in a browser on the computer ComfyUI runs on. Every route
+but the thumbnail asks for a header that only the ComfyUI page sends, so no
+other web page you have open can call them. The details are in the
+[wiki](WIKI.md#http-api).
+
 ## Example workflow
 
 <img src="examples/workflow_example_screenshot.png" alt="The example workflow: two model groups feeding one shared pipeline" width="820">
