@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 from typing import Callable
 
+from .archive import list_archive_entries
 from .civitai_client import CivitaiClient, CivitaiRequestError
 from .fallback_http import FallbackHttp
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
@@ -271,7 +272,10 @@ class UpdaterService:
         preview_path: Path | None = None,
         metadata_only: bool = False,
         should_stop=None,
+        read_only: bool = False,
     ) -> dict:
+        # read_only is for the archive: nothing next to its files may be
+        # written, so no info file rewrite and no preview download.
         info_path = info_path or info_sidecar_path(model_path)
         preview_path = preview_path or preview_sidecar_path(model_path)
 
@@ -283,7 +287,8 @@ class UpdaterService:
         stored_hash = _stored_sha256(existing_info)
 
         if mode == "scan" and has_identity and not refetch_metadata:
-            _download_preview_if_needed(client, preview_path, existing_info, force=False)
+            if not read_only:
+                _download_preview_if_needed(client, preview_path, existing_info, force=False)
             _skip_url, _skip_type = _first_preview(existing_info)
             is_nsfw = False
             if isinstance(existing_info, dict):
@@ -350,7 +355,8 @@ class UpdaterService:
                 "model": existing_info.get("model", {}),
                 "images": existing_info.get("images", []),
             }
-            _download_preview_if_needed(client, preview_path, version_data, force=False)
+            if not read_only:
+                _download_preview_if_needed(client, preview_path, version_data, force=False)
         elif can_refetch_by_sidecar_id:
             model_id = existing_info.get("modelId")
             version_data = client.get_version(existing_info.get("id"))
@@ -398,7 +404,7 @@ class UpdaterService:
             # What another source found is kept until the file is replaced,
             # ids or not: it described the old file.
             rewrite = replaced if filled_elsewhere else not has_identity
-            if mode == "scan" and not metadata_only and rewrite:
+            if mode == "scan" and not metadata_only and rewrite and not read_only:
                 write_json(
                     info_path,
                     {
@@ -429,10 +435,11 @@ class UpdaterService:
             sidecar_payload["extensions"]["source"] = "comfy-civitai-updater"
             sidecar_payload["extensions"]["updatedAt"] = _utc_now()
             # A stub from an earlier miss is replaced once the model is found.
-            if refetch_metadata or not has_identity:
+            if (refetch_metadata or not has_identity) and not read_only:
                 write_json(info_path, sidecar_payload)
 
-            _download_preview_if_needed(client, preview_path, version_data, force=False)
+            if not read_only:
+                _download_preview_if_needed(client, preview_path, version_data, force=False)
 
             return {
                 "modelPath": str(model_path),
@@ -529,7 +536,7 @@ class UpdaterService:
             if local_remote and local_remote.get("previewUrl"):
                 local_preview_url = local_remote["previewUrl"]
                 local_preview_type = local_remote.get("previewType") or "image"
-                if not preview_path.exists():
+                if not read_only and not preview_path.exists():
                     _download_preview_media(client, preview_path, local_preview_url, local_preview_type)
         # Pick url and type as a pair so a local video preview keeps its
         # "video" type instead of inheriting the empty remote entry's default.
@@ -543,7 +550,7 @@ class UpdaterService:
         model_url = client.model_page_url(model_id)
         version_url = primary_new_version.get("versionUrl", "") or client.version_page_url(model_id, local_id)
 
-        if local_hash and version_data:
+        if local_hash and version_data and not read_only:
             sidecar_payload = dict(version_data)
             _set_sha256_hash(sidecar_payload, local_hash)
             sidecar_payload.setdefault("extensions", {})
@@ -557,7 +564,7 @@ class UpdaterService:
                 print(f"Civitai updater: could not write {info_path} ({exc})")
             _download_preview_if_needed(client, preview_path, version_data)
 
-        return {
+        item = {
             "modelPath": str(model_path),
             "modelType": model_type,
             "metadataOnly": metadata_only,
@@ -586,6 +593,113 @@ class UpdaterService:
             "nsfw": is_nsfw,
             "lastCheckedAt": _utc_now(),
         }
+        model_stats = client.model_stats(model_id)
+        if model_stats:
+            item["modelStats"] = model_stats
+        return item
+
+    def run_archive_check(
+        self,
+        payload: dict,
+        progress: ProgressCallback,
+        item_callback: ItemCallback | None = None,
+        control=None,
+        *,
+        archive_root: Path,
+    ) -> tuple[dict, list[dict]]:
+        """Check the models in the archive folder against Civitai without writing there."""
+        config = self.config_store.get()
+        model_types = normalize_model_types(payload.get("modelTypes"))
+        include_custom = bool(payload.get("includeCustomPaths", True))
+        request_delay_seconds = max(0.0, int(config.get("requestDelayMs", 120)) / 1000.0)
+
+        type_roots = resolve_model_roots(config, model_types, include_custom_paths=include_custom)
+        entries, counts = list_archive_entries(archive_root, type_roots)
+        entries = [entry for entry in entries if entry["modelType"] in model_types]
+        total = len(entries)
+        progress(0, total, f"Discovered {total} archived models")
+
+        should_stop = control.is_cancelled if control else None
+        client = CivitaiClient(
+            api_key=config.get("apiKey", ""),
+            timeout_seconds=int(config.get("requestTimeoutSeconds", 30)),
+            max_retries=int(config.get("maxRetries", 4)),
+            should_stop=should_stop,
+        )
+        stats = {"resolved": 0, "notFound": 0, "withUpdates": 0, "errors": 0}
+        items: list[dict] = []
+
+        for index, entry in enumerate(entries, start=1):
+            if control:
+                control.wait_if_paused()
+                if control.is_cancelled():
+                    break
+
+            info_path = entry["infoPath"]
+            progress(index - 1, total, f"archive: {info_path.name}")
+            try:
+                item = self._process_one(
+                    client=client,
+                    model_path=entry["path"],
+                    model_type=entry["modelType"],
+                    mode="check",
+                    refetch_metadata=False,
+                    force_rehash=False,
+                    info_path=info_path,
+                    preview_path=entry["previewPath"],
+                    metadata_only=True,
+                    should_stop=should_stop,
+                    read_only=True,
+                )
+            except HashingCancelled:
+                break
+            except Exception as exc:  # noqa: BLE001 - return per-file errors without killing the whole job
+                info = read_json(info_path)
+                item = {
+                    "modelPath": str(entry["path"]),
+                    "modelType": entry["modelType"],
+                    "metadataOnly": True,
+                    "modelId": str(info.get("modelId") or "") if isinstance(info, dict) else "",
+                    "status": "error",
+                    "error": str(exc),
+                    "hasUpdate": False,
+                    "previewUrl": "",
+                    "previewType": "image",
+                    "nsfw": False,
+                    "lastCheckedAt": _utc_now(),
+                }
+            # A lookup cut short by Stop can look like "not found"; not reported.
+            if control and control.is_cancelled():
+                break
+            item["archived"] = True
+            item["filePath"] = str(entry["filePath"])
+
+            if item.get("status") == "ok":
+                stats["resolved"] += 1
+            if item.get("status") == "not_found":
+                stats["notFound"] += 1
+            if item.get("status") == "error":
+                stats["errors"] += 1
+            if item.get("hasUpdate"):
+                stats["withUpdates"] += 1
+
+            items.append(item)
+            if item_callback:
+                item_callback(item)
+            progress(index, total, f"Processed {index}/{total}")
+            if request_delay_seconds > 0:
+                time.sleep(request_delay_seconds)
+
+        summary = {
+            "mode": "archive",
+            "total": total,
+            "resolved": stats["resolved"],
+            "withUpdates": stats["withUpdates"],
+            "notFound": stats["notFound"],
+            "errors": stats["errors"],
+            "withoutInfo": counts["withoutInfo"],
+        }
+        return summary, items
 
 
 def _dedupe_model_files(files: list[dict]) -> list[dict]:

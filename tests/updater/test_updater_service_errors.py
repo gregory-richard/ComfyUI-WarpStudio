@@ -29,6 +29,9 @@ class MetadataOnlyClient:
     def __init__(self):
         self.requested_version_ids = []
 
+    def model_stats(self, model_id):  # noqa: ARG002
+        return {}
+
     def get_version(self, version_id):
         self.requested_version_ids.append(version_id)
         return {
