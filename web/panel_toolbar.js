@@ -91,6 +91,19 @@ export function infoHtml(lines, action, escapeHtml) {
   return `<div class="cu-filter-panel cu-tb-info-panel">${rows}${button}</div>`;
 }
 
+/**
+ * The items of the Updates tab's ⋯ menu. Check with archive only appears once
+ * an archive folder is set; both are disabled while a job runs.
+ */
+export function moreMenuItems({ archiveFolder, busy }) {
+  const disabled = Boolean(busy);
+  const items = [{ key: "scan", label: "Fetch Missing Metadata", disabled }];
+  if (String(archiveFolder || "").trim()) {
+    items.push({ key: "archive", label: "Check with archive", disabled });
+  }
+  return items;
+}
+
 let menuCalls = 0;
 
 function sectionHtml(section, esc, uid) {
