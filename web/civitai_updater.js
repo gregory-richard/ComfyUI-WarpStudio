@@ -18,7 +18,7 @@ import { infoHtml, menuHtml, moreMenuItems, savedArchiveFolder, toolbarHtml, upd
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
 // The server refuses requests without this header (see request_guard.js).
-import { GUARD_HEADERS } from "./request_guard.js";
+import { guardHeaders } from "./request_guard.js";
 
 const TAB_ID = "warp-studio-updater";
 const EXTENSION_NAME = "warpstudio.updater";
@@ -2998,7 +2998,7 @@ function closeLightbox() {
 }
 
 async function getJson(path) {
-  const response = await api.fetchApi(path, { headers: GUARD_HEADERS });
+  const response = await api.fetchApi(path, { headers: guardHeaders() });
   if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
@@ -3006,7 +3006,7 @@ async function getJson(path) {
 async function postJson(path, payload) {
   const response = await api.fetchApi(path, {
     method: "POST",
-    headers: { ...GUARD_HEADERS, "Content-Type": "application/json" },
+    headers: guardHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
   if (!response.ok) throw new Error(await errorMessage(response));
@@ -3039,7 +3039,7 @@ function fetchLocalPreview(path, urls = state.localPreviewUrls) {
     try {
       const response = await api.fetchApi("/warp-studio/updater/local-preview", {
         method: "POST",
-        headers: { ...GUARD_HEADERS, "Content-Type": "application/json" },
+        headers: guardHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ jobId, path }),
       });
       if (!response.ok) return null;

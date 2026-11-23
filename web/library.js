@@ -6,7 +6,7 @@
 // reads a sidecar for every file in the folder. One cache means one fetch, and
 // it also means the two can never be describing different libraries.
 
-import { GUARD_HEADERS } from "./request_guard.js";
+import { guardHeaders } from "./request_guard.js";
 
 let pending = null;
 let cached = null;
@@ -18,7 +18,7 @@ let modelsCached = null;
 // Throws on failure rather than returning nothing: the browser wants to say why
 // it is empty, and the prompt - which does not care - catches at its own call.
 async function ask(url, key) {
-  const response = await fetch(url, { headers: GUARD_HEADERS });
+  const response = await fetch(url, { headers: guardHeaders() });
   if (!response.ok) throw new Error(`${url} answered ${response.status}`);
   return (await response.json())[key] || [];
 }

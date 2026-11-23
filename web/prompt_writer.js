@@ -12,7 +12,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { loras as loraLibrary } from "./library.js";
 import { connectedBase, connectedModelName } from "./model_base.js";
-import { GUARD_HEADERS } from "./request_guard.js";
+import { guardHeaders } from "./request_guard.js";
 import {
   addTriggerLine,
   appendLoraTag,
@@ -778,7 +778,7 @@ function flash(node) {
 
 // Every /warp-studio/llm route refuses a request without the guard header.
 async function getJson(route, options = {}) {
-  const headers = { ...GUARD_HEADERS, ...options.headers };
+  const headers = guardHeaders(options.headers);
   return readJson(await api.fetchApi(route, { ...options, headers }));
 }
 
@@ -810,7 +810,7 @@ function postJson(route, payload, signal) {
 async function streamJson(route, payload, signal, onPiece) {
   const response = await api.fetchApi(route, {
     method: "POST",
-    headers: { ...GUARD_HEADERS, "Content-Type": "application/json" },
+    headers: guardHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
     signal,
   });
