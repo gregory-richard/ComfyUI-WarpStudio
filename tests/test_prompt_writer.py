@@ -1171,7 +1171,10 @@ def test_a_provider_without_a_saved_key_gets_nothing(tmp_path):
 
     models = pw.handle_models(base, True, env={}, key_file=key_file, opener=_never_called)
     title = pw.handle_title(
-        {"base_url": base, "model": "m", "source": "an idea"}, env={}, key_file=key_file, opener=_never_called
+        {"base_url": base, "model": "m", "source": "an idea"},
+        env={},
+        key_file=key_file,
+        opener=_never_called,
     )
 
     assert "api.example.com has no saved key" in models["error"]

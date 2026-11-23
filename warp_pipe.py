@@ -2487,7 +2487,10 @@ def _register_routes() -> None:
         # An <img> sends no guard header, but it does say where it was asked from:
         # the panel's own pictures are same-origin, so another site can't even
         # learn whether a file exists.
-        if (request.headers.get("Sec-Fetch-Site") or "").strip().lower() in ("cross-site", "same-site"):
+        if (request.headers.get("Sec-Fetch-Site") or "").strip().lower() in (
+            "cross-site",
+            "same-site",
+        ):
             return web.Response(status=403, text="Cross-site requests are not allowed.")
         name = request.query.get("name", "")
         kind = request.query.get("kind", "loras")

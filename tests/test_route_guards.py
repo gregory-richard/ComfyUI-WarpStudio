@@ -61,7 +61,9 @@ def _call(handler, method, path, headers):
     return asyncio.run(handler(request))
 
 
-def test_every_json_route_refuses_a_request_without_the_panel_header(warp_pipe, monkeypatch, tmp_path):
+def test_every_json_route_refuses_a_request_without_the_panel_header(
+    warp_pipe, monkeypatch, tmp_path
+):
     handlers = _register(warp_pipe, monkeypatch, tmp_path)
     llm = {key for key in handlers if key[1].startswith("/warp-studio/llm/")}
     assert len(llm) == 7, "the Prompt Writer routes were not registered"
@@ -94,7 +96,10 @@ def test_the_panel_still_reaches_the_routes(warp_pipe, monkeypatch, tmp_path):
 
     loras = _call(handlers[("GET", "/warp-studio/loras")], "GET", "/warp-studio/loras", PANEL)
     prompts = _call(
-        handlers[("GET", "/warp-studio/llm/system_prompts")], "GET", "/warp-studio/llm/system_prompts", PANEL
+        handlers[("GET", "/warp-studio/llm/system_prompts")],
+        "GET",
+        "/warp-studio/llm/system_prompts",
+        PANEL,
     )
 
     assert loras.status == 200
@@ -162,7 +167,9 @@ def _naive_folders(monkeypatch, root):
         None,
     ],
 )
-def test_a_name_that_leaves_the_model_folder_resolves_to_nothing(warp_pipe, monkeypatch, tmp_path, name):
+def test_a_name_that_leaves_the_model_folder_resolves_to_nothing(
+    warp_pipe, monkeypatch, tmp_path, name
+):
     _naive_folders(monkeypatch, tmp_path / "loras")
 
     assert warp_pipe._resolve_model_path("loras", name) is None
@@ -187,7 +194,9 @@ def test_a_lookup_that_answers_outside_the_folders_is_refused(warp_pipe, monkeyp
     assert warp_pipe._resolve_model_path("loras", "x.safetensors") is None
 
 
-def test_a_thumbnail_is_never_served_from_outside_the_model_folders(warp_pipe, monkeypatch, tmp_path):
+def test_a_thumbnail_is_never_served_from_outside_the_model_folders(
+    warp_pipe, monkeypatch, tmp_path
+):
     outside = tmp_path / "secret.preview.png"
     outside.write_bytes(b"png")
     (tmp_path / "secret.safetensors").write_bytes(b"w")
