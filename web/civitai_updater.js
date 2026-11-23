@@ -3,12 +3,14 @@ import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 import { renderGalleryView } from "./gallery_view.js";
 import {
+  CONFIRM_FOR,
   MODEL_DOWNLOAD_JOB,
   finishedText,
   galleryKey,
   isPaid,
   latestRecords,
   recordMessage,
+  rowDeleteHtml,
   versionActionsHtml,
   versionKey,
 } from "./model_actions.js";
@@ -792,6 +794,11 @@ function bindEvents(root) {
           slot.dataset.dlKey,
         );
       }
+      return;
+    }
+    const rowDelete = target.closest('[data-row-action="delete"]');
+    if (rowDelete) {
+      await onRowDelete(rowDelete);
       return;
     }
     if (target.dataset.archiveAction) {
@@ -1681,15 +1688,70 @@ function renderLocalVersionRow(v, showMessage = true) {
   // what the user will recognize.
   const name = v.versionName || extractFilename(filePath) || "?";
   const message = issue && showMessage ? `<div class="cu-issue-msg">${escapeHtml(issueMessage(v))}</div>` : "";
+  // Delete sits where a new version's Download and Hide do.
+  const del = rowDeleteHtml(v, rowDeleteUi(v.modelPath), escapeHtml);
   return `
-      <div class="cu-ver-row">
+      <div class="cu-ver-row${del ? " cu-ver-row-acts" : ""}">
         <span class="cu-ver-label" data-role="${role}">${label}</span>
         <span class="cu-ver-date">${escapeHtml(date || "\u2014")}</span>
         <span class="cu-ver-base">${escapeHtml(v.baseModel || "\u2014")}</span>
         <span class="cu-ver-main">
           <span class="cu-ver-link cu-copy-path" data-path="${escapeHtml(filePath)}" title="${escapeHtml(copyPathTitle(filePath))}">${escapeHtml(name)}</span>
-        </span>
+        </span>${del ? `\n        <span class="cu-ver-acts">${del}</span>` : ""}
       </div>${message}`;
+}
+
+// Delete on a card's version row, as in the Gallery: the first click asks, the ask
+// lapses on its own, the second click deletes. Keyed by the row's modelPath, so a
+// redraw while asking keeps the question.
+const rowAsking = new Map(); // modelPath -> "confirming" | "deleting"
+const rowAskTimers = new Map();
+
+function rowDeleteUi(path) {
+  const ask = rowAsking.get(path);
+  return { canTrash: state.canTrash, confirming: ask === "confirming", deleting: ask === "deleting" };
+}
+
+function setRowAsking(path, ask) {
+  clearTimeout(rowAskTimers.get(path));
+  rowAskTimers.delete(path);
+  if (ask) rowAsking.set(path, ask);
+  else rowAsking.delete(path);
+  for (const button of state.resultsEl?.querySelectorAll('[data-row-action="delete"]') || []) {
+    if (button.dataset.path === path) button.outerHTML = rowDeleteHtml({ modelPath: path }, rowDeleteUi(path), escapeHtml);
+  }
+}
+
+async function onRowDelete(button) {
+  const path = button.dataset.path || "";
+  const ask = rowAsking.get(path);
+  if (!path || ask === "deleting") return;
+  if (ask !== "confirming") {
+    setRowAsking(path, "confirming");
+    rowAskTimers.set(
+      path,
+      setTimeout(() => setRowAsking(path, null), CONFIRM_FOR),
+    );
+    return;
+  }
+  setRowAsking(path, "deleting");
+  let failure = "";
+  try {
+    const data = await postJson("/warp-studio/updater/delete-file", { jobId: state.checkJobId, path });
+    if (data.error) failure = String(data.error);
+  } catch (error) {
+    failure = String(error?.message || error);
+  }
+  if (failure) {
+    setStatus(failure, "error");
+    setRowAsking(path, null);
+    return;
+  }
+  // Success: the refresh redraws the card without this row. Never repaint Delete under the cursor
+  // in between; only a row the server kept turns back afterwards.
+  rowAsking.delete(path);
+  await refreshAfterAction();
+  setRowAsking(path, null);
 }
 
 function resultsSignature() {
@@ -4261,10 +4323,10 @@ function injectStyles() {
       background: var(--cu-seam);
     }
 
-    /* The label column fits the longest label, "Duplicate" or "Info only", on every row alike. */
+    /* The label column fits the longest label, "Downloaded", on every row alike. */
     .cu-ver-row {
       display: grid;
-      grid-template-columns: 72px 60px minmax(0, 72px) minmax(0, 1fr);
+      grid-template-columns: 76px 60px minmax(0, 72px) minmax(0, 1fr);
       align-items: center;
       gap: 6px;
     }
@@ -4273,19 +4335,19 @@ function injectStyles() {
        --lead holds the columns before the name. The actions get what is left after the name's
        90px; below the width where that is too little, they move under the name, right-aligned. */
     .cu-versions .cu-ver-row.cu-ver-row-acts {
-      --lead: 72px 60px minmax(0, 72px);
-      grid-template-columns: var(--lead) minmax(0, 1fr) fit-content(max(0px, calc(100cqw - 318px)));
+      --lead: 76px 60px minmax(0, 72px);
+      grid-template-columns: var(--lead) minmax(0, 1fr) fit-content(max(0px, calc(100cqw - 322px)));
     }
 
     /* The sidebar is not the viewport: adapt columns to the panel width. */
 
     @container cu-root (max-width: 430px) {
       .cu-versions .cu-ver-row {
-        grid-template-columns: 72px 60px minmax(0, 1fr);
+        grid-template-columns: 76px 60px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        --lead: 72px 60px;
+        --lead: 76px 60px;
       }
 
       .cu-versions .cu-ver-base {
@@ -4295,11 +4357,11 @@ function injectStyles() {
 
     @container cu-root (max-width: 330px) {
       .cu-versions .cu-ver-row {
-        grid-template-columns: 72px minmax(0, 1fr);
+        grid-template-columns: 76px minmax(0, 1fr);
       }
 
       .cu-versions .cu-ver-row.cu-ver-row-acts {
-        --lead: 72px;
+        --lead: 76px;
       }
 
       .cu-versions .cu-ver-date {
@@ -4360,6 +4422,16 @@ function injectStyles() {
 
     .cu-ver-label[data-role="metadata"]::before {
       border-color: var(--cu-dust);
+    }
+
+    /* Downloaded since the check: the card stays in Updates until the next one. */
+    .cu-ver-label[data-role="downloaded"] {
+      color: var(--cu-moss);
+    }
+
+    .cu-ver-label[data-role="downloaded"]::before {
+      background: var(--cu-moss);
+      border-color: var(--cu-moss);
     }
 
     .cu-ver-label[data-role="archived"] {
