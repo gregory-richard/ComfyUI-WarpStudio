@@ -318,8 +318,10 @@ class JobManager:
                     return job
         return None
 
-    def load_cached_check(self, cache_data: dict) -> JobRecord:
+    def load_cached_check(self, cache_data: dict, extra_items=()) -> JobRecord:
+        """Bring back the last check as the "cached" job; ``extra_items`` (the saved archive rows) join its items."""
         items = [_normalize_cached_item_urls(item) for item in cache_data.get("items", []) or []]
+        items += [_normalize_cached_item_urls(item) for item in extra_items if isinstance(item, dict)]
         summary = cache_data.get("summary", {})
         checked_at = cache_data.get("checkedAt", "")
 

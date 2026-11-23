@@ -65,10 +65,10 @@ def list_archive_entries(
         # Two roots on D may share a name; their one archive folder is listed once.
         seen_folders: set[str] = set()
         for archive_folder, _d_root in pairs:
-            folder_key = os.path.normcase(str(archive_folder))
-            if folder_key in seen_folders:
+            seen_key = os.path.normcase(str(archive_folder))
+            if seen_key in seen_folders:
                 continue
-            seen_folders.add(folder_key)
+            seen_folders.add(seen_key)
             for dir_path, dir_names, file_names in os.walk(archive_folder):
                 dir_names.sort(key=str.casefold)
                 names = sorted(file_names, key=str.casefold)
@@ -166,10 +166,11 @@ def _load_results(data_dir: Path, archive_folder: str) -> dict | None:
     if not data or data.get("schemaVersion") != CACHE_SCHEMA_VERSION:
         return None
     saved = data.get("archiveFolder")
-    if not isinstance(saved, str) or _folder_key(saved) != _folder_key(archive_folder):
+    if not isinstance(saved, str) or folder_key(saved) != folder_key(archive_folder):
         return None
     return data
 
 
-def _folder_key(folder: str) -> str:
+def folder_key(folder: str) -> str:
+    """One key for two spellings of a folder: a trailing separator never counts, case only on Windows."""
     return os.path.normcase(os.path.normpath(folder))

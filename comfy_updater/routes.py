@@ -16,6 +16,13 @@ from typing import Any, Callable, Optional
 
 from aiohttp import web
 
+from .archive import (
+    archive_reference_path,
+    folder_key,
+    load_archive_items,
+    load_archive_summary,
+    save_archive_results,
+)
 from .civitai_client import CivitaiClient
 from .comfy_queue import (
     ComfyTextGenerator,
@@ -163,132 +170,7 @@ def register_routes(
             return web.json_response({"error": "A job is already running."}, status=409)
         return web.json_response({"jobId": job.id})
 
-    @routes.post("/warp-studio/updater/jobs/check-updates")
-    @_guarded
-    async def start_check_updates_job(request):
-        payload = await _read_json(request)
-        payload = _normalize_job_payload(payload)
-
-        progress_path = config_store.data_dir / "progress.json"
-        cache_path = config_store.data_dir / "last_check.json"
-        item_count = 0
-        # The runner thread can emit items before job_manager.start() returns,
-        # so it reads the job record from this holder instead of a closure
-        # variable that may not be assigned yet.
-        job_holder: dict = {}
-
-        # Seed the job with the previous check's results so the panel keeps
-        # showing them (marked provisional) while models are re-checked. Every
-        # cached item is carried, not just the requested types: a check of one
-        # type must not make the other types vanish from the panel.
-        cache_data = await asyncio.to_thread(read_data_file, cache_path)
-        seed_items = _seed_items_from_cache(cache_data)
-        seeded_paths = {str(item.get("modelPath") or "").lower() for item in seed_items}
-
-        def runner(progress, item_cb, control):
-            nonlocal item_count
-
-            def sync_seeds(files):
-                # Without a previous check there is nothing stale to correct.
-                if not seed_items:
-                    return
-                current_paths = {str(entry["path"]).lower() for entry in files}
-                job_manager.sync_seeds_with_disk(
-                    control.job_id,
-                    payload["modelTypes"],
-                    current_paths,
-                    _seed_items_for_new_files(files, seeded_paths),
-                )
-
-            def item_cb_with_progress(item):
-                nonlocal item_count
-                item_cb(item)
-                item_count += 1
-                job_ref = job_holder.get("job")
-                if job_ref is not None and item_count % 5 == 0:
-                    _write_progress(progress_path, job_ref)
-
-            summary, items = updater_service.run_check_updates(
-                payload, progress, item_cb_with_progress, control, files_callback=sync_seeds,
-            )
-            # A check of a subset of types replaces only that subset in the
-            # cache; the previous results for the other types are kept, so
-            # the panel and the file-change detection still cover the whole
-            # library.
-            items = _merge_check_items(cache_data, items, payload.get("modelTypes"))
-            summary = job_manager.summarize_check_items(summary, items)
-            summary["total"] = len(items)
-            if not control.is_cancelled():
-                write_json(cache_path, {
-                    "schemaVersion": CACHE_SCHEMA_VERSION,
-                    "checkedAt": datetime.now(timezone.utc).isoformat(),
-                    "summary": summary,
-                    "items": items,
-                })
-            progress_path.unlink(missing_ok=True)
-            return summary, items
-
-        job_ref = job_manager.start("check-updates", runner, seed_items=seed_items)
-        if not job_ref:
-            return web.json_response({"error": "A job is already running."}, status=409)
-        job_holder["job"] = job_ref
-        _write_progress(progress_path, job_ref)
-        return web.json_response({"jobId": job_ref.id})
-
-    @routes.get("/warp-studio/updater/last-check")
-    @_guarded
-    async def get_last_check(request):  # noqa: ARG001
-        progress_path = config_store.data_dir / "progress.json"
-        progress_data = read_data_file(progress_path)
-
-        active = job_manager.get_active()
-        if progress_data and active:
-            return web.json_response({
-                "sidecarWarnings": active.summary.get("sidecarWarnings", []),
-                "data": {
-                    "jobId": active.id,
-                    "checkedAt": active.startedAt or "",
-                    "summary": active.summary,
-                    "itemCount": len(active.items),
-                    "inProgress": True,
-                }
-            })
-
-        if progress_data and not active:
-            progress_path.unlink(missing_ok=True)
-
-        cache_path = config_store.data_dir / "last_check.json"
-        data = await asyncio.to_thread(read_data_file, cache_path)
-        # The inspection walks every model root on disk — keep it off the
-        # server event loop so large libraries don't stall other requests.
-        current_paths, sidecar_warnings = await asyncio.to_thread(
-            updater_service.inspect_current_files
-        )
-        if not data:
-            return web.json_response({"data": None, "sidecarWarnings": sidecar_warnings})
-        if int(data.get("schemaVersion") or 0) != CACHE_SCHEMA_VERSION:
-            return web.json_response(
-                {"data": None, "cacheInvalid": True, "sidecarWarnings": sidecar_warnings}
-            )
-        job = job_manager.load_cached_check(data)
-
-        cached_paths = {str(item.get("modelPath", "")).lower() for item in data.get("items", []) if item.get("modelPath")}
-        added = len(current_paths - cached_paths)
-        removed = len(cached_paths - current_paths)
-
-        return web.json_response({
-            "sidecarWarnings": sidecar_warnings,
-            "data": {
-                "jobId": job.id,
-                "checkedAt": data.get("checkedAt", ""),
-                "summary": data.get("summary", {}),
-                "itemCount": len(data.get("items", [])),
-                "inProgress": False,
-                "filesChanged": added + removed > 0,
-                "filesAdded": added,
-                "filesRemoved": removed,
-            }
-        })
+    _register_check_routes(routes, config_store, updater_service, job_manager)
 
     @routes.get("/warp-studio/updater/jobs/active")
     @_guarded
@@ -411,7 +293,14 @@ def register_routes(
             routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, dry_runs
         )
         _register_model_action_routes(
-            routes, config_store, job_manager, decisions, base_codes, answer_cache, journal
+            routes,
+            config_store,
+            job_manager,
+            decisions,
+            base_codes,
+            answer_cache,
+            journal,
+            updater_service=updater_service,
         )
     else:
         print(
@@ -440,6 +329,7 @@ def _normalize_job_payload(payload: dict) -> dict:
         "includeCustomPaths": bool(payload.get("includeCustomPaths", True)),
         "refetchMetadata": bool(payload.get("refetchMetadata", False)),
         "forceRehash": bool(payload.get("forceRehash", False)),
+        "includeArchive": payload.get("includeArchive") is True,
     }
 
 
@@ -550,7 +440,9 @@ def _drop_refused_archive_folder(incoming: dict, stored_folder: str = "") -> lis
     folder = incoming.get("archiveFolder")
     if not isinstance(folder, str) or not folder.strip():
         return []
-    if folder.strip().lower() == str(stored_folder or "").strip().lower():
+    # Compared as the saved archive results are, so "Z:\models\" is still "Z:\models".
+    stored = str(stored_folder or "").strip()
+    if stored and folder_key(folder.strip()) == folder_key(stored):
         return []
     problem = custom_path_problem(folder)
     if not problem:
@@ -574,8 +466,14 @@ def _seed_items_from_cache(cache_data) -> list[dict]:
     Each item is marked ``_seeded`` so the job can replace it once the file is
     re-checked. An empty list is returned for missing or outdated caches.
     """
+    return _as_seeds(_cached_check_items(cache_data))
+
+
+def _as_seeds(items: list) -> list[dict]:
     seeded: list[dict] = []
-    for item in _cached_check_items(cache_data):
+    for item in items:
+        if not isinstance(item, dict):
+            continue
         entry = dict(_normalize_cached_item_urls(item))
         entry["_seeded"] = True
         seeded.append(entry)
@@ -656,6 +554,221 @@ def _normalize_archive_payload(payload: dict) -> tuple[str, list[str]]:
                 normalized.add(cleaned)
         version_ids = sorted(normalized)
     return model_id, version_ids
+
+
+# --- the check and its saved results ---------------------------------------------
+
+ARCHIVE_UNREACHABLE_ERROR = "The archive folder can't be reached."
+_STAT_KEYS = ("downloads", "likes", "comments")
+
+
+def _archive_folder(config_store) -> str:
+    return str(config_store.get().get("archiveFolder") or "").strip()
+
+
+def _reachable(folder: Path) -> bool:
+    try:
+        return folder.is_dir()
+    except OSError:
+        return False
+
+
+def _model_stats(items: list) -> dict:
+    """Each model's Civitai numbers by model id; the first item that has them wins."""
+    stats: dict = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("modelId") or "")
+        numbers = item.get("modelStats")
+        if not model_id or model_id in stats or not isinstance(numbers, dict):
+            continue
+        stats[model_id] = {key: numbers.get(key, 0) for key in _STAT_KEYS}
+    return stats
+
+
+def _register_check_routes(routes, config_store, updater_service, job_manager) -> None:
+    @routes.post("/warp-studio/updater/jobs/check-updates")
+    @_guarded
+    async def start_check_updates_job(request):
+        payload = await _read_json(request)
+        payload = _normalize_job_payload(payload)
+
+        data_dir = config_store.data_dir
+        progress_path = data_dir / "progress.json"
+        cache_path = data_dir / "last_check.json"
+        archive_folder = _archive_folder(config_store)
+        item_count = 0
+        # The runner thread can emit items before job_manager.start() returns,
+        # so it reads the job record from this holder instead of a closure
+        # variable that may not be assigned yet.
+        job_holder: dict = {}
+
+        # Seed the job with the previous check's results so the panel keeps
+        # showing them (marked provisional) while models are re-checked. Every
+        # cached item is carried, not just the requested types: a check of one
+        # type must not make the other types vanish from the panel.
+        cache_data = await asyncio.to_thread(read_data_file, cache_path)
+        seed_items = _seed_items_from_cache(cache_data)
+        seeded_paths = {str(item.get("modelPath") or "").lower() for item in seed_items}
+        # The last archive results are seeded too, and are kept by a check that
+        # doesn't look at the archive: they are saved apart, in their own file.
+        saved_archive_items = [
+            _normalize_cached_item_urls(item)
+            for item in await asyncio.to_thread(load_archive_items, data_dir, archive_folder)
+            if isinstance(item, dict)
+        ]
+
+        def runner(progress, item_cb, control):
+            nonlocal item_count
+
+            def sync_seeds(files):
+                # Without a previous check there is nothing stale to correct.
+                if not seed_items:
+                    return
+                current_paths = {str(entry["path"]).lower() for entry in files}
+                job_manager.sync_seeds_with_disk(
+                    control.job_id,
+                    payload["modelTypes"],
+                    current_paths,
+                    _seed_items_for_new_files(files, seeded_paths),
+                )
+
+            def item_cb_with_progress(item):
+                nonlocal item_count
+                item_cb(item)
+                item_count += 1
+                job_ref = job_holder.get("job")
+                if job_ref is not None and item_count % 5 == 0:
+                    _write_progress(progress_path, job_ref)
+
+            summary, items = updater_service.run_check_updates(
+                payload, progress, item_cb_with_progress, control, files_callback=sync_seeds,
+            )
+            # A check of a subset of types replaces only that subset in the
+            # cache; the previous results for the other types are kept, so
+            # the panel and the file-change detection still cover the whole
+            # library.
+            items = _merge_check_items(cache_data, items, payload.get("modelTypes"))
+            summary = job_manager.summarize_check_items(summary, items)
+            summary["total"] = len(items)
+            if not control.is_cancelled():
+                write_json(cache_path, {
+                    "schemaVersion": CACHE_SCHEMA_VERSION,
+                    "checkedAt": datetime.now(timezone.utc).isoformat(),
+                    "summary": summary,
+                    "items": items,
+                })
+
+            # The archive comes after the drive, and only once the drive's
+            # check ran to its end. Its results never go into last_check.json.
+            job_summary = dict(summary)
+            archive_items = saved_archive_items
+            if payload["includeArchive"] and archive_folder and not control.is_cancelled():
+                archive_root = Path(archive_folder)
+                if not _reachable(archive_root):
+                    # An unplugged drive: its last results stay.
+                    job_summary["archiveError"] = ARCHIVE_UNREACHABLE_ERROR
+                else:
+                    archive_summary, fresh_items = updater_service.run_archive_check(
+                        payload, progress, item_cb_with_progress, control, archive_root=archive_root,
+                    )
+                    # A stopped pass checked only part of it: the last results stay.
+                    if not control.is_cancelled():
+                        save_archive_results(data_dir, archive_folder, archive_summary, fresh_items)
+                        archive_items = fresh_items
+            archive_info = load_archive_summary(data_dir, archive_folder)
+            if archive_info:
+                job_summary["archive"] = archive_info
+            progress_path.unlink(missing_ok=True)
+            return job_summary, items + list(archive_items)
+
+        job_ref = job_manager.start(
+            "check-updates", runner, seed_items=seed_items + _as_seeds(saved_archive_items)
+        )
+        if not job_ref:
+            return web.json_response({"error": "A job is already running."}, status=409)
+        job_holder["job"] = job_ref
+        _write_progress(progress_path, job_ref)
+        return web.json_response({"jobId": job_ref.id})
+
+    @routes.get("/warp-studio/updater/last-check")
+    @_guarded
+    async def get_last_check(request):  # noqa: ARG001
+        progress_path = config_store.data_dir / "progress.json"
+        progress_data = read_data_file(progress_path)
+
+        active = job_manager.get_active()
+        if progress_data and active:
+            return web.json_response({
+                "sidecarWarnings": active.summary.get("sidecarWarnings", []),
+                "data": {
+                    "jobId": active.id,
+                    "checkedAt": active.startedAt or "",
+                    "summary": active.summary,
+                    "itemCount": len(active.items),
+                    "inProgress": True,
+                }
+            })
+
+        if progress_data and not active:
+            progress_path.unlink(missing_ok=True)
+
+        cache_path = config_store.data_dir / "last_check.json"
+        data = await asyncio.to_thread(read_data_file, cache_path)
+        # The inspection walks every model root on disk — keep it off the
+        # server event loop so large libraries don't stall other requests.
+        current_paths, sidecar_warnings = await asyncio.to_thread(
+            updater_service.inspect_current_files
+        )
+        if not data:
+            return web.json_response({"data": None, "sidecarWarnings": sidecar_warnings})
+        if int(data.get("schemaVersion") or 0) != CACHE_SCHEMA_VERSION:
+            return web.json_response(
+                {"data": None, "cacheInvalid": True, "sidecarWarnings": sidecar_warnings}
+            )
+        data_dir = config_store.data_dir
+        archive_folder = _archive_folder(config_store)
+        archive_items, archive_info = await asyncio.to_thread(
+            lambda: (
+                load_archive_items(data_dir, archive_folder),
+                load_archive_summary(data_dir, archive_folder),
+            )
+        )
+        job = job_manager.load_cached_check(data, extra_items=archive_items)
+
+        # Files on D only: the archive's rows are not in last_check.json.
+        cached_paths = {str(item.get("modelPath", "")).lower() for item in data.get("items", []) if item.get("modelPath")}
+        added = len(current_paths - cached_paths)
+        removed = len(cached_paths - current_paths)
+
+        return web.json_response({
+            "sidecarWarnings": sidecar_warnings,
+            "data": {
+                "jobId": job.id,
+                "checkedAt": data.get("checkedAt", ""),
+                "summary": data.get("summary", {}),
+                "itemCount": len(data.get("items", [])),
+                "inProgress": False,
+                "filesChanged": added + removed > 0,
+                "filesAdded": added,
+                "filesRemoved": removed,
+                "archive": archive_info or None,
+            }
+        })
+
+    @routes.get("/warp-studio/updater/model-stats")
+    @_guarded
+    async def get_model_stats(request):  # noqa: ARG001
+        data_dir = config_store.data_dir
+        archive_folder = _archive_folder(config_store)
+
+        def collect() -> dict:
+            # D's results first: for a model in both, D's numbers win.
+            items = _cached_check_items(read_data_file(data_dir / "last_check.json"))
+            return _model_stats(items + load_archive_items(data_dir, archive_folder))
+
+        return web.json_response({"stats": await asyncio.to_thread(collect)})
 
 
 # --- the model renamer ---------------------------------------------------------
@@ -1055,8 +1168,17 @@ def delete_problem(
     return None
 
 
-def updates_request(payload: dict, job, *, can_trash: bool, queue) -> DownloadRequest | tuple:
-    """The request for a release the check results offer, or why not, as (HTTP status, message)."""
+ARCHIVED_NO_FOLDER_ERROR = "This archived model has no matching folder on this drive."
+
+
+def updates_request(
+    payload: dict, job, *, can_trash: bool, queue, archive_reference=None
+) -> DownloadRequest | tuple:
+    """The request for a release the check results offer, or why not, as (HTTP status, message).
+
+    A release of an archived model is downloaded to this drive, never into the
+    archive: ``archive_reference(item)`` gives the reference path on the drive.
+    """
     if job is None or getattr(job, "type", None) != CHECK_JOB:
         return 404, "job not found"  # The panel's lost-job recovery reads this text.
     model_id = payload.get("modelId") or ""
@@ -1093,19 +1215,25 @@ def updates_request(payload: dict, job, *, can_trash: bool, queue) -> DownloadRe
     if release_is_paid(version):
         return 409, EARLY_ACCESS_ERROR
     replace = payload.get("replace") is True
-    if replace and item.get("metadataOnly"):
+    if replace and (item.get("metadataOnly") or item.get("archived")):
         return 400, "Only a version on this drive can be replaced."
     if replace and not can_trash:
         return 409, "Replace needs the send2trash package."
     if replace and queue.holds(item["modelPath"]):
         return 409, REPLACE_HELD_ERROR
+    reference_path = item["modelPath"]
+    if item.get("archived"):
+        reference = archive_reference(item) if archive_reference is not None else None
+        if not reference:
+            return 400, ARCHIVED_NO_FOLDER_ERROR
+        reference_path = str(reference)
     return DownloadRequest(
         key=f"version:{version_id}",
         source="updates",
         model_id=model_id,
         version_id=version_id,
         model_type=str(item.get("modelType") or ""),
-        reference_path=item["modelPath"],
+        reference_path=reference_path,
         replace_path=item["modelPath"] if replace else "",
         # A copy: the check job's records change as downloads land.
         check_item=copy.deepcopy(item),
@@ -1265,7 +1393,7 @@ def download_context(
 
 
 def _register_model_action_routes(
-    routes, config_store, job_manager, decisions, base_codes, answer_cache, journal
+    routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, *, updater_service=None
 ) -> DownloadQueue:
     queue = DownloadQueue()
 
@@ -1285,6 +1413,18 @@ def _register_model_action_routes(
         status, message = problem
         return web.json_response({"error": message}, status=status)
 
+    def archive_reference(item) -> Optional[Path]:
+        """The D folder an archived row's archive folder mirrors, as a reference path there."""
+        folder = _archive_folder(config_store)
+        model_type = str(item.get("modelType") or "")
+        if not folder or not model_type or updater_service is None:
+            return None
+        type_roots = {
+            name: [Path(path) for path in paths]
+            for name, paths in updater_service.get_effective_roots([model_type]).items()
+        }
+        return archive_reference_path(Path(folder), Path(item["modelPath"]), model_type, type_roots)
+
     @routes.post("/warp-studio/updater/downloads")
     @_guarded
     async def start_download(request):
@@ -1296,7 +1436,15 @@ def _register_model_action_routes(
             return refused(problem)
         if payload["source"] == "updates":
             job = job_manager.get(payload["jobId"]) if payload["jobId"] else None
-            made = updates_request(payload, job, can_trash=send2trash_available(), queue=queue)
+            # An archived row looks in the archive and the model folders: off the event loop.
+            made = await asyncio.to_thread(
+                updates_request,
+                payload,
+                job,
+                can_trash=send2trash_available(),
+                queue=queue,
+                archive_reference=archive_reference,
+            )
         elif payload["source"] == "gallery":
             # Looks in the LoRA folders: off the event loop.
             made = await asyncio.to_thread(lambda: gallery_request(payload, lora_roots()))
