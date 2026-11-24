@@ -360,18 +360,16 @@ async function renderTab(el) {
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
       <div id="cu-loading-bar" class="cu-loading-bar" aria-hidden="true"></div>
       <div id="cu-job-bar" class="cu-job-bar">
-        <div id="cu-progress-wrap" class="cu-progress-wrap">
-          <div class="cu-progress"><div id="cu-progress-fill" class="cu-progress-fill"></div></div>
+        <span id="cu-job-text" class="cu-job-text"></span>
+        <span id="cu-progress-wrap" class="cu-progress-wrap is-off">
           <span id="cu-progress-text" class="cu-progress-pct"></span>
           <span id="cu-progress-eta" class="cu-progress-eta"></span>
-        </div>
-        <div class="cu-job-row">
-          <span id="cu-job-text" class="cu-job-text"></span>
-          <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm">Check again</button>
-          <div id="cu-job-controls" class="cu-job-controls">
-            <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
-            <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
-          </div>
+          <span class="cu-progress"><span id="cu-progress-fill" class="cu-progress-fill"></span></span>
+        </span>
+        <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm is-off">Check again</button>
+        <div id="cu-job-controls" class="cu-job-controls is-off">
+          <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
+          <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
         </div>
       </div>
       <div id="cu-status" class="cu-status" role="alert"></div>
@@ -2756,8 +2754,9 @@ function paintStatus() {
   }
   // Screen readers get the error from the alert region, which takes no room.
   setText(state.statusEl, state.errorText);
+  // Parts come and go inside the row only: its height never changes.
   const show = (el, on) => {
-    if (el) el.style.visibility = on ? "visible" : "hidden";
+    if (el) el.classList.toggle("is-off", !on);
   };
   show(state.progressWrapEl, view.progress);
   show(state.jobControlsEl, view.controls);
@@ -3508,22 +3507,16 @@ function injectStyles() {
     /* One row in every tab, always this tall: the track, then one line of text.
        Idle, the track and the controls are only invisible, so nothing moves. */
     .cu-job-bar {
+      position: relative;
       display: flex;
-      flex-direction: column;
-      gap: 4px;
+      align-items: center;
+      gap: 8px;
+      height: var(--cu-h-ctl);
       margin-bottom: 9px;
     }
 
-    .cu-job-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      height: var(--cu-h-ctl);
-    }
-
-    #cu-notice-act {
-      visibility: hidden;
+    .cu-job-bar .is-off {
+      display: none;
     }
 
     .cu-job-text.is-error {
@@ -3607,7 +3600,6 @@ function injectStyles() {
       display: flex;
       flex: 0 0 auto;
       gap: 6px;
-      visibility: hidden;
       align-items: center;
     }
 
@@ -3615,20 +3607,24 @@ function injectStyles() {
 
     .cu-progress-wrap {
       display: flex;
+      flex: 0 0 auto;
       gap: 8px;
       align-items: center;
-      height: 14px;
-      visibility: hidden;
     }
 
+    /* The track runs along the row's bottom edge, in its margin: it takes no room. */
     .cu-progress {
-      flex: 1;
-      height: 3px;
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -4px;
+      height: 2px;
       background: var(--cu-seam);
       overflow: hidden;
     }
 
     .cu-progress-fill {
+      display: block;
       height: 100%;
       width: 0;
       background: var(--cu-red);
@@ -3648,7 +3644,6 @@ function injectStyles() {
       font-size: 10px;
       color: var(--cu-ash);
       opacity: 0.75;
-      min-width: 84px;
       text-align: right;
       white-space: nowrap;
     }
