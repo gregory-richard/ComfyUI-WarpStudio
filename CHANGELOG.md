@@ -12,10 +12,12 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- **Nothing jumps any more when a job starts or ends**: the status line under the tabs is always there, one line high. It shows the last result, an error in amber, or the progress with Pause and Stop, and the progress bar runs along its bottom edge
+- **Nothing jumps any more when a job starts or ends**: the job's progress floats in a pill at the bottom of the panel, with a ring, the percentage, the time left, Pause and Stop. When the job ends it shows the result for a few seconds and goes. An error stays in the pill, in amber, until you dismiss it or start the next job
+- **The tabs, Filter, Sort, search and ⋯ are icons**: each tab shows its icon and its count, with its name in the tooltip. A dot on Filter or search says it is narrowing the list
+- **A card's versions** sit in a small pill like the type pill, and open a list in the panel's own menu style
 - **Download, Replace, Delete, Hide, Stop and Cancel are icon buttons**, each with a tooltip. A download shows its progress in its own row: the percentage in the button's place and a thin bar along the row. A failed download shows why in place of the version name, with **Retry**, instead of opening a line under the row
 - **Files Hugging Face, ai-toolkit or civarchive identified are no longer Issues**: they keep the **Found** label, now with a neutral dot. A 404 is still an issue
-- The sidebar label is **Studio**, on one line, with a pipe icon
+- The sidebar label is **Studio**, on one line, with a new icon: rings drawing into a tunnel
 
 ### Fixed
 
