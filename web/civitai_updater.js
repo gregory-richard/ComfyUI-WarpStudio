@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 import { renderGalleryView } from "./gallery_view.js";
+import { statusRowView } from "./status_row.js";
 import {
   CONFIRM_FOR,
   MODEL_DOWNLOAD_JOB,
@@ -183,6 +184,8 @@ const state = {
   viewSwitchEl: null,
   jobBarEl: null,
   jobTextEl: null,
+  noticeActEl: null,
+  progressOn: false,
   gearEl: null,
   settingsEl: null,
   settingsOpen: false,
@@ -353,7 +356,7 @@ async function renderTab(el) {
     <section class="cu-card">
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
       <div id="cu-loading-bar" class="cu-loading-bar" aria-hidden="true"></div>
-      <div id="cu-job-bar" class="cu-job-bar" hidden>
+      <div id="cu-job-bar" class="cu-job-bar">
         <div id="cu-progress-wrap" class="cu-progress-wrap">
           <div class="cu-progress"><div id="cu-progress-fill" class="cu-progress-fill"></div></div>
           <span id="cu-progress-text" class="cu-progress-pct"></span>
@@ -361,8 +364,8 @@ async function renderTab(el) {
         </div>
         <div class="cu-job-row">
           <span id="cu-job-text" class="cu-job-text"></span>
-          <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm" hidden>Check again</button>
-          <div id="cu-job-controls" class="cu-job-controls" style="display:none">
+          <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm">Check again</button>
+          <div id="cu-job-controls" class="cu-job-controls">
             <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
             <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
           </div>
@@ -401,6 +404,7 @@ async function renderTab(el) {
   state.rootEl = root;
   state.sidecarWarningsEl = root.querySelector("#cu-sidecar-warnings");
   state.statusEl = root.querySelector("#cu-status");
+  state.noticeActEl = root.querySelector("#cu-notice-act");
   state.jobBarEl = root.querySelector("#cu-job-bar");
   state.jobTextEl = root.querySelector("#cu-job-text");
   state.gearEl = root.querySelector("#cu-gear");
@@ -823,17 +827,12 @@ function bindEvents(root) {
 /* Check for Updates with fresh results shows them without a check. Say so, for a
    few seconds, in the job bar's row, with a way to check anyway. */
 function showCachedNotice() {
-  const bar = state.jobBarEl;
-  if (!bar || state.currentJobId) return;
+  if (!state.jobBarEl || state.currentJobId) return;
   hideCachedNotice();
-  bar.hidden = false;
-  if (state.progressWrapEl) state.progressWrapEl.hidden = true;
   const text = `Results from ${timeAgo(state.cachedAt)}`;
   state.noticeText = text;
   state.jobText = text;
   paintStatus();
-  const act = bar.querySelector("#cu-notice-act");
-  if (act) act.hidden = false;
   state.noticeTimer = setTimeout(hideCachedNotice, 5000);
 }
 
@@ -842,16 +841,10 @@ function hideCachedNotice() {
   const wasShown = Boolean(state.noticeTimer);
   state.noticeTimer = null;
   if (!wasShown) return;
-  const act = state.jobBarEl?.querySelector("#cu-notice-act");
-  if (act) act.hidden = true;
-  if (state.progressWrapEl) state.progressWrapEl.hidden = false;
   // Only the notice's own text goes; a status set since then stays.
-  if (state.jobText === state.noticeText) {
-    state.jobText = "";
-    paintStatus();
-  }
+  if (state.jobText === state.noticeText) state.jobText = "";
   state.noticeText = "";
-  if (state.jobBarEl && !state.currentJobId) state.jobBarEl.hidden = true;
+  paintStatus();
 }
 
 /* The ⚙ button: the settings open and close above the tabs. */
@@ -2602,7 +2595,7 @@ function updateControlButtons() {
   // The server refuses to pause the naming-model download (it cannot resume).
   state.pauseEl.style.display =
     state.currentJobType === "naming-model-download" || state.currentJobType === MODEL_DOWNLOAD_JOB ? "none" : "";
-  state.jobControlsEl.style.display = active ? "flex" : "none";
+  paintStatus();
 }
 
 function selectedTypes() {
@@ -2666,7 +2659,8 @@ function formatEta(seconds) {
 function updateProgress(current, total, visible) {
   if (!state.progressFillEl || !state.progressTextEl) return;
   if (visible) hideCachedNotice();
-  if (state.jobBarEl) state.jobBarEl.hidden = !visible;
+  state.progressOn = Boolean(visible);
+  paintStatus();
   const safeTotal = Math.max(0, Number(total || 0));
   const safeCurrent = Math.max(0, Number(current || 0));
   const pct = safeTotal > 0 ? Math.min(100, Math.round((safeCurrent / safeTotal) * 100)) : 0;
@@ -2688,9 +2682,10 @@ function updateProgress(current, total, visible) {
   }
 }
 
-/* An error stays on screen under the job bar until the next job starts. Routine
-   text (progress, "Done", "Showing cached results") is the job bar's label while
-   a job runs; the last check's facts are behind the ⓘ. */
+/* One status row, always the same height. An error replaces the row's text, in the
+   error colour, and stays until the next job starts. Routine text (progress, "Done",
+   the cached-results notice) is the row's label; the last check's facts are behind
+   the ⓘ. Only visibility and text change, so nothing moves. */
 function setStatus(message, level = "info") {
   state.statusText = message;
   if (level === "error") state.errorText = message;
@@ -2699,11 +2694,30 @@ function setStatus(message, level = "info") {
 }
 
 function paintStatus() {
-  if (state.statusEl && state.statusEl.textContent !== state.errorText) state.statusEl.textContent = state.errorText;
-  if (state.jobTextEl && state.jobTextEl.textContent !== state.jobText) {
-    state.jobTextEl.textContent = state.jobText;
-    state.jobTextEl.title = state.jobText;
+  const view = statusRowView({
+    running: state.progressOn,
+    jobText: state.jobText,
+    errorText: state.errorText,
+    noticeText: state.noticeText,
+  });
+  const setText = (el, text) => {
+    if (el && el.textContent !== text) el.textContent = text;
+  };
+  if (state.jobTextEl) {
+    setText(state.jobTextEl, view.text);
+    state.jobTextEl.title = view.text;
+    state.jobTextEl.classList.toggle("is-error", view.level === "error");
   }
+  // Screen readers get the error from the alert region, which takes no room.
+  setText(state.statusEl, state.errorText);
+  const show = (el, on) => {
+    if (el) el.style.visibility = on ? "visible" : "hidden";
+  };
+  show(state.progressWrapEl, view.progress);
+  show(state.jobControlsEl, view.controls);
+  show(state.noticeActEl, view.noticeAct);
+  if (state.noticeActEl) state.noticeActEl.disabled = !view.noticeAct;
+  if (state.jobControlsEl) state.jobControlsEl.inert = !view.controls;
 }
 
 function clearError() {
@@ -3445,7 +3459,8 @@ function injectStyles() {
       margin: 0;
     }
 
-    /* Only while a job runs, in every tab. */
+    /* One row in every tab, always this tall: the track, then one line of text.
+       Idle, the track and the controls are only invisible, so nothing moves. */
     .cu-job-bar {
       display: flex;
       flex-direction: column;
@@ -3458,7 +3473,15 @@ function injectStyles() {
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      min-height: 22px;
+      height: var(--cu-h-ctl);
+    }
+
+    #cu-notice-act {
+      visibility: hidden;
+    }
+
+    .cu-job-text.is-error {
+      color: var(--cu-amber);
     }
 
     .cu-job-text {
@@ -3535,8 +3558,10 @@ function injectStyles() {
     }
 
     .cu-job-controls {
+      display: flex;
       flex: 0 0 auto;
       gap: 6px;
+      visibility: hidden;
       align-items: center;
     }
 
@@ -3546,6 +3571,8 @@ function injectStyles() {
       display: flex;
       gap: 8px;
       align-items: center;
+      height: 14px;
+      visibility: hidden;
     }
 
     .cu-progress {
@@ -3703,17 +3730,14 @@ function injectStyles() {
 
     /* ---- Status line ---- */
 
-    .cu-status:empty {
-      display: none;
-    }
-
+    /* The error shows in the status row; this copy is for screen readers and takes no room. */
     .cu-status {
-      margin-bottom: 9px;
-      padding: 6px 9px;
-      border-left: 2px solid var(--cu-amber);
-      color: var(--cu-amber);
-      font-size: 11px;
-      overflow-wrap: anywhere;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
 
     /* ---- Scan report ---- */
