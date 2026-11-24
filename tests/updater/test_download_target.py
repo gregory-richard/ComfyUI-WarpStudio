@@ -194,8 +194,16 @@ class DownloadTargetTests(unittest.TestCase):
     def test_without_a_name_civitais_name_goes_to_the_bases_folder(self) -> None:
         self.assertEqual(self.choose(), Target(self.ill, "glowV2", ".safetensors", False))
 
-    def test_a_base_without_a_home_stays_beside_the_old_version(self) -> None:
-        self.assertEqual(self.choose(fallback_code="zit").folder, self.pony)
+    def test_a_base_without_a_home_gets_its_own_folder_beside_a_sorted_one(self) -> None:
+        # The old version's folder is named after its base code: one folder per base.
+        self.assertEqual(self.choose(fallback_code="zit").folder, self.root / "zit")
+        target = self.choose(named=("maker - glow - v2 (illx)", "illx"), fallback_code="")
+        self.assertEqual(target, Target(self.root / "illx", "maker - glow - v2 (illx)", ".safetensors", True))
+        self.assertFalse((self.root / "illx").exists())
+
+    def test_a_base_without_a_home_stays_beside_the_old_version_in_an_unsorted_folder(self) -> None:
+        self.assertEqual(self.choose(reference_folder=self.root / "GR", fallback_code="zit").folder, self.root / "GR")
+        self.assertEqual(self.choose(reference_folder=self.root, fallback_code="zit").folder, self.root)
 
     def test_a_taken_ai_name_falls_back_to_civitais_name(self) -> None:
         touch(self.ill / "maker - glow - v2 (ill).civitai.info")
@@ -240,14 +248,24 @@ class DownloadTargetTests(unittest.TestCase):
     def test_ai_stem_names_one_release_as_a_dry_run_would(self) -> None:
         self.base_codes.set("Illustrious", "ill")
         generator = FakeGenerator(ANSWER)
-        self.assertEqual(self.name(generator), ("maker - glow - v2 (ill)", "ill"))
+        self.assertEqual(self.name(generator), ("maker - glow - v2 (ill)", "ill", ""))
         self.assertEqual(len(generator.calls), 1)
 
+    def test_ai_stem_names_a_new_base_with_the_ais_code(self) -> None:
+        generator = FakeGenerator(ANSWER + "\nbase Illustrious: illx")
+        self.assertEqual(self.name(generator), ("maker - glow - v2 (illx)", "illx", "Illustrious"))
+        # Saved only once the download uses the name.
+        self.assertIsNone(self.base_codes.code("Illustrious"))
+
+    def test_ai_stem_gives_none_for_a_new_base_without_a_code(self) -> None:
+        self.assertIsNone(self.name(FakeGenerator(ANSWER)))
+
     def test_ai_stem_gives_none_when_the_name_needs_review(self) -> None:
-        generator = FakeGenerator(ANSWER)
+        self.base_codes.set("Illustrious", "ill")
+        generator = FakeGenerator("title: shiny glow\noriginal:\nversion 1: v2")
         with mock.patch.object(download_target, "needs_review", wraps=needs_review) as check:
             self.assertIsNone(self.name(generator))
-        self.assertIn("new-base-code", check.call_args[0][0])
+        self.assertIn("invented:shiny", check.call_args[0][0])
 
     def test_ai_stem_gives_none_for_a_type_the_renamer_skips(self) -> None:
         generator = FakeGenerator(ANSWER)

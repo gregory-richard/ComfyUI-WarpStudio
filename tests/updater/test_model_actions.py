@@ -16,6 +16,7 @@ from comfy_updater import model_actions
 from comfy_updater.civitai_client import CivitaiClient, CivitaiRequestError
 from comfy_updater.constants import CACHE_SCHEMA_VERSION, MODEL_VERSION_BY_ID_URL
 from comfy_updater.download_queue import DownloadRequest
+from comfy_updater.download_target import AiName
 from comfy_updater.jobs import JobManager
 from comfy_updater.model_actions import (
     EARLY_ACCESS_ERROR,
@@ -427,6 +428,37 @@ class ModelActionsTests(unittest.TestCase):
             "Naming glowV2.safetensors with the AI", [message for _w, _t, message in self.reports]
         )
 
+    def test_a_new_base_takes_the_ais_code_its_own_folder_and_says_so(self) -> None:
+        other = self.tmp / "other-data"
+        other.mkdir()
+        base_codes = BaseCodeStore(other)
+        base_codes.set("Pony", "pony")
+        self.generator = FakeGenerator(ANSWER + "\nbase Illustrious: illx")
+
+        request = self.run_one(self.updates_request(), base_codes=base_codes)
+
+        weights = self.root / "illx" / "maker - glow - v2 (illx).safetensors"
+        self.assertEqual(weights.read_bytes(), BODY)
+        self.assertTrue((self.root / "illx" / "maker - glow - v2 (illx).civitai.info").is_file())
+        self.assertEqual(request.file_name, weights.name)
+        self.assertEqual(request.warnings, ["New base model Illustrious: its files get the code illx."])
+        self.assertEqual(base_codes.code("Illustrious"), "illx")
+        self.assertEqual([item["modelPath"] for item in self.job.items], [str(self.v1), str(weights)])
+
+    def test_a_failed_download_leaves_no_new_base_folder_and_no_code(self) -> None:
+        other = self.tmp / "other-data"
+        other.mkdir()
+        base_codes = BaseCodeStore(other)
+        base_codes.set("Pony", "pony")
+        self.generator = FakeGenerator(ANSWER + "\nbase Illustrious: illx")
+        self.session.routes[STORAGE] = _ok(b"wrong weights")
+
+        with self.assertRaises(DownloadError):
+            self.run_one(self.updates_request(), base_codes=base_codes)
+
+        self.assertFalse((self.root / "illx").exists())
+        self.assertIsNone(base_codes.code("Illustrious"))
+
     def test_a_naming_failure_keeps_civitais_name(self) -> None:
         self.generator = FakeGenerator(ANSWER)
         self.client.models["101"] = CivitaiRequestError("503 Service Unavailable")
@@ -555,7 +587,7 @@ class ModelActionsTests(unittest.TestCase):
 
     def test_a_replace_never_trashes_the_new_files(self) -> None:
         new_stem = f"{V1_STEM}.v2"
-        with mock.patch.object(model_actions, "ai_stem", return_value=(new_stem, "pony")):
+        with mock.patch.object(model_actions, "ai_stem", return_value=AiName(new_stem, "pony", "")):
             self.generator = FakeGenerator(ANSWER)
             request = self.run_one(self.updates_request(replace=True))
 
