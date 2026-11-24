@@ -23,6 +23,11 @@ from .sidecar import model_file_path, read_data_file, write_json
 
 ARCHIVE_RESULTS_FILENAME = "archive_check.json"
 ARCHIVE_NO_MODEL_FOLDERS_ERROR = "No model folders found in the archive folder."
+ARCHIVE_INCOMPLETE_ERROR = "The archive couldn't be read completely, so its last results were kept."
+
+
+class ArchiveListingError(OSError):
+    """A folder in the archive couldn't be read, so the listing would be partial."""
 
 
 def archive_type_folders(
@@ -65,6 +70,7 @@ def list_archive_entries(
     entries: list[dict] = []
     without_info = 0
     type_folders = 0
+    unreadable: list[OSError] = []
     for model_type, pairs in archive_type_folders(archive_root, type_roots).items():
         # Two roots on D may share a name; their one archive folder is listed once.
         seen_folders: set[str] = set()
@@ -74,7 +80,7 @@ def list_archive_entries(
                 continue
             seen_folders.add(seen_key)
             type_folders += 1
-            for dir_path, dir_names, file_names in os.walk(archive_folder):
+            for dir_path, dir_names, file_names in os.walk(archive_folder, onerror=unreadable.append):
                 dir_names.sort(key=str.casefold)
                 names = sorted(file_names, key=str.casefold)
                 info_stems = {
@@ -109,6 +115,10 @@ def list_archive_entries(
                             "info": info,
                         }
                     )
+    if unreadable:
+        # os.walk skips what it can't read without a word; a drive that dropped
+        # out would give a listing with whole folders missing.
+        raise ArchiveListingError(str(getattr(unreadable[0], "filename", None) or archive_root))
     return entries, {"models": len(entries), "withoutInfo": without_info, "typeFolders": type_folders}
 
 

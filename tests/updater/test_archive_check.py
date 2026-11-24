@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from comfy_updater import updater_service
+from comfy_updater.archive import ArchiveListingError
 from comfy_updater.civitai_client import CivitaiClient, CivitaiRequestError
 from comfy_updater.config_store import ConfigStore
 from comfy_updater.updater_service import UpdaterService
@@ -170,6 +171,21 @@ class ArchiveCheckTests(unittest.TestCase):
         self.assertFalse(self.archive.exists())
         self.assertEqual([("ok", "123", "456")], [(i["status"], i["modelId"], i["localVersionId"]) for i in items])
         self.assertEqual((1, 0), (summary["resolved"], summary["notFound"]))
+
+    def test_a_listing_that_could_not_read_every_folder_fails_the_pass(self) -> None:
+        client = FakeModelClient(error="must not be asked")
+
+        def listing(archive_root, _type_roots):
+            raise ArchiveListingError(archive_root)
+
+        with patch("comfy_updater.updater_service.list_archive_entries", listing):
+            summary, items, _messages = self._run(client)
+
+        self.assertEqual(
+            "The archive couldn't be read completely, so its last results were kept.",
+            summary["archiveError"],
+        )
+        self.assertEqual([], items)
 
     def test_an_unexpected_failure_after_the_drive_is_lost_keeps_the_model_id(self) -> None:
         client = FakeModelClient(_model())

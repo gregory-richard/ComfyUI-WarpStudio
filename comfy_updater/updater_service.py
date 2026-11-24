@@ -5,7 +5,12 @@ from pathlib import Path
 import time
 from typing import Callable
 
-from .archive import ARCHIVE_NO_MODEL_FOLDERS_ERROR, list_archive_entries
+from .archive import (
+    ARCHIVE_INCOMPLETE_ERROR,
+    ARCHIVE_NO_MODEL_FOLDERS_ERROR,
+    ArchiveListingError,
+    list_archive_entries,
+)
 from .civitai_client import CivitaiClient, CivitaiRequestError
 from .fallback_http import FallbackHttp
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
@@ -618,7 +623,11 @@ class UpdaterService:
         request_delay_seconds = max(0.0, int(config.get("requestDelayMs", 120)) / 1000.0)
 
         type_roots = resolve_model_roots(config, model_types, include_custom_paths=include_custom)
-        entries, counts = list_archive_entries(archive_root, type_roots)
+        try:
+            entries, counts = list_archive_entries(archive_root, type_roots)
+        except ArchiveListingError:
+            # A partial listing would drop archived rows: the last results stay.
+            return {"mode": "archive", "archiveError": ARCHIVE_INCOMPLETE_ERROR}, []
         if not counts["typeFolders"]:
             # Not laid out like the models folder (or an empty, unmounted mount
             # point): reporting every archived model gone would be wrong.

@@ -8,6 +8,7 @@ from unittest import mock
 
 from comfy_updater.archive import (
     ARCHIVE_RESULTS_FILENAME,
+    ArchiveListingError,
     archive_reference_path,
     archive_type_folders,
     list_archive_entries,
@@ -33,6 +34,20 @@ class ArchiveListingTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
+
+    def test_a_folder_that_cannot_be_read_fails_the_listing(self) -> None:
+        archive = self.tmp / "Z"
+        _write(archive / "Lora" / "a.civitai.info", json.dumps({"modelId": 1, "id": 10}))
+        d_lora = self.tmp / "D" / "Lora"
+        d_lora.mkdir(parents=True)
+
+        def failing_walk(top, onerror=None, **_kwargs):
+            onerror(OSError("The network name is no longer available"))
+            return iter(())
+
+        with mock.patch("comfy_updater.archive.os.walk", failing_walk):
+            with self.assertRaises(ArchiveListingError):
+                list_archive_entries(archive, {"lora": [d_lora]})
 
     def test_entries_come_only_from_identifying_info_files(self) -> None:
         archive = self.tmp / "Z"
