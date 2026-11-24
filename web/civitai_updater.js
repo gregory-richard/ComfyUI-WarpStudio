@@ -295,7 +295,7 @@ app.registerExtension({
     app.extensionManager.registerSidebarTab({
       id: TAB_ID,
       icon: TAB_ICON,
-      title: "Warp Studio",
+      title: "Studio",
       tooltip: "Your models: gallery, updates and renaming",
       type: "custom",
       render: (el) => renderTab(el),
