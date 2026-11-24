@@ -105,22 +105,23 @@ class CivitaiClient:
             "comments": count("commentCount"),
         }
 
-    def creator_has_models(self, username: str) -> bool | None:
-        """Whether Civitai still lists any model under this username.
+    def creator_lookup(self, username: str) -> str | None:
+        """Whether Civitai still has this account: "active", "gone" or "missing".
 
-        None when the answer is unknown: a network error, an unreadable reply,
-        or any failure status (an unknown username answers 404, which proves
-        nothing about a creator the file name only hints at).
+        "active": the account lists models. "gone": it answers but lists none.
+        "missing": Civitai has no account by that name (HTTP 404). None when
+        nothing can be claimed: a network error, a timeout, another failure
+        status or an unreadable reply.
         """
         query = urlencode({"username": username, "limit": 1, "nsfw": "true"}, quote_via=quote)
         try:
             payload = self._get_json(f"{MODEL_BY_ID_URL}?{query}", raise_on_error=True)
-        except CivitaiRequestError:
-            return None
+        except CivitaiRequestError as exc:
+            return "missing" if exc.status == 404 else None
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             return None
-        return bool(items)
+        return "active" if items else "gone"
 
     def model_page_url(self, model_id: int | str) -> str:
         return f"{MODEL_PAGE_BASE_URL}/{model_id}"

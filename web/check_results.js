@@ -52,6 +52,9 @@ function removedMessage(v) {
   if (v.creatorStatus === "gone") {
     return `Removed from Civitai. ${v.creatorName} has no models there any more.`;
   }
+  if (v.creatorStatus === "missing") {
+    return `Removed from Civitai. There's no account named ${v.creatorName} there any more.`;
+  }
   return "";
 }
 

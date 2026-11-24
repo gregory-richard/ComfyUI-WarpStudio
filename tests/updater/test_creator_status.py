@@ -20,7 +20,7 @@ class _Response:
         return self._payload
 
 
-class CreatorHasModelsTests(unittest.TestCase):
+class CreatorLookupTests(unittest.TestCase):
     def _client(self, response=None, error=None):
         client = CivitaiClient(api_key="", timeout_seconds=5, max_retries=0)
         self.urls: list[str] = []
@@ -36,23 +36,25 @@ class CreatorHasModelsTests(unittest.TestCase):
 
     def test_url_has_the_encoded_username_limit_and_nsfw(self) -> None:
         client = self._client(_Response(200, {"items": [{"id": 1}]}))
-        self.assertIs(True, client.creator_has_models("a b&c_"))
+        self.assertEqual("active", client.creator_lookup("a b&c_"))
         self.assertEqual(["https://civitai.red/api/v1/models?username=a%20b%26c_&limit=1&nsfw=true"], self.urls)
 
     def test_no_items_means_false(self) -> None:
-        self.assertIs(False, self._client(_Response(200, {"items": []})).creator_has_models("gone"))
+        self.assertEqual("gone", self._client(_Response(200, {"items": []})).creator_lookup("gone"))
 
-    def test_errors_mean_none(self) -> None:
+    def test_a_username_404_means_missing(self) -> None:
+        self.assertEqual("missing", self._client(_Response(404)).creator_lookup("x"))
+
+    def test_other_errors_mean_none(self) -> None:
         import requests
 
-        self.assertIsNone(self._client(_Response(404)).creator_has_models("x"))
-        self.assertIsNone(self._client(_Response(500)).creator_has_models("x"))
-        self.assertIsNone(self._client(error=requests.ConnectionError("down")).creator_has_models("x"))
-        self.assertIsNone(self._client(_Response(200, {"unexpected": 1})).creator_has_models("x"))
+        self.assertIsNone(self._client(_Response(500)).creator_lookup("x"))
+        self.assertIsNone(self._client(error=requests.ConnectionError("down")).creator_lookup("x"))
+        self.assertIsNone(self._client(_Response(200, {"unexpected": 1})).creator_lookup("x"))
 
 
 class _RemovedClient:
-    def __init__(self, status=404, answer=True):
+    def __init__(self, status=404, answer="active"):
         self.status = status
         self.answer = answer
         self.lookups: list[str] = []
@@ -64,7 +66,7 @@ class _RemovedClient:
     def get_model_versions_for_model(self, model_id):
         raise CivitaiRequestError(f"{model_id} :: gone", status=self.status)
 
-    def creator_has_models(self, username):
+    def creator_lookup(self, username):
         self.lookups.append(username)
         return self.answer
 
@@ -89,7 +91,7 @@ def _check(client, tmpdir: str, name: str, creator: str | None = "artist") -> di
 
 class CreatorStatusServiceTests(unittest.TestCase):
     def test_404_sets_active_or_gone(self) -> None:
-        for answer, expected in ((True, "active"), (False, "gone"), (None, "")):
+        for answer, expected in (("active", "active"), ("gone", "gone"), ("missing", "missing"), (None, "")):
             with tempfile.TemporaryDirectory() as tmpdir:
                 item = _check(_RemovedClient(answer=answer), tmpdir, "m")
             self.assertEqual(expected, item["creatorStatus"], answer)

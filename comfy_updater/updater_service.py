@@ -893,7 +893,8 @@ def _creator_name(info: dict | None) -> str:
 
 
 def _creator_status(client: CivitaiClient, username: str) -> str:
-    """For a removed model: "active" if its creator still has models, "gone" if not, "" if unknown.
+    """For a removed model: "active" if its creator still has models, "gone" if the account lists none,
+    "missing" if Civitai has no such account, "" if unknown.
 
     One request per username per run; an unknown answer is remembered too.
     """
@@ -901,8 +902,7 @@ def _creator_status(client: CivitaiClient, username: str) -> str:
         return ""
     cache = client.creator_status_cache
     if username not in cache:
-        has_models = client.creator_has_models(username)
-        cache[username] = "" if has_models is None else ("active" if has_models else "gone")
+        cache[username] = client.creator_lookup(username) or ""
     return cache[username]
 
 

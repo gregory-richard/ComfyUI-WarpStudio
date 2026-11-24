@@ -156,6 +156,14 @@ test("a removed model says whether its creator is still on Civitai", () => {
     ),
     "Removed from Civitai. kermit has no models there any more. Info and preview from civarchive."
   );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "missing" })),
+    "Removed from Civitai. There's no account named kermit there any more."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "missing", fallbackSource: "civarchive" })),
+    "Removed from Civitai. There's no account named kermit there any more. Info from civarchive."
+  );
   assert.equal(issueMessage(row({ ...base, creatorStatus: "" })), "404 Not Found.");
   assert.equal(
     issueMessage(row({ ...base, creatorStatus: "active", creatorName: "" })),
