@@ -78,13 +78,16 @@ export function recordMessage(record) {
   return (record.warnings || []).join(" ");
 }
 
-/* What a version row's bar and failure text need from the download record. */
+/* What a version row's bar, failure and warning text need from the download record.
+   A finished download can carry warnings (a Replace whose old file stayed): they show
+   in the row like a failure does, so they are never lost. */
 export function rowDownloadView(record) {
   const state = slotState(record);
   return {
     state,
     pct: state === "downloading" ? percent(record) : null,
     failure: state === "error" ? recordMessage(record) : "",
+    warning: state === "done" ? (record?.warnings || []).join(" ") : "",
   };
 }
 
@@ -118,7 +121,12 @@ export function versionActionsHtml(slot, record, escapeHtml) {
       state
     );
   }
-  if (state === "done") return wrap(icon("pi-check", COPY.downloaded, " is-done"), state);
+  if (state === "done") {
+    const warning = (record?.warnings || []).join(" ");
+    return warning
+      ? wrap(icon("pi-exclamation-triangle", escapeHtml(warning), " is-warn"), state)
+      : wrap(icon("pi-check", COPY.downloaded, " is-done"), state);
+  }
   if (state === "error") {
     const action = slot?.canReplace && record?.replace ? "replace" : "download";
     const title = action === "replace" ? COPY.replaceTitle : COPY.retry;

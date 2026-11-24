@@ -167,23 +167,36 @@ test("every download state sits in one slot element", () => {
 });
 
 test("rowDownloadView: no record, waiting, downloading, done, error", () => {
-  assert.deepEqual(rowDownloadView(undefined), { state: "idle", pct: null, failure: "" });
-  assert.deepEqual(rowDownloadView(rec()), { state: "waiting", pct: null, failure: "" });
+  assert.deepEqual(rowDownloadView(undefined), {
+    state: "idle",
+    pct: null,
+    failure: "",
+    warning: "",
+  });
+  assert.deepEqual(rowDownloadView(rec()), {
+    state: "waiting",
+    pct: null,
+    failure: "",
+    warning: "",
+  });
   assert.deepEqual(rowDownloadView(rec({ state: "downloading", written: 25, total: 100 })), {
     state: "downloading",
     pct: 25,
     failure: "",
+    warning: "",
   });
   assert.equal(rowDownloadView(rec({ state: "downloading" })).pct, null);
   assert.deepEqual(rowDownloadView(rec({ state: "done", written: 5, total: 5 })), {
     state: "done",
     pct: null,
     failure: "",
+    warning: "",
   });
   assert.deepEqual(rowDownloadView(rec({ state: "error", error: "No space left" })), {
     state: "error",
     pct: null,
     failure: "No space left",
+    warning: "",
   });
 });
 
@@ -376,4 +389,26 @@ test("rowDeleteHtml: the path is escaped", () => {
   );
   assert.ok(!html.includes("<b>"));
   assert.ok(html.includes("&quot;x&quot;"));
+});
+
+test("a finished download with warnings says so in its row", () => {
+  const warned = rec({
+    state: "done",
+    written: 5,
+    total: 5,
+    warnings: ["The old version couldn't go to the Recycle Bin: it is in use."],
+  });
+  assert.deepEqual(rowDownloadView(warned), {
+    state: "done",
+    pct: null,
+    failure: "",
+    warning: "The old version couldn't go to the Recycle Bin: it is in use.",
+  });
+  const html = versionActionsHtml({}, warned, escapeHtml);
+  assert.ok(html.includes("pi-exclamation-triangle"), html);
+  assert.ok(!html.includes("pi-check"), html);
+  assert.ok(html.includes("it is in use."), html);
+  const clean = versionActionsHtml({}, rec({ state: "done", written: 5, total: 5 }), escapeHtml);
+  assert.ok(clean.includes("pi-check") && !clean.includes("pi-exclamation-triangle"), clean);
+  assert.equal(rowDownloadView(rec({ state: "done", written: 5, total: 5 })).warning, "");
 });

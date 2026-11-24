@@ -2238,10 +2238,13 @@ function paintRowDownload(row, view) {
   if (row.dataset.dlState !== view.state) row.dataset.dlState = view.state;
   const pct = `${view.pct ?? 0}%`;
   if (row.style.getPropertyValue("--cu-dl-pct") !== pct) row.style.setProperty("--cu-dl-pct", pct);
+  const warned = view.warning ? "1" : "0";
+  if (row.dataset.dlWarn !== warned) row.dataset.dlWarn = warned;
   const fail = row.querySelector(".cu-ver-fail");
   if (fail) {
-    if (fail.textContent !== view.failure) fail.textContent = view.failure;
-    if (view.failure) fail.title = view.failure;
+    const text = view.failure || view.warning;
+    if (fail.textContent !== text) fail.textContent = text;
+    if (text) fail.title = text;
     else fail.removeAttribute("title");
   }
 }
@@ -2508,14 +2511,14 @@ function renderRemoteVersionRow(item, version, hidden) {
   const view = rowDownloadView(record);
   const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
   return `
-    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" style="--cu-dl-pct: ${view.pct ?? 0}%">
+    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}" style="--cu-dl-pct: ${view.pct ?? 0}%">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>
       <span class="cu-ver-date">${escapeHtml(date)}</span>
       <span class="cu-ver-base">${escapeHtml(version.baseModel || "—")}</span>
       <span class="cu-ver-main">
         ${link}
         ${accessBadge}
-        <span class="cu-ver-fail"${view.failure ? ` title="${escapeHtml(view.failure)}"` : ""}>${escapeHtml(view.failure)}</span>
+        <span class="cu-ver-fail"${view.failure || view.warning ? ` title="${escapeHtml(view.failure || view.warning)}"` : ""}>${escapeHtml(view.failure || view.warning)}</span>
       </span>
       <span class="cu-ver-acts">
         ${dlSlot}
@@ -4773,6 +4776,10 @@ function injectStyles() {
       color: var(--cu-dust);
     }
 
+    .cu-dl-icon.is-warn {
+      color: var(--cu-amber);
+    }
+
     .cu-dl-icon.is-done {
       color: var(--cu-moss);
     }
@@ -4828,8 +4835,14 @@ function injectStyles() {
       color: var(--cu-red-soft);
     }
 
+    .cu-ver-row[data-dl-warn="1"] .cu-ver-main > :not(.cu-ver-fail),
     .cu-ver-row[data-dl-state="error"] .cu-ver-main > :not(.cu-ver-fail) {
       visibility: hidden;
+    }
+
+    .cu-ver-row[data-dl-warn="1"] .cu-ver-fail {
+      display: block;
+      color: var(--cu-amber);
     }
 
     .cu-ver-row[data-dl-state="error"] .cu-ver-fail {
