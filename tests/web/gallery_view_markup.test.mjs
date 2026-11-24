@@ -164,7 +164,11 @@ test("cardHtml draws the mark with its label", () => {
 
 test("cardHtml draws a version chip only for a stack, beside the face", () => {
   const stacked = cardHtml(model(), ui({ versions: 3, versionLabel: "v<2>" }), escapeHtml);
-  assert.ok(stacked.includes("3 versions ▾"));
+  // A small pill like the type pill: a stack icon and the number, no words, no caret.
+  const chip = stacked.match(/<button[^>]*data-g-vers[^>]*>([\s\S]*?)<\/button>/);
+  assert.ok(chip, stacked);
+  assert.ok(chip[1].includes("pi-clone") && chip[1].includes(">3<"), chip[1]);
+  assert.ok(!stacked.includes("versions ▾"));
   assert.ok(stacked.includes("data-g-vers"));
   assert.ok(stacked.includes("v&lt;2&gt;"));
   assert.ok(!stacked.includes("v<2>"));
@@ -258,9 +262,17 @@ test("cardHtml draws the pill with the type, the base and the other bases", () =
     escapeHtml
   );
   assert.match(html, /<span class="cu-g-pill">Checkpoint \| Pony \+3<\/span>/);
-  const plain = cardHtml(model({ typeLabel: "LoRA", base: "Pony", moreBases: 0 }), ui(), escapeHtml);
+  const plain = cardHtml(
+    model({ typeLabel: "LoRA", base: "Pony", moreBases: 0 }),
+    ui(),
+    escapeHtml
+  );
   assert.match(plain, /<span class="cu-g-pill">LoRA \| Pony<\/span>/);
-  const none = cardHtml(model({ typeLabel: "LoRA", base: "Pony", moreBases: null }), ui(), escapeHtml);
+  const none = cardHtml(
+    model({ typeLabel: "LoRA", base: "Pony", moreBases: null }),
+    ui(),
+    escapeHtml
+  );
   assert.match(none, /<span class="cu-g-pill">LoRA \| Pony<\/span>/);
 });
 
@@ -339,7 +351,10 @@ test("cardHtml keeps the trigger badge on the creator line, clear of the pill", 
   );
   assert.ok(top.includes("cu-g-pill"));
   assert.ok(!top.includes("cu-g-badge"));
-  const by = html.slice(html.indexOf('<span class="cu-g-by">'), html.indexOf('<span class="cu-g-title">'));
+  const by = html.slice(
+    html.indexOf('<span class="cu-g-by">'),
+    html.indexOf('<span class="cu-g-title">')
+  );
   assert.ok(by.includes("cu-g-badge"));
   assert.ok(!cardHtml(model(), ui(), escapeHtml).includes("cu-g-badge"));
   assert.ok(!html.includes("cu-g-metric"));

@@ -135,7 +135,7 @@ export function cardHtml(model, ui, escapeHtml) {
     : "";
   const chip =
     versions > 1
-      ? `<button type="button" class="cu-g-vers" data-g-vers aria-haspopup="true" aria-expanded="false" aria-label="${esc(`${versions} versions, showing ${versionLabel}`)}">${esc(versions)} versions ▾</button>`
+      ? `<button type="button" class="cu-g-vers" data-g-vers aria-haspopup="true" aria-expanded="false" aria-label="${esc(`${versions} versions, showing ${versionLabel}`)}" title="${esc(`${versions} versions`)}"><i class="pi pi-clone" aria-hidden="true"></i><span>${esc(versions)}</span></button>`
       : "";
   const marked = MARKS[mark] ? ` data-mark="${esc(mark)}"` : "";
   return (
@@ -163,6 +163,7 @@ export function versionMenuHtml(items, escapeHtml) {
     .map(
       (item) =>
         `<button type="button" class="cu-g-vitem" data-g-ver="${esc(item.id)}"${item.current ? ' aria-current="true"' : ""}>` +
+        `<i class="pi pi-check cu-g-vcheck" aria-hidden="true"></i>` +
         `<span class="cu-g-vname">${esc(item.label)}</span>` +
         `<span class="cu-g-vdate">${esc(item.date)}</span></button>`
     )
