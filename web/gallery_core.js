@@ -29,11 +29,15 @@ function wantedKeys(bases) {
  * selected, so nothing matches. A base matches spelling aside, and a Turbo or
  * Base spelling matches the base it is filed under.
  */
-export function filterEntries(entries, { query = "", types = null, bases = null } = {}) {
+export function filterEntries(
+  entries,
+  { query = "", types = null, bases = null, categories = null, stats = null } = {}
+) {
   const terms = fold(query).split(/\s+/).filter(Boolean);
   const wanted = bases ? wantedKeys(bases) : null;
   return entries.filter((entry) => {
     if (types && !types.includes(TYPE)) return false;
+    if (categories && !categories.includes(categoryOf({ members: [entry] }, stats))) return false;
     if (bases) {
       const group = groupOf(entry);
       if (!bases.includes(group) && !wanted.has(baseKey(group))) return false;
@@ -46,12 +50,18 @@ export function filterEntries(entries, { query = "", types = null, bases = null 
   });
 }
 
-/** What the filter chips offer: the types present and the bases, sorted. */
-export function galleryFacets(entries) {
+/** What the filter chips offer: the types present and the bases, sorted, and
+ * the categories present by label, with "" (No category) last when some entry has none. */
+export function galleryFacets(entries, stats = null) {
   const bases = new Set(entries.map(groupOf));
+  const found = new Set(entries.map((entry) => categoryOf({ members: [entry] }, stats)));
+  const categories = Object.keys(CATEGORY_LABELS).filter((key) => found.has(key));
+  categories.sort((x, y) => CATEGORY_LABELS[x].localeCompare(CATEGORY_LABELS[y]));
+  if (found.has("")) categories.push("");
   return {
     modelTypes: entries.length ? [TYPE] : [],
     baseModels: [...bases].sort((x, y) => fold(x).localeCompare(fold(y)) || x.localeCompare(y)),
+    categories,
   };
 }
 
@@ -101,11 +111,42 @@ export function stackEntries(entries) {
 
 export const STAT_SORTS = ["downloads", "likes", "comments"];
 
+/** Civitai's categories as the Gallery names them, keyed by the tag. */
+export const CATEGORY_LABELS = {
+  character: "Character",
+  style: "Style",
+  celebrity: "Celebrity",
+  concept: "Concept",
+  clothing: "Clothing",
+  "base model": "Base model",
+  poses: "Poses",
+  background: "Background",
+  tool: "Tool",
+  buildings: "Buildings",
+  vehicle: "Vehicles",
+  objects: "Objects",
+  animal: "Animals",
+  action: "Action",
+  assets: "Assets",
+};
+export const NO_CATEGORY = "No category";
+
+/** The Civitai numbers kept for a stack's model, or null. */
+function recordOf(stack, stats) {
+  const id = stack.members[0].model_id;
+  return (id && stats?.get?.(String(id))) || null;
+}
+
 /** The shown member's number for a stat sort, or null when there is none. */
 export function statOf(stack, sort, stats) {
-  const id = stack.members[0].model_id;
-  const value = id ? stats?.get?.(String(id))?.[sort] : null;
+  const value = recordOf(stack, stats)?.[sort];
   return Number.isFinite(value) ? value : null;
+}
+
+/** The stack's Civitai category key, or "" when none is known. */
+export function categoryOf(stack, stats) {
+  const key = recordOf(stack, stats)?.category;
+  return typeof key === "string" && Object.hasOwn(CATEGORY_LABELS, key) ? key : "";
 }
 
 /** A count for a card badge: 950, 11.6k, 1.2M. Not a count gives "". */
@@ -139,6 +180,21 @@ export function arrange(
   if (groupBy === "none") {
     return [{ base: null, fits: false, stacks: [...stacks].sort(order) }];
   }
+  if (groupBy === "category") {
+    const byLabel = new Map();
+    for (const stack of stacks) {
+      const key = categoryOf(stack, stats);
+      const label = key ? CATEGORY_LABELS[key] : NO_CATEGORY;
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label).push(stack);
+    }
+    return [...byLabel]
+      .map(([label, list]) => ({ base: label, fits: false, stacks: list.sort(order) }))
+      .sort(
+        (x, y) =>
+          (x.base === NO_CATEGORY) - (y.base === NO_CATEGORY) || x.base.localeCompare(y.base)
+      );
+  }
   const bands = new Map();
   for (const stack of stacks) {
     const base = groupOf(shown(stack));
@@ -169,16 +225,48 @@ export function toggleFolded(stored, base) {
   return list.includes(base) ? list.filter((name) => name !== base) : [...list, base];
 }
 
-/** What one card shows. Text is raw; escaping is the view's job. */
-export function cardModel(entry) {
+const TYPE_LABEL = { loras: "LoRA", models: "Checkpoint", embeddings: "Embedding" };
+
+/** How many bases a model covers besides the card's own, as the Gallery names
+ * them (the same filing the bands use). null when no numbers are known. */
+function otherBases(bases, own) {
+  if (!Array.isArray(bases)) return null;
+  const seen = new Set([baseKey(own)]);
+  for (const raw of bases) {
+    const key = baseKey(normaliseBase(raw) ?? raw);
+    if (key) seen.add(key);
+  }
+  return seen.size - 1;
+}
+
+/** What one card shows. Text is raw; escaping is the view's job.
+ *
+ * `numbers` is the model's Civitai record from the check (see statOf), if any. */
+export function cardModel(entry, numbers = null) {
   const stem = stemOf(entry.id);
   const base = groupOf(entry);
+  const kind = entry.kind || KIND;
+  const has = numbers && typeof numbers === "object";
+  const image = has && typeof numbers.creatorImage === "string" ? numbers.creatorImage : "";
   return {
     key: entry.id,
     title: cardTitle(entry),
-    kind: entry.kind || KIND,
+    kind,
+    typeLabel: TYPE_LABEL[kind] || TYPE_LABEL[KIND],
+    base,
+    moreBases: has ? otherBases(numbers.bases, base) : null,
     creator: entry.creator || "",
+    creatorImage: image,
     detail: entry.structured && entry.version ? `${entry.version} · ${base}` : base,
+    versionSuffix: entry.structured && entry.version ? entry.version : "",
+    stats: has
+      ? {
+          downloads: num(numbers.downloads),
+          likes: num(numbers.likes),
+          comments: num(numbers.comments),
+          tipped: num(numbers.tipped),
+        }
+      : null,
     triggers: (entry.triggers || []).length,
     url: entry.url || null,
     thumbnail: entry.has_preview ? entry.thumbnail : null,
