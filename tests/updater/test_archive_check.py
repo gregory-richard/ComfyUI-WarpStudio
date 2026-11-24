@@ -133,7 +133,9 @@ class ArchiveCheckTests(unittest.TestCase):
 
         item = items[0]
         self.assertTrue(item["archived"])
-        self.assertEqual({"downloads": 11570, "likes": 833, "comments": 3}, item["modelStats"])
+        self.assertEqual(
+            (11570, 833, 3), tuple(item["modelStats"][key] for key in ("downloads", "likes", "comments"))
+        )
         self.assertEqual(str(self.archive / "Lora" / "a.safetensors"), item["filePath"])
         self.assertEqual("archive", summary["mode"])
         self.assertEqual(0, summary["withoutInfo"])
@@ -208,7 +210,12 @@ class ArchiveCheckTests(unittest.TestCase):
                 {"modelTypes": ["lora"]}, lambda current, total, message: None
             )
 
-        self.assertEqual({"downloads": 7, "likes": 2, "comments": 1}, items[0]["modelStats"])
+        stats = items[0]["modelStats"]
+        self.assertEqual(
+            {"downloads": 7, "likes": 2, "comments": 1, "tipped": 0, "versions": 1},
+            {key: stats[key] for key in ("downloads", "likes", "comments", "tipped", "versions")},
+        )
+        self.assertEqual(["SDXL 1.0"], stats["bases"])
 
 
 class ModelStatsTests(unittest.TestCase):
@@ -226,7 +233,54 @@ class ModelStatsTests(unittest.TestCase):
         stats = client.model_stats(5)
 
         self.assertEqual(1, len(requests))
-        self.assertEqual({"downloads": 9, "likes": 4, "comments": 0}, stats)
+        self.assertEqual(9, stats["downloads"])
+        self.assertEqual(4, stats["likes"])
+        self.assertEqual(0, stats["comments"])
+
+    def test_model_stats_keeps_the_card_info(self) -> None:
+        client = CivitaiClient(api_key="", timeout_seconds=5, max_retries=0)
+        client._model_cache["5"] = {
+            "id": 5,
+            "type": "LORA",
+            "tags": ["ugly", "concept", "character"],
+            "creator": {"username": "Felldude", "image": "https://image.civitai.com/x/width=96/F.jpeg"},
+            "stats": {"downloadCount": 9119, "thumbsUpCount": 399, "commentCount": 21, "tippedAmountCount": 100},
+            "modelVersions": [
+                {"baseModel": "Pony"},
+                {"baseModel": "SDXL 1.0"},
+                {"baseModel": "Pony"},
+                {"name": "no base"},
+            ],
+        }
+
+        self.assertEqual(
+            {
+                "downloads": 9119,
+                "likes": 399,
+                "comments": 21,
+                "tipped": 100,
+                "versions": 4,
+                "creatorImage": "https://image.civitai.com/x/width=96/F.jpeg",
+                "category": "concept",
+                "bases": ["Pony", "SDXL 1.0"],
+            },
+            client.model_stats(5),
+        )
+
+    def test_model_stats_without_a_category_or_a_safe_image(self) -> None:
+        client = CivitaiClient(api_key="", timeout_seconds=5, max_retries=0)
+        client._model_cache["5"] = {
+            "id": 5,
+            "tags": ["ugly", {"name": "poses"}, "Style"],
+            "creator": {"username": "a", "image": "javascript:alert(1)"},
+            "stats": {},
+            "modelVersions": [],
+        }
+        stats = client.model_stats(5)
+        self.assertEqual("", stats["creatorImage"])
+        self.assertEqual("poses", stats["category"])
+        client._model_cache["6"] = {"id": 6, "tags": ["ugly"], "stats": {}, "modelVersions": []}
+        self.assertEqual("", client.model_stats(6)["category"])
 
     def test_model_stats_is_empty_for_an_errored_model(self) -> None:
         client = CivitaiClient(api_key="", timeout_seconds=5, max_retries=0)

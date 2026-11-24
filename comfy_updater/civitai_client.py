@@ -24,6 +24,35 @@ except Exception:  # pragma: no cover - optional import guard
     Image = None
 
 
+# Civitai's category is one of a model's tags; these are the tags that are one.
+CATEGORY_KEYS = (
+    "character",
+    "style",
+    "celebrity",
+    "concept",
+    "clothing",
+    "base model",
+    "poses",
+    "background",
+    "tool",
+    "buildings",
+    "vehicle",
+    "objects",
+    "animal",
+    "action",
+    "assets",
+)
+
+
+def _category_of(tags) -> str:
+    """The first of the model's tags, in Civitai's order, that is a category; "" for none."""
+    for tag in tags if isinstance(tags, list) else []:
+        name = tag.get("name") if isinstance(tag, dict) else tag
+        if isinstance(name, str) and name.strip().lower() in CATEGORY_KEYS:
+            return name.strip().lower()
+    return ""
+
+
 class CivitaiClient:
     def __init__(self, api_key: str, timeout_seconds: int, max_retries: int, should_stop=None):
         self.timeout_seconds = timeout_seconds
@@ -83,23 +112,40 @@ class CivitaiClient:
         return (creator_name, versions, is_nsfw)
 
     def model_stats(self, model_id: int | str) -> dict:
-        """The model's download, like and comment counts; {} when it is unknown or errored.
+        """What a gallery card shows of the model; {} when it is unknown or errored.
 
-        Reads the cached model, so it costs no request after a versions lookup.
+        The counts, how many versions it has, the creator's avatar, Civitai's
+        category and every base it covers. Reads the cached model, so it costs
+        no request after a versions lookup.
         """
         model = self.get_model(model_id)
-        stats = model.get("stats") if isinstance(model, dict) else None
-        if not isinstance(stats, dict):
+        if not isinstance(model, dict):
             return {}
+        stats = model.get("stats")
+        if not isinstance(stats, dict):
+            stats = {}
 
         def count(key: str) -> int:
             value = stats.get(key)
             return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
+        versions = [v for v in (model.get("modelVersions") or []) if isinstance(v, dict)]
+        bases: list[str] = []
+        for version in versions:
+            base = version.get("baseModel")
+            if isinstance(base, str) and base.strip() and base not in bases:
+                bases.append(base)
+        creator = model.get("creator")
+        image = creator.get("image") if isinstance(creator, dict) else None
         return {
             "downloads": count("downloadCount"),
             "likes": count("thumbsUpCount"),
             "comments": count("commentCount"),
+            "tipped": count("tippedAmountCount"),
+            "versions": len(versions),
+            "creatorImage": image if isinstance(image, str) and image.startswith("https://") else "",
+            "category": _category_of(model.get("tags")),
+            "bases": bases,
         }
 
     def model_page_url(self, model_id: int | str) -> str:

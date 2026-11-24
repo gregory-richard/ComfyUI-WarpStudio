@@ -571,7 +571,8 @@ def _normalize_archive_payload(payload: dict) -> tuple[str, list[str]]:
 
 ARCHIVE_UNREACHABLE_ERROR = "The archive folder can't be reached."
 ARCHIVE_OVERLAP_ERROR = "The archive folder overlaps a model folder."
-_STAT_KEYS = ("downloads", "likes", "comments")
+_STAT_KEYS = ("downloads", "likes", "comments", "tipped", "versions")
+_STAT_TEXT_KEYS = ("creatorImage", "category")
 
 
 def _archive_folder(config_store) -> str:
@@ -623,7 +624,13 @@ def _model_stats(items: list) -> dict:
         numbers = item.get("modelStats")
         if not model_id or model_id in stats or not isinstance(numbers, dict):
             continue
-        stats[model_id] = {key: numbers.get(key, 0) for key in _STAT_KEYS}
+        entry = {key: numbers.get(key, 0) for key in _STAT_KEYS}
+        for key in _STAT_TEXT_KEYS:
+            value = numbers.get(key)
+            entry[key] = value if isinstance(value, str) else ""
+        bases = numbers.get("bases")
+        entry["bases"] = [base for base in bases if isinstance(base, str)] if isinstance(bases, list) else []
+        stats[model_id] = entry
     return stats
 
 
