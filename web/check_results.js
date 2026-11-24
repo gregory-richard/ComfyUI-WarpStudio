@@ -37,7 +37,7 @@ export function rowLabel(v) {
   const issue = rowIssue(v);
   if (issue) return { role: issue.role, label: issue.label };
   if (!v.archived && v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource]) {
-    return { role: "nomatch", label: FALLBACK_LABEL };
+    return { role: "found", label: FALLBACK_LABEL };
   }
   // Downloaded since the check: the card stays in Updates until the next one.
   if (v.downloaded) return { role: "downloaded", label: "Downloaded" };

@@ -52,7 +52,7 @@ test("rows on the drive keep their labels", () => {
   assert.deepEqual(rowLabel(row({ status: "error" })), { role: "error", label: "Error" });
   assert.deepEqual(rowLabel(row({ status: "not_found" })), { role: "nomatch", label: "No match" });
   assert.deepEqual(rowLabel(row({ status: "not_found", fallbackSource: "huggingface" })), {
-    role: "nomatch",
+    role: "found",
     label: "Found",
   });
   assert.deepEqual(rowLabel(row({ metadataOnly: true })), { role: "metadata", label: "Metadata" });
@@ -143,7 +143,7 @@ test("rowLabel: an issue still wins over Downloaded", () => {
 test("a file another source identified is not an issue", () => {
   const found = row({ status: "not_found", fallbackSource: "huggingface" });
   assert.equal(rowIssue(found), null);
-  assert.deepEqual(rowLabel(found), { role: "nomatch", label: "Found" });
+  assert.deepEqual(rowLabel(found), { role: "found", label: "Found" });
 });
 
 test("a failed lookup is an issue whatever found the file", () => {

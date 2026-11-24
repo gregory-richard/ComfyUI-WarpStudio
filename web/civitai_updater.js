@@ -4467,6 +4467,15 @@ function injectStyles() {
       border-color: var(--cu-dust);
     }
 
+    /* Found: identified by another source, so not an issue; a neutral dot. */
+    .cu-ver-label[data-role="found"] {
+      color: var(--cu-ash);
+    }
+
+    .cu-ver-label[data-role="found"]::before {
+      border-color: var(--cu-dust);
+    }
+
     /* Downloaded since the check: the card stays in Updates until the next one. */
     .cu-ver-label[data-role="downloaded"] {
       color: var(--cu-moss);
