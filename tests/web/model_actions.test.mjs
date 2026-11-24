@@ -14,6 +14,7 @@ import {
   rowDownloadView,
   rowHideHtml,
   slotState,
+  slotVersions,
   versionActionsHtml,
   versionKey,
   galleryKey,
@@ -437,4 +438,17 @@ test("a finished download with warnings says so in its row", () => {
   const clean = versionActionsHtml({}, rec({ state: "done", written: 5, total: 5 }), escapeHtml);
   assert.ok(clean.includes("pi-check") && !clean.includes("pi-exclamation-triangle"), clean);
   assert.equal(rowDownloadView(rec({ state: "done", written: 5, total: 5 })).warning, "");
+});
+
+test("slotVersions: a download goes beside the version on the drive, and Replace takes only that one", () => {
+  const drive = { modelPath: "D:\\l\\pony\\a v2.safetensors" };
+  const archived = { modelPath: "Z:\\l\\pony\\a v1.safetensors", archived: true };
+  const deleted = { modelPath: "D:\\l\\pony\\a v0.safetensors", deleted: true };
+  assert.deepEqual(slotVersions([archived, drive]), { reference: drive, current: drive });
+  // Only archived: the server finds the drive folder that mirrors it; nothing to replace.
+  assert.deepEqual(slotVersions([archived]), { reference: archived, current: undefined });
+  assert.deepEqual(slotVersions([deleted, archived]), { reference: archived, current: undefined });
+  // Only a deleted row: its folder is still where the release goes.
+  assert.deepEqual(slotVersions([deleted]), { reference: deleted, current: undefined });
+  assert.deepEqual(slotVersions(undefined), { reference: undefined, current: undefined });
 });

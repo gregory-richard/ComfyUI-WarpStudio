@@ -13,6 +13,7 @@ import {
   rowDeleteHtml,
   rowDownloadView,
   rowHideHtml,
+  slotVersions,
   versionActionsHtml,
   versionKey,
 } from "./model_actions.js";
@@ -2539,7 +2540,7 @@ function renderRemoteVersionRow(item, version, hidden) {
   const accessBadge = renderPaidBadge(version) || renderAvailabilityBadge(version.availability);
   const hiddenClass = hidden ? " is-hidden" : "";
   // The download slot: painted in place while a download runs, so the row keeps its size.
-  const current = (item.localVersions || []).find((v) => !v.deleted && !v.archived);
+  const { reference, current } = slotVersions(item.localVersions);
   const hasLocal = Boolean(current) && !current.metadataOnly;
   const canReplace = state.canTrash && hasLocal;
   const key = versionKey(version.versionId);
@@ -2554,7 +2555,7 @@ function renderRemoteVersionRow(item, version, hidden) {
     escapeHtml,
   );
   const view = rowDownloadView(record);
-  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}" data-replace-name="${escapeHtml(replaceName)}" data-replace-file="${escapeHtml(replaceFile)}" data-version-name="${escapeHtml(versionName)}">${slot}</span>`;
+  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(reference?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}" data-replace-name="${escapeHtml(replaceName)}" data-replace-file="${escapeHtml(replaceFile)}" data-version-name="${escapeHtml(versionName)}">${slot}</span>`;
   return `
     <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>

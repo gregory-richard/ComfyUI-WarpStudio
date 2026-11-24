@@ -125,6 +125,16 @@ function downloadRing(pct) {
   );
 }
 
+/* Which of a card's local versions a release row works from. ``reference``: the file whose
+   folder the download goes beside (the server maps an archived one to its drive folder).
+   ``current``: the version Replace sends to the Recycle Bin, only one on this drive. */
+export function slotVersions(localVersions) {
+  const versions = localVersions || [];
+  const current = versions.find((v) => !v.deleted && !v.archived);
+  const reference = current || versions.find((v) => !v.deleted) || versions[0];
+  return { reference, current };
+}
+
 /* Everything sits in one slot element, which the page gives one fixed width: at most two
    icon buttons, or a percentage and one button, in every state. */
 export function versionActionsHtml(slot, record, escapeHtml) {
