@@ -139,3 +139,26 @@ test("rowLabel: an issue still wins over Downloaded", () => {
     label: "Duplicate",
   });
 });
+
+test("a removed model says whether its creator is still on Civitai", () => {
+  const base = { status: "error", error: "404 Not Found.", creatorName: "kermit" };
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "active" })),
+    "Removed from Civitai. kermit still has models there."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "gone" })),
+    "Removed from Civitai. kermit has no models there any more."
+  );
+  assert.equal(
+    issueMessage(
+      row({ ...base, creatorStatus: "gone", fallbackSource: "civarchive", hasLocalPreview: true })
+    ),
+    "Removed from Civitai. kermit has no models there any more. Info and preview from civarchive."
+  );
+  assert.equal(issueMessage(row({ ...base, creatorStatus: "" })), "404 Not Found.");
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "active", creatorName: "" })),
+    "404 Not Found."
+  );
+});

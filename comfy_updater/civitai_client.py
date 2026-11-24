@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 import requests
 
@@ -35,6 +35,9 @@ class CivitaiClient:
         # Caches the model payload, None for a silent miss, or the error that
         # a strict lookup raised, so several files of one model share a call.
         self._model_cache: dict[str, dict | None | CivitaiRequestError] = {}
+        # What this run learned about each creator, so a creator with several
+        # removed models is asked about once. Filled by the updater service.
+        self.creator_status_cache: dict[str, str] = {}
         self.default_headers = {
             "User-Agent": USER_AGENT,
         }
@@ -101,6 +104,23 @@ class CivitaiClient:
             "likes": count("thumbsUpCount"),
             "comments": count("commentCount"),
         }
+
+    def creator_has_models(self, username: str) -> bool | None:
+        """Whether Civitai still lists any model under this username.
+
+        None when the answer is unknown: a network error, an unreadable reply,
+        or any failure status (an unknown username answers 404, which proves
+        nothing about a creator the file name only hints at).
+        """
+        query = urlencode({"username": username, "limit": 1, "nsfw": "true"}, quote_via=quote)
+        try:
+            payload = self._get_json(f"{MODEL_BY_ID_URL}?{query}", raise_on_error=True)
+        except CivitaiRequestError:
+            return None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return None
+        return bool(items)
 
     def model_page_url(self, model_id: int | str) -> str:
         return f"{MODEL_PAGE_BASE_URL}/{model_id}"
