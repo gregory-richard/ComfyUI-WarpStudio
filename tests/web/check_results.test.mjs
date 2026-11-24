@@ -163,3 +163,34 @@ test("a found file that is also archived stays an issue", () => {
 test("not found with no source is still an issue", () => {
   assert.equal(rowIssue(row({ status: "not_found" })).label, "No match");
 });
+
+test("a removed model says whether its creator is still on Civitai", () => {
+  const base = { status: "error", error: "404 Not Found.", creatorName: "kermit" };
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "active" })),
+    "Removed from Civitai. kermit still has models there."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "gone" })),
+    "Removed from Civitai. kermit has no models there any more."
+  );
+  assert.equal(
+    issueMessage(
+      row({ ...base, creatorStatus: "gone", fallbackSource: "civarchive", hasLocalPreview: true })
+    ),
+    "Removed from Civitai. kermit has no models there any more. Info and preview from civarchive."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "missing" })),
+    "Removed from Civitai. There's no account named kermit there any more."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "missing", fallbackSource: "civarchive" })),
+    "Removed from Civitai. There's no account named kermit there any more. Info from civarchive."
+  );
+  assert.equal(issueMessage(row({ ...base, creatorStatus: "" })), "404 Not Found.");
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "active", creatorName: "" })),
+    "404 Not Found."
+  );
+});

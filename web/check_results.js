@@ -47,6 +47,20 @@ export function rowLabel(v) {
     : { role: "saved", label: "Saved" };
 }
 
+function removedMessage(v) {
+  if (v.status !== "error" || !v.creatorName) return "";
+  if (v.creatorStatus === "active") {
+    return `Removed from Civitai. ${v.creatorName} still has models there.`;
+  }
+  if (v.creatorStatus === "gone") {
+    return `Removed from Civitai. ${v.creatorName} has no models there any more.`;
+  }
+  if (v.creatorStatus === "missing") {
+    return `Removed from Civitai. There's no account named ${v.creatorName} there any more.`;
+  }
+  return "";
+}
+
 /** The reason printed under an issue's row. */
 export function issueMessage(v) {
   if (v.alsoArchived) {
@@ -55,12 +69,14 @@ export function issueMessage(v) {
       : `The same version is in the archive as ${v.alsoArchived}.`;
   }
   const source = FALLBACK_SOURCES[v.fallbackSource];
+  const removed = removedMessage(v);
   if (source && (v.status === "not_found" || v.status === "error")) {
     const found = `${v.hasLocalPreview ? "Info and preview" : "Info"} from ${source.phrase}.`;
     return v.status === "not_found"
       ? `Not on Civitai. ${found}`
-      : `${v.error || "The lookup failed."} ${found}`;
+      : `${removed || v.error || "The lookup failed."} ${found}`;
   }
+  if (removed) return removed;
   if (v.status === "not_found") {
     return "Civitai has no release with this file's hash. It may be converted, merged, private, or never uploaded.";
   }

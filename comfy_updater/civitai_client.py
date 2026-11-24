@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 import requests
 
@@ -64,6 +64,9 @@ class CivitaiClient:
         # Caches the model payload, None for a silent miss, or the error that
         # a strict lookup raised, so several files of one model share a call.
         self._model_cache: dict[str, dict | None | CivitaiRequestError] = {}
+        # What this run learned about each creator, so a creator with several
+        # removed models is asked about once. Filled by the updater service.
+        self.creator_status_cache: dict[str, str] = {}
         self.default_headers = {
             "User-Agent": USER_AGENT,
         }
@@ -147,6 +150,24 @@ class CivitaiClient:
             "category": _category_of(model.get("tags")),
             "bases": bases,
         }
+
+    def creator_lookup(self, username: str) -> str | None:
+        """Whether Civitai still has this account: "active", "gone" or "missing".
+
+        "active": the account lists models. "gone": it answers but lists none.
+        "missing": Civitai has no account by that name (HTTP 404). None when
+        nothing can be claimed: a network error, a timeout, another failure
+        status or an unreadable reply.
+        """
+        query = urlencode({"username": username, "limit": 1, "nsfw": "true"}, quote_via=quote)
+        try:
+            payload = self._get_json(f"{MODEL_BY_ID_URL}?{query}", raise_on_error=True)
+        except CivitaiRequestError as exc:
+            return "missing" if exc.status == 404 else None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return None
+        return "active" if items else "gone"
 
     def model_page_url(self, model_id: int | str) -> str:
         return f"{MODEL_PAGE_BASE_URL}/{model_id}"

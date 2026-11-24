@@ -482,6 +482,7 @@ class UpdaterService:
             local_preview_url, local_preview_type = _first_preview(version_data)
             # A removed model's creator and source can only come from its info file.
             info_applies = not _replaced(stored_hash, local_hash)
+            creator_name = _creator_name(existing_info) if info_applies else ""
             return {
                 "modelPath": str(model_path),
                 "modelType": model_type,
@@ -500,7 +501,8 @@ class UpdaterService:
                 "latestVersionName": "",
                 "latestBaseModel": "",
                 "latestVersionDate": "",
-                "creatorName": _creator_name(existing_info) if info_applies else "",
+                "creatorName": creator_name,
+                "creatorStatus": _creator_status(client, creator_name) if exc.status == 404 else "",
                 "fallbackSource": _fallback_source(existing_info) if info_applies else "",
                 "previewUrl": local_preview_url,
                 "previewType": local_preview_type,
@@ -897,6 +899,20 @@ def _fallback_source(info: dict | None) -> str:
 def _creator_name(info: dict | None) -> str:
     creator = info.get("creator") if isinstance(info, dict) else None
     return _text(creator.get("username")) if isinstance(creator, dict) else ""
+
+
+def _creator_status(client: CivitaiClient, username: str) -> str:
+    """For a removed model: "active" if its creator still has models, "gone" if the account lists none,
+    "missing" if Civitai has no such account, "" if unknown.
+
+    One request per username per run; an unknown answer is remembered too.
+    """
+    if not username:
+        return ""
+    cache = client.creator_status_cache
+    if username not in cache:
+        cache[username] = client.creator_lookup(username) or ""
+    return cache[username]
 
 
 def _fallback_fields(info: dict, file_name: str) -> dict:

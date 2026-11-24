@@ -796,6 +796,8 @@ def _build_group(
                     "hasLocalPreview": bool(member.get("hasLocalPreview")),
                     "status": member.get("status", ""),
                     "error": member.get("error", ""),
+                    "creatorName": member.get("creatorName", ""),
+                    "creatorStatus": member.get("creatorStatus", ""),
                     "downloaded": _added_after(member, downloaded_after),
                 }
             )
@@ -970,6 +972,8 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
             "hasLocalPreview": bool(item.get("hasLocalPreview")),
             "status": item.get("status", ""),
             "error": item.get("error", ""),
+            "creatorName": item.get("creatorName", ""),
+            "creatorStatus": item.get("creatorStatus", ""),
         }
     ]
     return {
