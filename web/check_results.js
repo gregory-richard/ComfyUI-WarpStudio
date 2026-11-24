@@ -21,6 +21,8 @@ const ISSUE_LABELS = {
  * Duplicate, or Info only when the drive holds only its info file.
  */
 export function rowIssue(v) {
+  // A deleted file is gone: its row says Deleted until the next check.
+  if (v.deleted) return null;
   if (v.alsoArchived) {
     return v.infoOnly
       ? { role: "infoonly", label: "Info only" }
@@ -34,6 +36,7 @@ export function rowIssue(v) {
 
 /** The row's label and the role that colours its dot. A file another source identified says Found. */
 export function rowLabel(v) {
+  if (v.deleted) return { role: "deleted", label: "Deleted" };
   const issue = rowIssue(v);
   if (issue) return { role: issue.role, label: issue.label };
   if (!v.archived && v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource]) {

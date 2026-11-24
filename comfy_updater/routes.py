@@ -483,7 +483,8 @@ def _seed_items_from_cache(cache_data) -> list[dict]:
 def _as_seeds(items: list) -> list[dict]:
     seeded: list[dict] = []
     for item in items:
-        if not isinstance(item, dict):
+        # A deleted file's row lasts until the next check: that check starts without it.
+        if not isinstance(item, dict) or item.get("deleted"):
             continue
         entry = dict(_normalize_cached_item_urls(item))
         entry["_seeded"] = True
@@ -503,7 +504,7 @@ def _merge_check_items(cache_data, fresh_items: list[dict], model_types: list[st
     carried = [
         _normalize_cached_item_urls(item)
         for item in _cached_check_items(cache_data)
-        if item.get("modelType") not in checked_types
+        if item.get("modelType") not in checked_types and not item.get("deleted")
     ]
     return carried + list(fresh_items)
 
@@ -802,7 +803,11 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
             archive_info["withUpdates"] = await asyncio.to_thread(job_manager.archived_update_count, job.items)
 
         # Files on D only: the archive's rows are not in last_check.json.
-        cached_paths = {str(item.get("modelPath", "")).lower() for item in data.get("items", []) if item.get("modelPath")}
+        cached_paths = {
+            str(item.get("modelPath", "")).lower()
+            for item in data.get("items", [])
+            if item.get("modelPath") and not item.get("deleted")
+        }
         added = len(current_paths - cached_paths)
         removed = len(cached_paths - current_paths)
 

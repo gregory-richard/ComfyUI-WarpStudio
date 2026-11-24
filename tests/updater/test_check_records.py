@@ -104,7 +104,7 @@ class CheckRecordsTests(unittest.TestCase):
         )
         return path
 
-    def test_edit_check_items_removes_by_model_or_file_path_and_adds(self) -> None:
+    def test_edit_check_items_marks_removed_files_deleted_and_adds(self) -> None:
         info = self.root / "pony" / "maker - c - v1 (pony).civitai.info"
         items = [
             v1_item(self.v1),
@@ -124,15 +124,31 @@ class CheckRecordsTests(unittest.TestCase):
         )
 
         self.assertTrue(changed)
+        # A removed file keeps its row, marked deleted, until the next check.
         self.assertEqual(
             [item["modelPath"] for item in items],
             [
+                str(self.v1),
+                str(info),
                 str(self.root / "kept.safetensors"),
                 str(self.v2),
                 str(self.root / "extra.safetensors"),
             ],
         )
-        self.assertEqual(items[1]["localVersionId"], "202")
+        self.assertEqual([bool(item.get("deleted")) for item in items], [True, True, False, False, False])
+        self.assertEqual(items[3]["localVersionId"], "202")
+
+    def test_marking_a_deleted_row_again_is_no_change(self) -> None:
+        items = [v1_item(self.v1)]
+        self.assertTrue(edit_check_items(items, remove=[str(self.v1)], add=[]))
+        self.assertFalse(edit_check_items(items, remove=[str(self.v1)], add=[]))
+        self.assertTrue(items[0]["deleted"])
+
+    def test_a_download_to_a_deleted_rows_path_replaces_the_row(self) -> None:
+        items = [v1_item(self.v1)]
+        edit_check_items(items, remove=[str(self.v1)], add=[])
+        edit_check_items(items, remove=[], add=[{"modelPath": str(self.v1), "localVersionId": "9"}])
+        self.assertEqual(items, [{"modelPath": str(self.v1), "localVersionId": "9"}])
 
     def test_edit_check_items_reports_no_change(self) -> None:
         items = [v1_item(self.v1)]
@@ -189,11 +205,13 @@ class CheckRecordsTests(unittest.TestCase):
 
         update_check_records(self.manager, self.data, remove=[str(self.v1)], add=[new])
 
-        self.assertEqual(job.items, [new])
-        self.assertEqual(cached.items, [new])
-        self.assertIsNot(job.items[0], cached.items[0])
+        deleted = {**v1_item(self.v1), "deleted": True}
+        self.assertEqual(job.items, [deleted, new])
+        self.assertEqual([item.get("deleted") for item in cached.items], [True, None])
+        self.assertEqual(cached.items[1], new)
+        self.assertIsNot(job.items[1], cached.items[1])
         payload = json.loads(saved.read_text(encoding="utf-8"))
-        self.assertEqual(payload["items"], [new])
+        self.assertEqual(payload["items"], [deleted, new])
         self.assertEqual(payload["schemaVersion"], CACHE_SCHEMA_VERSION)
         self.assertEqual(payload["summary"]["withUpdates"], 0)
         self.assertEqual(payload["summary"]["total"], 1)
@@ -218,7 +236,8 @@ class CheckRecordsTests(unittest.TestCase):
                 thread.join(timeout=10)
         self.assertFalse(any(thread.is_alive() for thread in threads))
         payload = json.loads((self.data / "last_check.json").read_text(encoding="utf-8"))
-        self.assertEqual(payload["items"], [])
+        self.assertEqual([item.get("deleted") for item in payload["items"]], [True, True])
+        self.assertEqual(payload["summary"]["total"], 0)
 
     def test_an_outdated_saved_check_is_left_alone(self) -> None:
         saved = self.save_check([v1_item(self.v1)], schema=CACHE_SCHEMA_VERSION - 1)

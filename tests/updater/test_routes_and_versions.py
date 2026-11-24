@@ -77,6 +77,16 @@ class RouteAndVersionHelperTests(unittest.TestCase):
         self.assertEqual("C:\\models\\a.safetensors", seeded[0]["modelPath"])
         self.assertEqual("https://civitai.red/models/1", seeded[0]["modelUrl"])
 
+    def test_a_new_check_does_not_carry_deleted_rows(self) -> None:
+        cache = {
+            "schemaVersion": CACHE_SCHEMA_VERSION,
+            "items": [
+                {"modelPath": "C:\\models\\a.safetensors", "modelType": "lora", "remoteVersions": [], "deleted": True},
+                {"modelPath": "C:\\models\\b.safetensors", "modelType": "lora", "remoteVersions": []},
+            ],
+        }
+        self.assertEqual(["C:\\models\\b.safetensors"], [i["modelPath"] for i in _seed_items_from_cache(cache)])
+
     def test_seed_items_from_cache_rejects_missing_or_outdated_cache(self) -> None:
         self.assertEqual([], _seed_items_from_cache(None))
         self.assertEqual(

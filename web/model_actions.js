@@ -18,6 +18,8 @@ export const COPY = {
   deleteAsk: "Delete?",
   deleteConfirmTitle: "Click again to send it to the Recycle Bin",
   retry: "Retry",
+  starting: "Starting…",
+  checking: "Checking the file…",
   hide: "Hide",
   unhide: "Unhide",
   deleting: "Deleting…",
@@ -100,6 +102,29 @@ const iconButton = (icon, label, attrs = "", extraClass = "") =>
 const icon = (name, label, extraClass = "") =>
   `<span class="cu-dl-icon${extraClass}" title="${label}"><i class="pi ${name}" aria-hidden="true"></i></span>`;
 
+/* Replace's tooltip: which version goes, for which, and the file sent to the Recycle Bin. */
+function replaceTitle(slot) {
+  const old = slot?.replaces;
+  if (!old?.name || !slot?.version) return COPY.replaceTitle;
+  const file = old.file || old.name;
+  return `Replace ${old.name} with ${slot.version}: downloads ${slot.version}, then sends ${file} to the Recycle Bin`;
+}
+
+/* A download in the button's place: a ring that fills, spinning while nothing is
+   known yet (the request starts) and once every byte is in (the file is checked). */
+const RING = 2 * Math.PI * 7;
+function downloadRing(pct) {
+  const spin = pct === null || pct <= 0 || pct >= 100;
+  const title = pct === null || pct <= 0 ? COPY.starting : pct >= 100 ? COPY.checking : `${pct}%`;
+  const offset = spin ? RING * 0.7 : RING * (1 - pct / 100);
+  const value = pct === null ? "" : ` aria-valuenow="${pct}"`;
+  return (
+    `<span class="cu-dl-ring${spin ? " is-spin" : ""}" role="progressbar" aria-valuemin="0" aria-valuemax="100"${value} title="${title}" aria-label="${title}">` +
+    `<svg viewBox="0 0 20 20" aria-hidden="true"><circle class="cu-dl-ring-track" cx="10" cy="10" r="7"></circle>` +
+    `<circle class="cu-dl-ring-fill" cx="10" cy="10" r="7" style="stroke-dashoffset: ${offset.toFixed(2)}"></circle></svg></span>`
+  );
+}
+
 /* Everything sits in one slot element, which the page gives one fixed width: at most two
    icon buttons, or a percentage and one button, in every state. */
 export function versionActionsHtml(slot, record, escapeHtml) {
@@ -114,12 +139,7 @@ export function versionActionsHtml(slot, record, escapeHtml) {
     return wrap(icon("pi-clock", reason) + stop(COPY.cancel, "pi-times"), state);
   }
   if (state === "downloading") {
-    const pct = percent(record);
-    const text = pct === null ? "\u2026" : `${pct}%`;
-    return wrap(
-      `<span class="cu-dl-pct">${text}</span>` + stop(COPY.stop, "pi-stop-circle"),
-      state
-    );
+    return wrap(downloadRing(percent(record)) + stop(COPY.stop, "pi-stop-circle"), state);
   }
   if (state === "done") {
     const warning = (record?.warnings || []).join(" ");
@@ -129,7 +149,7 @@ export function versionActionsHtml(slot, record, escapeHtml) {
   }
   if (state === "error") {
     const action = slot?.canReplace && record?.replace ? "replace" : "download";
-    const title = action === "replace" ? COPY.replaceTitle : COPY.retry;
+    const title = action === "replace" ? escapeHtml(replaceTitle(slot)) : COPY.retry;
     return wrap(
       iconButton("pi-refresh", title, ` data-dl-action="${action}"`).replace(
         `aria-label="${title}"`,
@@ -140,7 +160,7 @@ export function versionActionsHtml(slot, record, escapeHtml) {
   }
   let html = iconButton("pi-download", COPY.downloadTitle, ' data-dl-action="download"');
   if (slot?.canReplace) {
-    html += iconButton("pi-sync", COPY.replaceTitle, ' data-dl-action="replace"');
+    html += iconButton("pi-sync", escapeHtml(replaceTitle(slot)), ' data-dl-action="replace"');
   }
   return wrap(html, state);
 }
@@ -200,7 +220,7 @@ export function galleryActionHtml(card, record, ui, escapeHtml) {
  * or an info file alone. The server deletes only a file the check lists.
  */
 export function rowDeleteHtml(v, ui, escapeHtml) {
-  if (!ui?.canTrash || v?.archived || v?.metadataOnly || !v?.modelPath) return "";
+  if (!ui?.canTrash || v?.archived || v?.metadataOnly || v?.deleted || !v?.modelPath) return "";
   const path = ` data-row-action="delete" data-path="${escapeHtml(v.modelPath)}"`;
   const mark = " cu-ver-del";
   if (ui.deleting) {

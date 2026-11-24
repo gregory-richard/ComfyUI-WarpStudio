@@ -113,17 +113,42 @@ test("versionActionsHtml: waiting is a clock with its reason and Cancel", () => 
   assert.ok(!waiting.includes(">Waiting"));
 });
 
-test("versionActionsHtml: downloading is the percentage in mono and Stop", () => {
+test("versionActionsHtml: a download is a ring where Download was, and Stop", () => {
   const running = versionActionsHtml(
     { paid: false, canReplace: false },
     rec({ id: "r9", state: "downloading", written: 42, total: 100 }),
     escapeHtml
   );
-  assert.ok(running.includes('<span class="cu-dl-pct">42%</span>'));
+  assert.ok(running.includes("cu-dl-ring"), running);
+  assert.ok(running.includes('aria-valuenow="42"') && running.includes('title="42%"'));
+  assert.ok(!running.includes("is-spin"));
+  assert.ok(!running.includes("cu-dl-pct"));
   assert.deepEqual(icons(running), ["pi-stop-circle"]);
   assert.ok(running.includes('aria-label="Stop"'));
-  const unknown = versionActionsHtml({ paid: false }, rec({ state: "downloading" }), escapeHtml);
-  assert.ok(unknown.includes('<span class="cu-dl-pct">…</span>'));
+  // Before the first bytes and while the file is checked, the ring spins.
+  const starting = versionActionsHtml({ paid: false }, rec({ state: "downloading" }), escapeHtml);
+  assert.ok(starting.includes("is-spin") && starting.includes('title="Starting…"'), starting);
+  const checking = versionActionsHtml(
+    { paid: false },
+    rec({ state: "downloading", written: 100, total: 100 }),
+    escapeHtml
+  );
+  assert.ok(checking.includes("is-spin") && checking.includes('title="Checking the file…"'), checking);
+});
+
+test("versionActionsHtml: Replace names the version it replaces and the file that goes", () => {
+  const html = versionActionsHtml(
+    { canReplace: true, replaces: { name: "v1", file: "glow - v1.safetensors" }, version: "v2" },
+    undefined,
+    escapeHtml
+  );
+  const replace = html.match(/<button[^>]*data-dl-action="replace"[^>]*>/)[0];
+  assert.ok(
+    replace.includes(
+      'title="Replace v1 with v2: downloads v2, then sends glow - v1.safetensors to the Recycle Bin"'
+    ),
+    replace
+  );
 });
 
 test("versionActionsHtml: done is a check, error is Retry", () => {
@@ -364,6 +389,7 @@ test("rowDeleteHtml: never for the archive, an info file alone, no path, or with
   const ui = { canTrash: true };
   assert.equal(rowDeleteHtml(onDrive({ archived: true }), ui, escapeHtml), "");
   assert.equal(rowDeleteHtml(onDrive({ metadataOnly: true }), ui, escapeHtml), "");
+  assert.equal(rowDeleteHtml(onDrive({ deleted: true }), ui, escapeHtml), "");
   assert.equal(rowDeleteHtml(onDrive({ modelPath: "" }), ui, escapeHtml), "");
   assert.equal(rowDeleteHtml(onDrive(), { canTrash: false }, escapeHtml), "");
 });

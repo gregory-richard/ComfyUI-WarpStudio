@@ -726,6 +726,23 @@ function bindEvents(root) {
   root.querySelector("#cu-pause").addEventListener("click", async () => togglePauseResume());
   root.querySelector("#cu-stop").addEventListener("click", async () => stopCurrentJob());
   root.querySelector("#cu-dismiss").addEventListener("click", () => clearError());
+  const markReplaced = (ev, on) => {
+    const button = ev.target.closest?.('[data-dl-action="replace"]');
+    const slot = button?.closest(".cu-dl");
+    const card = slot?.closest(".cu-versions");
+    if (!card) return;
+    for (const row of card.querySelectorAll(".cu-ver-row.is-replacing")) row.classList.remove("is-replacing");
+    if (!on) return;
+    const target = (slot.dataset.modelPath || "").toLowerCase();
+    for (const link of card.querySelectorAll(".cu-copy-path[data-path]")) {
+      const path = (link.dataset.path || "").toLowerCase();
+      if (target && path.startsWith(target.replace(/\.civitai\.info$/, ""))) link.closest(".cu-ver-row")?.classList.add("is-replacing");
+    }
+  };
+  root.addEventListener("mouseover", (ev) => markReplaced(ev, true));
+  root.addEventListener("mouseout", (ev) => markReplaced(ev, false));
+  root.addEventListener("focusin", (ev) => markReplaced(ev, true));
+  root.addEventListener("focusout", (ev) => markReplaced(ev, false));
   root.querySelector("#cu-roots-toggle").addEventListener("click", () => {
     state.rootsExpanded = !state.rootsExpanded;
     renderRoots();
@@ -1734,7 +1751,7 @@ function renderLocalVersionRow(v, showMessage = true) {
   // Delete sits where a new version's Download and Hide do.
   const del = rowDeleteHtml(v, rowDeleteUi(v.modelPath), escapeHtml);
   return `
-      <div class="cu-ver-row${del ? " cu-ver-row-acts" : ""}">
+      <div class="cu-ver-row${del ? " cu-ver-row-acts" : ""}${v.deleted ? " is-deleted" : ""}">
         <span class="cu-ver-label" data-role="${role}">${label}</span>
         <span class="cu-ver-date">${escapeHtml(date || "\u2014")}</span>
         <span class="cu-ver-base">${escapeHtml(v.baseModel || "\u2014")}</span>
@@ -2238,7 +2255,12 @@ function paintDownloads() {
       const canReplace = state.canTrash && slot.dataset.hasLocal === "1";
       slot.dataset.canReplace = canReplace ? "1" : "0";
       const html = versionActionsHtml(
-        { paid: slot.dataset.paid === "1", canReplace },
+        {
+          paid: slot.dataset.paid === "1",
+          canReplace,
+          replaces: { name: slot.dataset.replaceName || "", file: slot.dataset.replaceFile || "" },
+          version: slot.dataset.versionName || "",
+        },
         record,
         escapeHtml,
       );
@@ -2254,8 +2276,6 @@ function paintDownloads() {
 function paintRowDownload(row, view) {
   if (!row) return;
   if (row.dataset.dlState !== view.state) row.dataset.dlState = view.state;
-  const pct = `${view.pct ?? 0}%`;
-  if (row.style.getPropertyValue("--cu-dl-pct") !== pct) row.style.setProperty("--cu-dl-pct", pct);
   const warned = view.warning ? "1" : "0";
   if (row.dataset.dlWarn !== warned) row.dataset.dlWarn = warned;
   const fail = row.querySelector(".cu-ver-fail");
@@ -2519,17 +2539,24 @@ function renderRemoteVersionRow(item, version, hidden) {
   const accessBadge = renderPaidBadge(version) || renderAvailabilityBadge(version.availability);
   const hiddenClass = hidden ? " is-hidden" : "";
   // The download slot: painted in place while a download runs, so the row keeps its size.
-  const current = (item.localVersions || [])[0];
+  const current = (item.localVersions || []).find((v) => !v.deleted && !v.archived);
   const hasLocal = Boolean(current) && !current.metadataOnly;
   const canReplace = state.canTrash && hasLocal;
   const key = versionKey(version.versionId);
   const record = state.downloads.get(key);
   const paid = isPaid(version);
-  const slot = versionActionsHtml({ paid, canReplace }, record, escapeHtml);
+  const replaceName = current?.versionName || "";
+  const replaceFile = extractFilename(current?.filePath || current?.modelPath || "");
+  const versionName = version.versionName || "";
+  const slot = versionActionsHtml(
+    { paid, canReplace, replaces: { name: replaceName, file: replaceFile }, version: versionName },
+    record,
+    escapeHtml,
+  );
   const view = rowDownloadView(record);
-  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
+  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}" data-replace-name="${escapeHtml(replaceName)}" data-replace-file="${escapeHtml(replaceFile)}" data-version-name="${escapeHtml(versionName)}">${slot}</span>`;
   return `
-    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}" style="--cu-dl-pct: ${view.pct ?? 0}%">
+    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>
       <span class="cu-ver-date">${escapeHtml(date)}</span>
       <span class="cu-ver-base">${escapeHtml(version.baseModel || "—")}</span>
@@ -4905,40 +4932,74 @@ function injectStyles() {
       color: var(--cu-moss);
     }
 
-    .cu-dl-pct {
-      flex: 0 0 34px;
-      width: 34px;
-      text-align: right;
-      font-family: var(--cu-mono);
-      font-variant-numeric: tabular-nums;
-      font-size: 9.5px;
-      color: var(--cu-dust);
-      white-space: nowrap;
+    /* A download in the button's place: a ring that fills, spinning while it starts
+       and while the file is checked. */
+    .cu-dl-ring {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 24px;
+      width: 24px;
+      height: 22px;
     }
 
-    /* The row's download state: a 2px bar along its bottom edge, drawn in the row's own
-       space, and a failure that takes the version name's place. Neither adds any height. */
+    .cu-dl-ring svg {
+      width: 14px;
+      height: 14px;
+      transform: rotate(-90deg);
+    }
+
+    .cu-dl-ring-track {
+      fill: none;
+      stroke: var(--cu-seam-strong);
+      stroke-width: 2.5;
+    }
+
+    .cu-dl-ring-fill {
+      fill: none;
+      stroke: var(--cu-moss);
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-dasharray: 43.98;
+      transition: stroke-dashoffset 0.4s linear;
+    }
+
+    .cu-dl-ring.is-spin svg {
+      animation: cu-ring-spin 0.9s linear infinite;
+    }
+
+    /* The failure takes the version name's place; it adds no height. */
     .cu-ver-row[data-dl-state] {
       position: relative;
       min-height: 22px;
     }
 
-    .cu-ver-row[data-dl-state]::after {
-      content: "";
-      position: absolute;
-      left: 0;
-      bottom: 0;
-      height: 2px;
-      width: var(--cu-dl-pct, 0%);
-      background: var(--cu-moss);
-      border-radius: 1px;
-      opacity: 0;
-      pointer-events: none;
-      transition: width 0.4s linear, opacity 0.15s ease;
+    /* A file deleted since the check keeps its row until the next one. */
+    .cu-ver-row.is-deleted .cu-ver-link,
+    .cu-ver-row.is-deleted .cu-ver-date,
+    .cu-ver-row.is-deleted .cu-ver-base {
+      color: var(--cu-dust);
+      text-decoration: line-through;
     }
 
-    .cu-ver-row[data-dl-state="downloading"]::after {
-      opacity: 1;
+    .cu-ver-label[data-role="deleted"] {
+      color: var(--cu-dust);
+    }
+
+    .cu-ver-label[data-role="deleted"]::before {
+      border-style: dashed;
+      border-color: var(--cu-dust);
+    }
+
+    /* Hovering Replace shows which file goes to the Recycle Bin. */
+    .cu-ver-row.is-replacing {
+      background: var(--cu-red-dim);
+      border-radius: 3px;
+    }
+
+    .cu-ver-row.is-replacing .cu-ver-link {
+      color: var(--cu-red-soft);
+      text-decoration: line-through;
     }
 
     .cu-ver-main {

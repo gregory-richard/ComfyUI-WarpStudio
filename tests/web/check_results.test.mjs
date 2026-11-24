@@ -194,3 +194,13 @@ test("a removed model says whether its creator is still on Civitai", () => {
     "404 Not Found."
   );
 });
+
+test("a deleted row says Deleted and is no issue", () => {
+  assert.deepEqual(rowLabel(row({ deleted: true })), { role: "deleted", label: "Deleted" });
+  assert.equal(rowIssue(row({ deleted: true, status: "error" })), null);
+  assert.equal(rowIssue(row({ deleted: true, alsoArchived: "A.safetensors" })), null);
+  assert.deepEqual(rowLabel(row({ deleted: true, alsoArchived: "A.safetensors" })), {
+    role: "deleted",
+    label: "Deleted",
+  });
+});

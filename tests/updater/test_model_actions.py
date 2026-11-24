@@ -43,6 +43,12 @@ V1_SUFFIXES = (".safetensors", ".civitai.info", ".preview.png", ".json")
 HASH_MESSAGE = "The downloaded file doesn't match Civitai's SHA-256. It was deleted."
 
 
+def held(items: list) -> list:
+    """The rows of files still there: a removed file's row stays, marked deleted, until the next check."""
+    return [item for item in items if not item.get("deleted")]
+
+
+
 # --- the fake session of Task 1 ------------------------------------------------
 
 
@@ -453,10 +459,11 @@ class ModelActionsTests(unittest.TestCase):
             "Sending the old version to the Recycle Bin",
             [message for _w, _t, message in self.reports],
         )
-        for items in (self.job.items, self.saved_items()):
+        for items in (held(self.job.items), held(self.saved_items())):
             self.assertEqual([item["modelPath"] for item in items], [str(weights)])
             self.assertEqual(items[0]["localVersionId"], "202")
             self.assertEqual(items[0]["remoteVersions"], remote_versions())
+        self.assertEqual([str(self.v1)], [i["modelPath"] for i in self.job.items if i.get("deleted")])
         summary = json.loads(self.saved.read_text(encoding="utf-8"))["summary"]
         self.assertEqual(summary["withUpdates"], 0)
 
@@ -638,7 +645,7 @@ class ModelActionsTests(unittest.TestCase):
         self.assertEqual(request.warnings, ["The old version's file was already gone."])
         self.assertEqual(self.trashed, [])
         self.assertEqual(
-            [item["modelPath"] for item in self.saved_items()],
+            [item["modelPath"] for item in held(self.saved_items())],
             [str(self.ill / "glowV2.safetensors")],
         )
 
@@ -763,8 +770,12 @@ class ModelActionsTests(unittest.TestCase):
 
         delete_model(weights, trash=self.trash, job_manager=self.manager, data_dir=self.data)
 
-        self.assertEqual([item["modelPath"] for item in self.job.items], [str(self.v1)])
-        self.assertEqual([item["modelPath"] for item in self.saved_items()], [str(self.v1)])
+        self.assertEqual([item["modelPath"] for item in held(self.job.items)], [str(self.v1)])
+        self.assertEqual([item["modelPath"] for item in held(self.saved_items())], [str(self.v1)])
+        # The deleted file's row stays, marked, so its card says Deleted until the next check.
+        self.assertEqual(
+            [item["modelPath"] for item in self.job.items if item.get("deleted")], [str(weights)]
+        )
 
     # --- Gallery ---------------------------------------------------------------
 
@@ -800,7 +811,7 @@ class ModelActionsTests(unittest.TestCase):
         # Its preview is there already.
         self.assertEqual(self.client.images, [])
         self.assertEqual(self.part_files(), [])
-        for items in (self.job.items, self.saved_items()):
+        for items in (held(self.job.items), held(self.saved_items())):
             self.assertEqual([item["modelPath"] for item in items], [str(self.v1)])
             self.assertIs(items[0]["metadataOnly"], False)
             self.assertEqual(items[0]["localVersionId"], "201")
