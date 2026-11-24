@@ -298,6 +298,40 @@ class GroupingTests(unittest.TestCase):
         self.assertTrue(by_archived[False]["infoOnly"])
         self.assertNotIn("infoOnly", by_archived[True])
 
+    def _found(self, model_id, source, status="not_found", **extra):
+        """A drive file Civitai doesn't know, identified by another source."""
+        entry = self._on_d(model_id, "", "2026-01-01T00:00:00Z", name=f"Found{model_id}")
+        entry.update({"status": status, "fallbackSource": source, **extra})
+        return entry
+
+    def test_a_found_file_is_not_an_issue(self) -> None:
+        self.job.items = [self._found("m1", "huggingface"), self._found("m2", "ai-toolkit"), self._found("m3", "civarchive")]
+        groups = self._groups(self.job.items)
+        self.assertEqual([0, 0, 0], [g["issueCount"] for g in groups])
+        self.assertEqual([0], [g["issueCount"] for g in self._groups([self._found("", "huggingface")])])
+        result = self.manager.get_items("job-1", mode="issues", limit=50)
+        self.assertEqual(0, result["total"])
+        self.assertEqual(0, result["modeCounts"]["issues"])
+
+    def test_a_grouped_found_file_is_not_an_issue(self) -> None:
+        groups = self._groups([self._found("m1", "huggingface")])
+        self.assertEqual(0, groups[0]["issueCount"])
+
+    def test_a_found_file_that_is_also_archived_stays_an_issue(self) -> None:
+        groups = self._groups([
+            self._found("m1", "huggingface", localVersionId="7"),
+            self._archived("m1", "7", "2026-01-01T00:00:00Z", name="Copy"),
+        ])
+        self.assertEqual(1, groups[0]["issueCount"])
+
+    def test_a_failed_lookup_stays_an_issue_whatever_found_it(self) -> None:
+        groups = self._groups([self._found("", "civarchive", status="error"), self._found("m2", "civarchive", status="error")])
+        self.assertEqual([1, 1], [g["issueCount"] for g in groups])
+
+    def test_not_found_without_a_source_stays_an_issue(self) -> None:
+        groups = self._groups([self._found("", ""), self._found("m2", "")])
+        self.assertEqual([1, 1], [g["issueCount"] for g in groups])
+
     def test_duplicates_and_info_only_files_both_show_in_issues(self) -> None:
         self.job.items = [
             self._on_d("m1", "7", "2026-01-01T00:00:00Z"),

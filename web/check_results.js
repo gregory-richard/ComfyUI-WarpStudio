@@ -26,15 +26,18 @@ export function rowIssue(v) {
       ? { role: "infoonly", label: "Info only" }
       : { role: "duplicate", label: "Duplicate" };
   }
-  return v.archived ? null : ISSUE_LABELS[v.status] || null;
+  if (v.archived) return null;
+  // A file another source identified is Found, not an issue; a failed lookup still is.
+  if (v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource]) return null;
+  return ISSUE_LABELS[v.status] || null;
 }
 
 /** The row's label and the role that colours its dot. A file another source identified says Found. */
 export function rowLabel(v) {
   const issue = rowIssue(v);
-  if (issue) {
-    const found = !v.alsoArchived && v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource];
-    return { role: issue.role, label: found ? FALLBACK_LABEL : issue.label };
+  if (issue) return { role: issue.role, label: issue.label };
+  if (!v.archived && v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource]) {
+    return { role: "nomatch", label: FALLBACK_LABEL };
   }
   // Downloaded since the check: the card stays in Updates until the next one.
   if (v.downloaded) return { role: "downloaded", label: "Downloaded" };

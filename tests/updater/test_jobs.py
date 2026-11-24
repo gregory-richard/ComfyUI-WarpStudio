@@ -196,7 +196,7 @@ class JobManagerTests(unittest.TestCase):
         self.job.items = [
             self._fallback_item(modelId="", modelUrl="", status="not_found", fallbackSource="civarchive", hasLocalPreview=True)
         ]
-        grouped = self.manager.get_items("job-1", mode="issues")["items"][0]
+        grouped = self.manager.get_items("job-1", mode="all")["items"][0]
         self.assertEqual("", grouped["modelId"])
         v = grouped["localVersions"][0]
         self.assertEqual(("civarchive", True), (v["fallbackSource"], v["hasLocalPreview"]))
