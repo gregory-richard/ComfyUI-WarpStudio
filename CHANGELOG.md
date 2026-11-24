@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-11-24
+
+### Added
+
+- **Gallery cards look like Civitai's**: the picture fills the card, with a pill for the type and base (**LoRA | Krea 2 +2** when the model also covers other bases), the creator with their avatar, the title and version, then downloads, comments, Buzz tipped and likes. The number you sort by is brighter. Check for Updates fills these in from what it already asks Civitai, so run one check after updating
+- **Group by Category** and a **Categories** filter in the Gallery, from Civitai's own category tag (Character, Style, Concept, Clothing, Poses …). Models a check hasn't seen go under **No category**
+- **A removed model says whether its creator is still on Civitai**: "Removed from Civitai. X still has models there.", "… X has no models there any more." or "… There's no account named X there any more." One question per creator per check, and only when the model's info file names the creator
+
+### Changed
+
+- **Nothing jumps any more when a job starts or ends**: the status line under the tabs is always there, one line high. It shows the last result, an error in amber, or the progress with Pause and Stop, and the progress bar runs along its bottom edge
+- **Download, Replace, Delete, Hide, Stop and Cancel are icon buttons**, each with a tooltip. A download shows its progress in its own row: the percentage in the button's place and a thin bar along the row. A failed download shows why in place of the version name, with **Retry**, instead of opening a line under the row
+- **Files Hugging Face, ai-toolkit or civarchive identified are no longer Issues**: they keep the **Found** label, now with a neutral dot. A 404 is still an issue
+- The sidebar label is **Studio**, on one line, with a pipe icon
+
+### Fixed
+
+- **Check with archive keeps the last results when a folder of the archive can't be read**, for example when the network drive drops out during the listing, instead of saving a listing with whole folders missing
+
 ## [1.1.0] - 2026-11-23
 
 ### Security
