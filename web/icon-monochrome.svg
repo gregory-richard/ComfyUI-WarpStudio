@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <path d="M15 1h3v3h-3zM8 5h3v3H8zM21 5h3v3h-3z"/>
-  <path fill-rule="evenodd" d="M5 9h22v1h2v7H3v-7h2zM8 11v3h16v-3z"/>
-  <path d="M5 19h22v9h-2v2H7v-2H5z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" stroke="#000" stroke-width="2.4">
+  <ellipse cx="16" cy="16" rx="13.6" ry="13.6"/>
+  <ellipse cx="18.4" cy="16" rx="8.6" ry="9.2"/>
+  <ellipse cx="20.6" cy="16" rx="4" ry="4.6"/>
 </svg>

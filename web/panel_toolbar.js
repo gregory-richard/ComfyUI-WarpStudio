@@ -1,4 +1,5 @@
-// One toolbar per tab: 🔍 (search behind a button), Filter ▾, Sort ▾, and ⓘ.
+// One toolbar per tab, all icon buttons: search (a field behind a button), Filter,
+// Sort and About.
 // Markup builders are pure and take the panel's escapeHtml last, as
 // gallery_view.js does; wireToolbar is the only part that touches the DOM.
 // The styles (cu-tb- classes) live in the panel's style template.
@@ -24,24 +25,31 @@ export function toolbarHtml(
 ) {
   const esc = escaper(escapeHtml);
   const text = query || "";
+  // Icon buttons: the tooltip and the accessible name say what each is and how it
+  // is set; data-active draws a dot when a filter or a search narrows the list.
+  const icon = (name) => `<i class="pi ${name}" aria-hidden="true"></i>`;
+  const button = (name, label, inner, extra = "") =>
+    `<button type="button" class="cu-tb-btn cu-tb-icon" data-tb="${name}" title="${esc(label)}" aria-label="${esc(label)}"${extra}>${inner}</button>`;
   const find = search
-    ? `<button type="button" class="cu-tb-btn" data-tb="search" title="Search" aria-label="${esc(text ? `Search: ${text}` : "Search")}"${text ? " data-active" : ""}>` +
-      `🔍${text ? `<span class="cu-tb-query">${esc(shortQuery(text))}</span>` : ""}</button>`
+    ? button(
+        "search",
+        text ? `Search: ${text}` : "Search",
+        icon("pi-search") +
+          (text ? `<span class="cu-tb-query">${esc(shortQuery(text))}</span>` : ""),
+        text ? " data-active" : ""
+      )
     : "";
-  const filter = filtered > 0 ? `Filter · ${filtered}` : "Filter";
+  const filterLabel = filtered > 0 ? `Filter: ${filtered} active` : "Filter";
   const hasSort = sortLabel != null;
   const about = info
-    ? `<button type="button" class="cu-tb-btn cu-tb-info" data-tb="info" title="About this tab" aria-label="About this tab" aria-haspopup="true" aria-expanded="false">ⓘ</button>`
+    ? `<button type="button" class="cu-tb-btn cu-tb-icon cu-tb-info" data-tb="info" title="About this tab" aria-label="About this tab" aria-haspopup="true" aria-expanded="false">${icon("pi-info-circle")}</button>`
     : "";
-  // Filter and Sort lead in every tab, so Filter never moves when the tab
-  // changes; 🔍 and ⓘ, which only some tabs have, sit at the right end.
+  const menu = ' aria-haspopup="true" aria-expanded="false"';
   return (
     `<div class="cu-tb">` +
     `<div class="cu-tb-row">` +
-    `<button type="button" class="cu-tb-btn" data-tb="filter" aria-haspopup="true" aria-expanded="false">${esc(filter)} ▾</button>` +
-    (hasSort
-      ? `<button type="button" class="cu-tb-btn" data-tb="sort" aria-haspopup="true" aria-expanded="false">${esc(`Sort · ${sortLabel}`)} ▾</button>`
-      : "") +
+    button("filter", filterLabel, icon("pi-filter"), menu + (filtered > 0 ? " data-active" : "")) +
+    (hasSort ? button("sort", `Sort: ${sortLabel}`, icon("pi-sort-alt"), menu) : "") +
     (find || about ? `<span class="cu-tb-end">${find}${about}</span>` : "") +
     `</div>` +
     (search

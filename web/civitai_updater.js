@@ -65,6 +65,17 @@ const GROUP_OPTIONS = [
   { value: "baseFamily", label: "Base model", short: "Base" },
 ];
 
+// The pill's progress ring: a circle of radius 8, and how long a result stays out.
+const RING_LENGTH = 2 * Math.PI * 8;
+const STATUS_FLASH_MS = 4000;
+
+const VIEW_ICONS = {
+  gallery: "pi-images",
+  updates: "pi-sync",
+  issues: "pi-exclamation-triangle",
+  rename: "pi-pencil",
+};
+
 const GALLERY_ARRANGE_KEY = "warpstudio.gallery.arrange";
 const GALLERY_GROUPS = [
   { value: "base", label: "Base" },
@@ -359,19 +370,6 @@ async function renderTab(el) {
     <section class="cu-card">
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
       <div id="cu-loading-bar" class="cu-loading-bar" aria-hidden="true"></div>
-      <div id="cu-job-bar" class="cu-job-bar">
-        <span id="cu-job-text" class="cu-job-text"></span>
-        <span id="cu-progress-wrap" class="cu-progress-wrap is-off">
-          <span id="cu-progress-text" class="cu-progress-pct"></span>
-          <span id="cu-progress-eta" class="cu-progress-eta"></span>
-          <span class="cu-progress"><span id="cu-progress-fill" class="cu-progress-fill"></span></span>
-        </span>
-        <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm is-off">Check again</button>
-        <div id="cu-job-controls" class="cu-job-controls is-off">
-          <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
-          <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
-        </div>
-      </div>
       <div id="cu-status" class="cu-status" role="alert"></div>
       <div id="cu-gallery-tab">
         <div id="cu-tb-gallery" data-tb-tab="gallery"></div>
@@ -386,7 +384,7 @@ async function renderTab(el) {
         <div class="cu-action-bar">
           <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
           <div class="cu-more">
-            <button id="cu-more" type="button" class="cu-btn cu-btn-ghost" aria-label="More" aria-haspopup="true" aria-expanded="false">⋯</button>
+            <button id="cu-more" type="button" class="cu-btn cu-btn-ghost" aria-label="More" title="More" aria-haspopup="true" aria-expanded="false"><i class="pi pi-ellipsis-h" aria-hidden="true"></i></button>
             <div id="cu-more-menu" class="cu-tb-menu cu-more-menu" hidden></div>
           </div>
         </div>
@@ -400,6 +398,23 @@ async function renderTab(el) {
         </div>
       </div>
     </section>
+    <div class="cu-dock">
+      <div id="cu-job-bar" class="cu-job-bar is-hidden" role="status">
+        <svg id="cu-progress-wrap" class="cu-ring is-off" viewBox="0 0 20 20" aria-hidden="true">
+          <circle class="cu-ring-track" cx="10" cy="10" r="8"></circle>
+          <circle id="cu-progress-fill" class="cu-ring-fill" cx="10" cy="10" r="8"></circle>
+        </svg>
+        <span id="cu-job-text" class="cu-job-text"></span>
+        <span id="cu-progress-text" class="cu-progress-pct"></span>
+        <span id="cu-progress-eta" class="cu-progress-eta"></span>
+        <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm is-off">Check again</button>
+        <div id="cu-job-controls" class="cu-job-controls is-off">
+          <button id="cu-pause" type="button" class="cu-icon-btn" title="Pause" aria-label="Pause"><i class="pi pi-pause" aria-hidden="true"></i></button>
+          <button id="cu-stop" type="button" class="cu-icon-btn cu-pill-stop" title="Stop the job" aria-label="Stop the job"><i class="pi pi-stop-circle" aria-hidden="true"></i></button>
+        </div>
+        <button id="cu-dismiss" type="button" class="cu-icon-btn is-off" title="Dismiss" aria-label="Dismiss"><i class="pi pi-times" aria-hidden="true"></i></button>
+      </div>
+    </div>
   `;
 
   state.rootEl = root;
@@ -710,6 +725,7 @@ function bindEvents(root) {
   bindMoreMenu(root);
   root.querySelector("#cu-pause").addEventListener("click", async () => togglePauseResume());
   root.querySelector("#cu-stop").addEventListener("click", async () => stopCurrentJob());
+  root.querySelector("#cu-dismiss").addEventListener("click", () => clearError());
   root.querySelector("#cu-roots-toggle").addEventListener("click", () => {
     state.rootsExpanded = !state.rootsExpanded;
     renderRoots();
@@ -1170,6 +1186,7 @@ async function startJob(endpoint, type, { includeArchive = false } = {}) {
       renderFilters();
       await loadResultPage(true);
       renderCacheInfo();
+      clearError();
       showCachedNotice();
       return;
     }
@@ -2030,10 +2047,11 @@ function renderViewSwitch() {
   // Issues has no tab without a check; fall back to the tab that stays.
   if (!state.checkJobId && state.resultMode === "issues") state.resultMode = "updates";
   const counts = state.modeCounts || {};
+  // An icon and the count; the tab's name is its tooltip and its accessible name.
   const tab = (mode, label, hint, withCount = true) => {
     const selected = state.resultMode === mode ? "true" : "false";
-    return `<button class="cu-view-tab" type="button" role="tab" data-view="${mode}" aria-selected="${selected}" title="${hint}">`
-      + `<span>${label}</span>${withCount ? `<span class="cu-view-count">${Number(counts[mode] || 0)}</span>` : ""}</button>`;
+    return `<button class="cu-view-tab" type="button" role="tab" data-view="${mode}" aria-selected="${selected}" aria-label="${label}" title="${label}: ${hint}">`
+      + `<i class="pi ${VIEW_ICONS[mode]}" aria-hidden="true"></i>${withCount ? `<span class="cu-view-count">${Number(counts[mode] || 0)}</span>` : ""}</button>`;
   };
   const galleryCount = state.galleryView?.count?.();
   counts.gallery = galleryCount;
@@ -2638,7 +2656,14 @@ function renderRoots() {
 function updateControlButtons() {
   if (!state.pauseEl || !state.stopEl || !state.jobControlsEl) return;
   const active = Boolean(state.currentJobId);
-  state.pauseEl.textContent = active && state.currentJobStatus === "paused" ? "Resume" : "Pause";
+  const paused = active && state.currentJobStatus === "paused";
+  const label = paused ? "Resume" : "Pause";
+  const glyph = paused ? "pi-play" : "pi-pause";
+  if (!state.pauseEl.querySelector(`.${glyph}`)) {
+    state.pauseEl.innerHTML = `<i class="pi ${glyph}" aria-hidden="true"></i>`;
+  }
+  state.pauseEl.title = label;
+  state.pauseEl.setAttribute("aria-label", label);
   // The server refuses to pause the naming-model download (it cannot resume).
   state.pauseEl.style.display =
     state.currentJobType === "naming-model-download" || state.currentJobType === MODEL_DOWNLOAD_JOB ? "none" : "";
@@ -2706,12 +2731,19 @@ function formatEta(seconds) {
 function updateProgress(current, total, visible) {
   if (!state.progressFillEl || !state.progressTextEl) return;
   if (visible) hideCachedNotice();
+  if (state.progressOn && !visible) {
+    // The job's result stays out for a few seconds, then the pill goes.
+    state.flashUntil = Date.now() + STATUS_FLASH_MS;
+    clearTimeout(state.flashTimer);
+    state.flashTimer = setTimeout(paintStatus, STATUS_FLASH_MS + 50);
+  }
   state.progressOn = Boolean(visible);
   paintStatus();
   const safeTotal = Math.max(0, Number(total || 0));
   const safeCurrent = Math.max(0, Number(current || 0));
   const pct = safeTotal > 0 ? Math.min(100, Math.round((safeCurrent / safeTotal) * 100)) : 0;
-  state.progressFillEl.style.width = `${pct}%`;
+  state.progressFillEl.style.strokeDashoffset = String(RING_LENGTH * (1 - pct / 100));
+  state.progressWrapEl?.classList.toggle("is-spin", Boolean(visible) && safeTotal <= 0);
   state.progressTextEl.textContent = safeTotal > 0 ? `${pct}%` : "";
 
   if (!state.progressEtaEl) return;
@@ -2729,10 +2761,9 @@ function updateProgress(current, total, visible) {
   }
 }
 
-/* One status row, always the same height. An error replaces the row's text, in the
-   error colour, and stays until the next job starts. Routine text (progress, "Done",
-   the cached-results notice) is the row's label; the last check's facts are behind
-   the ⓘ. Only visibility and text change, so nothing moves. */
+/* The floating status pill: a running job's text and progress; when it ends, its
+   result for a few seconds. An error stays, in the error colour, until the next
+   job starts or it is dismissed. The last check's facts are behind the ⓘ. */
 function setStatus(message, level = "info") {
   state.statusText = message;
   if (level === "error") state.errorText = message;
@@ -2746,6 +2777,7 @@ function paintStatus() {
     jobText: state.jobText,
     errorText: state.errorText,
     noticeText: state.noticeText,
+    flash: Date.now() < (state.flashUntil || 0),
   });
   const setText = (el, text) => {
     if (el && el.textContent !== text) el.textContent = text;
@@ -2757,13 +2789,17 @@ function paintStatus() {
   }
   // Screen readers get the error from the alert region, which takes no room.
   setText(state.statusEl, state.errorText);
-  // Parts come and go inside the row only: its height never changes.
+  state.jobBarEl?.classList.toggle("is-hidden", !view.visible);
+  // Parts come and go inside the floating pill only: the list never moves.
   const show = (el, on) => {
     if (el) el.classList.toggle("is-off", !on);
   };
   show(state.progressWrapEl, view.progress);
+  show(state.progressTextEl, view.progress);
+  show(state.progressEtaEl, view.progress);
   show(state.jobControlsEl, view.controls);
   show(state.noticeActEl, view.noticeAct);
+  show(state.rootEl?.querySelector("#cu-dismiss"), view.dismiss);
   if (state.noticeActEl) state.noticeActEl.disabled = !view.noticeAct;
   if (state.jobControlsEl) state.jobControlsEl.inert = !view.controls;
 }
@@ -3507,19 +3543,60 @@ function injectStyles() {
       margin: 0;
     }
 
-    /* One row in every tab, always this tall: the track, then one line of text.
-       Idle, the track and the controls are only invisible, so nothing moves. */
+    /* The status pill floats over the bottom of the panel, in every tab. Its dock
+       has no height and sticks to the bottom of the scrolled area, so the pill
+       coming and going never moves anything. */
+    .cu-dock {
+      position: sticky;
+      bottom: 0;
+      z-index: 6;
+      height: 0;
+      pointer-events: none;
+    }
+
     .cu-job-bar {
-      position: relative;
+      position: absolute;
+      left: 50%;
+      bottom: 12px;
+      box-sizing: border-box;
       display: flex;
       align-items: center;
       gap: 8px;
-      height: var(--cu-h-ctl);
-      margin-bottom: 9px;
+      max-width: calc(100% - 20px);
+      height: 32px;
+      padding: 0 5px 0 9px;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: 16px;
+      background: #202026;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      transform: translateX(-50%);
+      pointer-events: auto;
+      transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0s;
+    }
+
+    .cu-job-bar.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      transform: translate(-50%, 6px);
+      pointer-events: none;
+      transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
     }
 
     .cu-job-bar .is-off {
       display: none;
+    }
+
+    .cu-job-bar .cu-icon-btn {
+      border-color: transparent;
+      border-radius: 11px;
+    }
+
+    .cu-job-bar .cu-icon-btn:hover:not(:disabled) {
+      border-color: var(--cu-seam-strong);
+    }
+
+    .cu-job-bar .cu-pill-stop {
+      color: var(--cu-red-soft);
     }
 
     .cu-job-text.is-error {
@@ -3527,7 +3604,7 @@ function injectStyles() {
     }
 
     .cu-job-text {
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -3608,46 +3685,61 @@ function injectStyles() {
 
     /* ---- Progress ---- */
 
-    .cu-progress-wrap {
-      display: flex;
+    /* A ring that fills; it spins while the total isn't known yet. */
+    .cu-ring {
       flex: 0 0 auto;
-      gap: 8px;
-      align-items: center;
+      width: 16px;
+      height: 16px;
+      transform: rotate(-90deg);
     }
 
-    /* The track runs along the row's bottom edge, in its margin: it takes no room. */
-    .cu-progress {
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: -4px;
-      height: 2px;
-      background: var(--cu-seam);
-      overflow: hidden;
+    .cu-ring-track {
+      fill: none;
+      stroke: var(--cu-seam-strong);
+      stroke-width: 2.5;
     }
 
-    .cu-progress-fill {
-      display: block;
-      height: 100%;
-      width: 0;
-      background: var(--cu-red);
-      transition: width 200ms linear;
+    .cu-ring-fill {
+      fill: none;
+      stroke: var(--cu-red);
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-dasharray: 50.27;
+      stroke-dashoffset: 50.27;
+      transition: stroke-dashoffset 200ms linear;
     }
 
+    .cu-ring.is-spin {
+      animation: cu-ring-spin 1s linear infinite;
+    }
+
+    .cu-ring.is-spin .cu-ring-fill {
+      stroke-dashoffset: 37.7;
+    }
+
+    @keyframes cu-ring-spin {
+      from { transform: rotate(-90deg); }
+      to { transform: rotate(270deg); }
+    }
+
+    /* Fixed widths and even digits: the numbers change, the pill doesn't wobble. */
     .cu-progress-pct {
+      flex: 0 0 auto;
+      min-width: 30px;
       font-family: var(--cu-mono);
       font-size: 10px;
-      color: var(--cu-ash);
-      min-width: 30px;
+      font-variant-numeric: tabular-nums;
+      color: var(--cu-bone);
       text-align: right;
     }
 
     .cu-progress-eta {
+      flex: 0 0 auto;
+      min-width: 70px;
       font-family: var(--cu-mono);
       font-size: 10px;
+      font-variant-numeric: tabular-nums;
       color: var(--cu-ash);
-      opacity: 0.75;
-      text-align: right;
       white-space: nowrap;
     }
 
@@ -3906,6 +3998,10 @@ function injectStyles() {
       color: var(--cu-bone);
     }
 
+    .cu-view-tab .pi {
+      font-size: 12px;
+    }
+
     .cu-view-count {
       font-family: var(--cu-mono);
       font-size: 9.5px;
@@ -4022,6 +4118,31 @@ function injectStyles() {
     .cu-tb-btn[data-active] {
       border-color: rgba(147, 181, 120, 0.55);
       color: var(--cu-moss);
+    }
+
+    /* Icon buttons: a square, or wider when a search shows its text. A dot marks
+       a filter or search that narrows the list. */
+    .cu-tb-icon {
+      position: relative;
+      justify-content: center;
+      min-width: var(--cu-h-ctl);
+      padding: 0 7px;
+      overflow: visible;
+    }
+
+    .cu-tb-icon .pi {
+      font-size: 12px;
+    }
+
+    .cu-tb-icon[data-active]::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      right: 3px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--cu-moss);
     }
 
     .cu-tb-query {
@@ -5138,15 +5259,17 @@ function injectStyles() {
     .cu-g-mark[data-mark="parked"] { border-color: var(--cu-seam-strong); color: var(--cu-dust); }
     .cu-g-card[data-mark="on"] .cu-g-pick { border-color: rgba(147, 181, 120, 0.55); }
     .cu-g-layer { position: absolute; inset: 0 0 auto 0; aspect-ratio: 3 / 4; pointer-events: none; }
-    .cu-g-vers { position: absolute; right: 6px; top: 32px; pointer-events: auto; }
-    .cu-g-vers { box-sizing: border-box; height: 16px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--cu-seam-strong); background: rgba(19, 19, 22, 0.8); color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9px; line-height: 1; cursor: pointer; }
-    .cu-g-vers:hover, .cu-g-vers:focus-visible { border-color: var(--cu-dust); }
-    .cu-g-vmenu { position: absolute; z-index: 3; inset: 0 0 auto 0; aspect-ratio: 3 / 4; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; padding: 4px; overflow: auto; border: 1px solid var(--cu-seam-strong); border-radius: 5px; background: rgba(19, 19, 22, 0.97); }
-    .cu-g-vitem { display: flex; justify-content: space-between; gap: 6px; padding: 4px 5px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9.5px; text-align: left; cursor: pointer; }
-    .cu-g-vitem:hover, .cu-g-vitem:focus-visible { border-color: var(--cu-seam-strong); }
-    .cu-g-vitem[aria-current="true"] { color: var(--cu-moss); }
-    .cu-g-vname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .cu-g-vdate { flex: 0 0 auto; color: var(--cu-dust); }
+    /* The versions pill matches the type pill; its list is the panel's own menu. */
+    .cu-g-vers { position: absolute; right: 6px; top: 34px; pointer-events: auto; display: inline-flex; align-items: center; gap: 4px; box-sizing: border-box; height: 22px; padding: 0 8px; border: 0; border-radius: 11px; background: rgba(19, 19, 22, 0.72); color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9.5px; line-height: 1; cursor: pointer; }
+    .cu-g-vers .pi { font-size: 9px; color: var(--cu-ash); }
+    .cu-g-vers:hover, .cu-g-vers:focus-visible, .cu-g-vers[aria-expanded="true"] { background: rgba(19, 19, 22, 0.92); }
+    .cu-g-vmenu { position: absolute; z-index: 3; top: 60px; right: 6px; left: 6px; max-height: calc(100% - 66px); box-sizing: border-box; display: flex; flex-direction: column; padding: 4px; overflow: auto; border: 1px solid var(--cu-seam-strong); border-radius: 6px; background: #202026; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); animation: cu-fade-in 0.12s ease-out; }
+    .cu-g-vitem { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: var(--cu-bone); font-family: var(--cu-body); font-size: 11px; text-align: left; cursor: pointer; }
+    .cu-g-vitem:hover, .cu-g-vitem:focus-visible { background: var(--cu-seam); }
+    .cu-g-vcheck { flex: 0 0 auto; font-size: 9px; color: var(--cu-moss); visibility: hidden; }
+    .cu-g-vitem[aria-current="true"] .cu-g-vcheck { visibility: visible; }
+    .cu-g-vname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cu-g-vdate { flex: 0 0 auto; font-family: var(--cu-mono); font-size: 9.5px; color: var(--cu-dust); }
 
     .cu-g-error {
       padding: 6px 9px;
