@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  CATEGORY_LABELS,
+  NO_CATEGORY,
   arrange,
   cardModel,
+  categoryOf,
   filterEntries,
   formatCount,
   galleryFacets,
@@ -79,8 +82,9 @@ test("galleryFacets lists types and sorted bases", () => {
   assert.deepEqual(galleryFacets(all), {
     modelTypes: ["lora"],
     baseModels: ["misc", "Pony", "sdxl"],
+    categories: [""],
   });
-  assert.deepEqual(galleryFacets([]), { modelTypes: [], baseModels: [] });
+  assert.deepEqual(galleryFacets([]), { modelTypes: [], baseModels: [], categories: [] });
 });
 
 const stacksOf = (entries) => entries.map((e) => ({ key: "file:" + e.id, members: [e] }));
@@ -216,6 +220,12 @@ test("cardModel fills gaps", () => {
     stem: "amber",
     missing: false,
     kind: "loras",
+    typeLabel: "LoRA",
+    base: "misc",
+    moreBases: null,
+    creatorImage: "",
+    versionSuffix: "",
+    stats: null,
   });
   assert.equal(cardModel(a).detail, "v1 · Pony");
   assert.equal(cardModel(a).thumbnail, "/t?a");
@@ -366,4 +376,106 @@ test("formatCount", () => {
     [Infinity, ""],
   ];
   for (const [input, expected] of cases) assert.equal(formatCount(input), expected, String(input));
+});
+
+// ---- categories ----------------------------------------------------------
+
+const catStats = new Map([
+  ["1", { downloads: 1, category: "style", bases: ["Pony", "SDXL 1.0", "ZImageTurbo"] }],
+  ["2", { downloads: 2, category: "character", bases: [] }],
+  ["3", { downloads: 3, category: "" }],
+  ["4", { downloads: 4, category: "not a category" }],
+]);
+const catStack = (model_id) => ({ key: `s${model_id}`, members: [{ id: `x${model_id}`, model_id }] });
+
+test("CATEGORY_LABELS names every category", () => {
+  assert.equal(CATEGORY_LABELS.character, "Character");
+  assert.equal(CATEGORY_LABELS["base model"], "Base model");
+  assert.equal(CATEGORY_LABELS.vehicle, "Vehicles");
+  assert.equal(CATEGORY_LABELS.animal, "Animals");
+  assert.equal(Object.keys(CATEGORY_LABELS).length, 15);
+});
+
+test("categoryOf reads the stack's model, and says nothing without one", () => {
+  assert.equal(categoryOf(catStack("1"), catStats), "style");
+  assert.equal(categoryOf(catStack(2), catStats), "character");
+  assert.equal(categoryOf(catStack("3"), catStats), "");
+  assert.equal(categoryOf(catStack("4"), catStats), "");
+  assert.equal(categoryOf(catStack("9"), catStats), "");
+  assert.equal(categoryOf(catStack(undefined), catStats), "");
+  assert.equal(categoryOf(catStack("1"), undefined), "");
+  assert.equal(categoryOf(catStack("1"), new Map()), "");
+});
+
+test("arrange by category: bands in alphabetical order, No category last", () => {
+  const stacks = ["1", "2", "3", "9"].map(catStack);
+  const bands = arrange(stacks, { groupBy: "category", stats: catStats });
+  assert.deepEqual(
+    bands.map((band) => band.base),
+    ["Character", "Style", NO_CATEGORY]
+  );
+  assert.equal(NO_CATEGORY, "No category");
+  assert.equal(bands[2].stacks.length, 2);
+  assert.ok(bands.every((band) => band.fits === false));
+});
+
+test("arrange by category with no numbers is one No category band", () => {
+  const bands = arrange([catStack("1")], { groupBy: "category" });
+  assert.deepEqual(
+    bands.map((band) => band.base),
+    [NO_CATEGORY]
+  );
+});
+
+test("filterEntries by category: null is all, and an empty string is No category", () => {
+  const entries = ["1", "2", "3", "9"].map((id) => ({ id: `x${id}`, model_id: id, base_model: "A" }));
+  const ids = (categories) =>
+    filterEntries(entries, { categories, stats: catStats }).map((entry) => entry.model_id);
+  assert.deepEqual(ids(null), ["1", "2", "3", "9"]);
+  assert.deepEqual(ids(["style"]), ["1"]);
+  assert.deepEqual(ids(["", "character"]), ["2", "3", "9"]);
+  assert.deepEqual(ids([]), []);
+});
+
+test("galleryFacets lists the categories present, by label, and No category when needed", () => {
+  const entries = ["1", "2", "3"].map((id) => ({ id: `x${id}`, model_id: id, base_model: "A" }));
+  assert.deepEqual(galleryFacets(entries, catStats).categories, ["character", "style", ""]);
+  assert.deepEqual(galleryFacets(entries.slice(0, 2), catStats).categories, ["character", "style"]);
+  assert.deepEqual(galleryFacets(entries.slice(0, 1)).categories, [""]);
+  assert.deepEqual(galleryFacets([]).categories, []);
+});
+
+test("cardModel carries the card's pill, creator picture and numbers", () => {
+  const entry = { ...a, kind: "loras", model_id: "1" };
+  const card = cardModel(entry, {
+    downloads: 674,
+    likes: 809,
+    comments: 719,
+    tipped: 266,
+    creatorImage: "https://image.civitai.com/x.jpeg",
+    bases: ["Pony", "SDXL 1.0", "ZImageTurbo", "Pony", "PONY"],
+  });
+  assert.equal(card.typeLabel, "LoRA");
+  assert.equal(card.base, "Pony");
+  // The card's own base is not counted; the others are, spelled as we file them.
+  assert.equal(card.moreBases, 2);
+  assert.equal(card.creatorImage, "https://image.civitai.com/x.jpeg");
+  assert.deepEqual(card.stats, { downloads: 674, likes: 809, comments: 719, tipped: 266 });
+  assert.equal(card.versionSuffix, "v1");
+});
+
+test("cardModel without numbers has no stats and no +N", () => {
+  const card = cardModel(a);
+  assert.equal(card.stats, null);
+  assert.equal(card.moreBases, null);
+  assert.equal(card.creatorImage, "");
+  assert.equal(card.base, "Pony");
+  assert.equal(cardModel({ ...c, kind: "models" }).typeLabel, "Checkpoint");
+  assert.equal(cardModel({ ...c, kind: "embeddings" }).typeLabel, "Embedding");
+  assert.equal(cardModel(c).versionSuffix, "");
+});
+
+test("cardModel: a model whose only base is its own has no more bases", () => {
+  const card = cardModel(a, { downloads: 1, bases: ["Pony"] });
+  assert.equal(card.moreBases, 0);
 });

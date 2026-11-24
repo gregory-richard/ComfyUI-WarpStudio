@@ -617,16 +617,35 @@ class LastCheckAndStatsTests(_ArchiveRoutesCase):
         status, body = self.call("GET", STATS_ROUTE)
 
         self.assertEqual(200, status)
+        # An old last_check.json has none of the card info: it reads as empty.
+        empty = {"tipped": 0, "versions": 0, "creatorImage": "", "category": "", "bases": []}
         self.assertEqual(
             {
                 "stats": {
-                    "101": {"downloads": 500, "likes": 50, "comments": 5},
-                    "102": {"downloads": 2, "likes": 1, "comments": 0},
-                    "301": {"downloads": 9000, "likes": 900, "comments": 90},
+                    "101": {"downloads": 500, "likes": 50, "comments": 5, **empty},
+                    "102": {"downloads": 2, "likes": 1, "comments": 0, **empty},
+                    "301": {"downloads": 9000, "likes": 900, "comments": 90, **empty},
                 }
             },
             body,
         )
+
+    def test_model_stats_route_passes_the_card_info_through(self) -> None:
+        card = {
+            "downloads": 1,
+            "likes": 2,
+            "comments": 3,
+            "tipped": 4,
+            "versions": 5,
+            "creatorImage": "https://image.civitai.com/a.jpeg",
+            "category": "style",
+            "bases": ["Pony", "SDXL 1.0"],
+        }
+        self.write_last_check([self.d_item(modelStats=card)])
+
+        _status, body = self.call("GET", STATS_ROUTE)
+
+        self.assertEqual({"101": card}, body["stats"])
 
     def test_model_stats_without_any_results(self) -> None:
         self.assertEqual((200, {"stats": {}}), self.call("GET", STATS_ROUTE))

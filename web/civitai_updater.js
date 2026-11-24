@@ -16,7 +16,7 @@ import {
   versionActionsHtml,
   versionKey,
 } from "./model_actions.js";
-import { galleryOnlyBases, STAT_SORTS } from "./gallery_core.js";
+import { CATEGORY_LABELS, NO_CATEGORY, galleryOnlyBases } from "./gallery_core.js";
 import { archiveResult, checkDoneStatus, issueMessage, rowIssue, rowLabel } from "./check_results.js";
 import { infoHtml, menuHtml, moreMenuItems, savedArchiveFolder, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
@@ -68,6 +68,7 @@ const GROUP_OPTIONS = [
 const GALLERY_ARRANGE_KEY = "warpstudio.gallery.arrange";
 const GALLERY_GROUPS = [
   { value: "base", label: "Base" },
+  { value: "category", label: "Category" },
   { value: "none", label: "None" },
 ];
 const GALLERY_SORTS = [
@@ -223,7 +224,8 @@ const state = {
   // The Gallery view, its pane, its filter options, and whether it has loaded.
   galleryView: null,
   galleryPaneEl: null,
-  galleryFacets: { modelTypes: [], baseModels: [] },
+  galleryFacets: { modelTypes: [], baseModels: [], categories: [] },
+  filterCategories: null, // the Gallery's ticked categories ("" is No category); null for all
   galleryLoaded: false,
   galleryTabEl: null,
   renameTabEl: null,
@@ -464,6 +466,7 @@ async function renderTab(el) {
     query: () => state.galleryQuery,
     arrange: () => state.galleryArrange,
     stats: () => state.modelStats,
+    categories: () => state.filterCategories,
     includeDownloadable: () => state.includeDownloadable,
     downloads: () => state.downloads,
     canTrash: () => state.canTrash,
@@ -871,6 +874,7 @@ function filterCount(tab) {
   if (isNarrowed(state.filterBases, state.facets.baseModels)) count += 1;
   if (tab === "updates" && state.showHidden) count += 1;
   if (tab === "gallery" && state.includeDownloadable && downloadableCount() > 0) count += 1;
+  if (tab === "gallery" && state.filterCategories !== null) count += 1;
   return count;
 }
 
@@ -936,12 +940,31 @@ function baseOptions() {
   return state.facets.baseModels.map((value) => ({ value, label: value, checked: selected.includes(value) }));
 }
 
+/* The Gallery's categories: those its models have, and No category. A value of "" is No category. */
+function categoryOptions() {
+  const selected = state.filterCategories;
+  return state.galleryFacets.categories.map((value) => ({
+    value,
+    label: value ? CATEGORY_LABELS[value] : NO_CATEGORY,
+    checked: selected === null || selected.includes(value),
+  }));
+}
+
+/* A change to the Gallery's categories; ticking every one is the same as no filter. */
+function setCategories(selected) {
+  const all = state.galleryFacets.categories;
+  state.filterCategories = all.every((value) => selected.includes(value)) ? null : selected;
+}
+
 function menuSections(tab, name) {
   if (name === "filter") {
     const types = { kind: "checks", key: "types", title: "Types", options: typeOptions(), actions: true };
     const bases = { kind: "checks", key: "bases", title: "Bases", options: baseOptions(), actions: true };
     if (tab === "gallery") {
       const sections = [bases];
+      if (state.galleryFacets.categories.length > 0) {
+        sections.push({ kind: "checks", key: "categories", title: "Categories", options: categoryOptions(), actions: true });
+      }
       if (downloadableCount() > 0) {
         sections.push({ kind: "toggle", key: "includeDownloadable", label: "Include downloadable", checked: state.includeDownloadable });
       }
@@ -1044,7 +1067,13 @@ function refreshOpenMenus() {
 async function onToolbarChange(tab, input) {
   const key = input.dataset.key || "";
   const value = input.dataset.value ?? "";
-  if (key === "types" || key === "bases") {
+  if (key === "categories") {
+    const selected = new Set(state.filterCategories ?? state.galleryFacets.categories);
+    if (input.checked) selected.add(value);
+    else selected.delete(value);
+    setCategories([...selected]);
+    await onFiltersChanged();
+  } else if (key === "types" || key === "bases") {
     const selection = key === "types" ? "filterTypes" : "filterBases";
     const selected = new Set(state[selection] || []);
     if (input.checked) selected.add(value);
@@ -1092,6 +1121,11 @@ async function onToolbarChange(tab, input) {
 async function onToolbarSelectAll(button) {
   const all = button.dataset.tbAll !== undefined;
   const key = all ? button.dataset.tbAll : button.dataset.tbNone;
+  if (key === "categories") {
+    setCategories(all ? [...state.galleryFacets.categories] : []);
+    await onFiltersChanged();
+    return;
+  }
   const selection = key === "types" ? "filterTypes" : "filterBases";
   const facet = key === "types" ? "modelTypes" : "baseModels";
   state[selection] = all ? [...(state.facets[facet] || [])] : [];
@@ -2053,9 +2087,8 @@ async function loadModelStats() {
     const data = await getJson("/warp-studio/updater/model-stats");
     const next = new Map(Object.entries(data?.stats || {}));
     state.modelStats = next;
-    if (state.galleryLoaded && STAT_SORTS.includes(state.galleryArrange.sort)) {
-      state.galleryView?.render();
-    }
+    // Every card shows the numbers, and the categories come with them.
+    if (state.galleryLoaded) state.galleryView?.rerender();
   } catch (_) {
     // no numbers; the sorts fall back to name
   }
@@ -2375,6 +2408,7 @@ function onGalleryFacets(facets) {
   state.galleryFacets = {
     modelTypes: Array.isArray(facets?.modelTypes) ? facets.modelTypes : [],
     baseModels: Array.isArray(facets?.baseModels) ? facets.baseModels : [],
+    categories: Array.isArray(facets?.categories) ? facets.categories : [],
   };
   applyFacets(mergedFacets());
   renderFilters();
@@ -5091,12 +5125,12 @@ function injectStyles() {
     .cu-g .cu-g-band-head:hover .cu-group-name { color: #ffffff; }
     .cu-g-band:not([data-workflow="true"]) .cu-g-fit { visibility: hidden; }
     .cu-g-band[data-folded] .cu-g-grid { display: none; }
-    .cu-g-mark { position: absolute; top: 34px; right: 6px; box-sizing: border-box; display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 10px; border: 1px solid rgba(147, 181, 120, 0.55); background: rgba(19, 19, 22, 0.88); color: var(--cu-moss); font-size: 11px; line-height: 1; pointer-events: none; }
+    .cu-g-mark { position: absolute; top: 52px; right: 6px; box-sizing: border-box; display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 10px; border: 1px solid rgba(147, 181, 120, 0.55); background: rgba(19, 19, 22, 0.88); color: var(--cu-moss); font-size: 11px; line-height: 1; pointer-events: none; }
     .cu-g-mark[data-mark] { display: flex; }
     .cu-g-mark[data-mark="parked"] { border-color: var(--cu-seam-strong); color: var(--cu-dust); }
     .cu-g-card[data-mark="on"] .cu-g-pick { border-color: rgba(147, 181, 120, 0.55); }
     .cu-g-layer { position: absolute; inset: 0 0 auto 0; aspect-ratio: 3 / 4; pointer-events: none; }
-    .cu-g-vers { position: absolute; right: 6px; bottom: 6px; pointer-events: auto; }
+    .cu-g-vers { position: absolute; right: 6px; top: 32px; pointer-events: auto; }
     .cu-g-vers { box-sizing: border-box; height: 16px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--cu-seam-strong); background: rgba(19, 19, 22, 0.8); color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9px; line-height: 1; cursor: pointer; }
     .cu-g-vers:hover, .cu-g-vers:focus-visible { border-color: var(--cu-dust); }
     .cu-g-vmenu { position: absolute; z-index: 3; inset: 0 0 auto 0; aspect-ratio: 3 / 4; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; padding: 4px; overflow: auto; border: 1px solid var(--cu-seam-strong); border-radius: 5px; background: rgba(19, 19, 22, 0.97); }
@@ -5168,8 +5202,9 @@ function injectStyles() {
 
     /* The whole face is the button that puts the model in the workflow. */
     .cu-g-pick {
-      display: flex;
-      flex-direction: column;
+      position: relative;
+      display: block;
+      aspect-ratio: 3 / 4;
       box-sizing: border-box;
       width: 100%;
       margin: 0;
@@ -5203,13 +5238,13 @@ function injectStyles() {
       cursor: default;
     }
 
+    /* The whole card is the picture; what it says lies over it. */
     .cu-g-thumb {
-      position: relative;
+      position: absolute;
+      inset: 0;
       display: block;
-      aspect-ratio: 3 / 4;
       overflow: hidden;
       background: var(--cu-raise);
-      border-bottom: 1px solid var(--cu-seam);
     }
 
     .cu-g-thumb img {
@@ -5238,11 +5273,39 @@ function injectStyles() {
       overflow-wrap: anywhere;
     }
 
+    /* Top row: the pill. The right is left to the link out. */
+    .cu-g-top {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      right: 34px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      pointer-events: none;
+    }
+
+    .cu-g-pill {
+      box-sizing: border-box;
+      flex: 0 1 auto;
+      min-width: 0;
+      height: 22px;
+      padding: 0 9px;
+      overflow: hidden;
+      border-radius: 11px;
+      background: rgba(19, 19, 22, 0.72);
+      color: var(--cu-bone);
+      font-family: var(--cu-mono);
+      font-size: 9.5px;
+      line-height: 22px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
     /* Green, as trigger words are in the prompt. */
     .cu-g-badge {
-      position: absolute;
-      left: 6px;
-      bottom: 6px;
+      flex: none;
+      margin-left: auto;
       display: inline-flex;
       align-items: center;
       height: 16px;
@@ -5256,73 +5319,148 @@ function injectStyles() {
       line-height: 1;
     }
 
-    /* Opposite the trigger badge, in the muted text colour. */
-    .cu-g-metric {
+    /* The bottom: the creator, the title and the numbers on a gradient. Three
+       fixed rows, so a card without numbers is as tall as one with them. */
+    .cu-g-info {
       position: absolute;
-      right: 6px;
-      bottom: 6px;
-      display: inline-flex;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 30px 7px 7px;
+      background: linear-gradient(to top, rgba(10, 10, 12, 0.92) 0%, rgba(10, 10, 12, 0.7) 60%, rgba(10, 10, 12, 0));
+      color: var(--cu-bone);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+      pointer-events: none;
+    }
+
+    .cu-g-by {
+      display: flex;
       align-items: center;
-      height: 16px;
-      padding: 0 5px;
-      border-radius: 3px;
+      gap: 5px;
+      height: 20px;
+      min-width: 0;
+    }
+
+    .cu-g-avatar {
+      box-sizing: border-box;
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--cu-raise);
       border: 1px solid var(--cu-seam-strong);
-      background: rgba(19, 19, 22, 0.8);
-      color: var(--cu-ash);
-      font-family: var(--cu-mono);
-      font-size: 9px;
+      color: var(--cu-bone);
+      font-family: var(--cu-disp);
+      font-size: 10px;
       line-height: 1;
-    }
-
-    /* The "n versions ▾" chip (16px high, 6px up) holds the corner: the number sits above it. */
-    .cu-g-metric.cu-g-metric-stacked {
-      bottom: 26px;
-    }
-
-    .cu-g-creator,
-    .cu-g-detail {
-      display: block;
-      height: 13px;
-      margin: 0 7px;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      line-height: 13px;
-      color: var(--cu-dust);
+      text-shadow: none;
     }
 
     .cu-g-creator {
-      margin-top: 6px;
-      font-size: 10px;
-    }
-
-    .cu-g-title {
-      display: -webkit-box;
-      -webkit-box-orient: vertical;
-      -webkit-line-clamp: 2;
-      height: 30px;
-      margin: 1px 7px 2px;
+      display: block;
+      min-width: 0;
       overflow: hidden;
-      overflow-wrap: anywhere;
-      font-family: var(--cu-disp);
-      font-size: 12px;
-      font-weight: 500;
-      line-height: 15px;
-      letter-spacing: 0.01em;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 10.5px;
+      line-height: 20px;
       color: var(--cu-bone);
     }
 
-    .cu-g-detail {
-      margin-bottom: 7px;
+    .cu-g-title {
+      display: block;
+      height: 17px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-family: var(--cu-disp);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 17px;
+      letter-spacing: 0.01em;
+      color: #ffffff;
+    }
+
+    .cu-g-ver {
+      font-weight: 400;
+      color: var(--cu-dust);
+    }
+
+    .cu-g-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      height: 22px;
+    }
+
+    .cu-g-stats {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      align-content: flex-start;
+      gap: 20px 8px;
+      min-width: 0;
+      height: 20px;
+      overflow: hidden;
       font-family: var(--cu-mono);
+      font-size: 9.5px;
+      line-height: 20px;
+    }
+
+    /* A number that does not fit drops out whole (Buzz first) instead of being cut. */
+    .cu-g-stat,
+    .cu-g-likes {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+      color: rgba(236, 233, 226, 0.72);
+    }
+
+    .cu-g-stat .pi,
+    .cu-g-likes .pi {
       font-size: 9.5px;
     }
 
-    /* Download, Cancel, Stop and Delete: top-left, the height of the link out.
+    .cu-g-likes {
+      box-sizing: border-box;
+      flex: none;
+      height: 20px;
+      padding: 0 8px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.14);
+      font-family: var(--cu-mono);
+      font-size: 10px;
+    }
+
+    .cu-g-likes:empty {
+      visibility: hidden;
+    }
+
+    /* The number the Gallery is sorted by. */
+    .cu-g-hot {
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .cu-g-likes.cu-g-hot {
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    /* Download, Cancel, Stop and Delete: top-left, under the pill.
        Delete shows on hover or focus; visibility keeps the box where it is. */
     .cu-g-act {
       position: absolute;
-      top: 6px;
+      top: 32px;
       left: 6px;
       display: flex;
       align-items: center;

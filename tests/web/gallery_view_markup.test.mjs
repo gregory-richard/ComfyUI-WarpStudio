@@ -59,8 +59,8 @@ test("cardHtml escapes every other field too", () => {
   );
   assert.ok(!html.includes("<script>"));
   assert.ok(!html.includes(evil));
-  // key, stem (the tooltip), thumbnail, creator, detail and url: six escaped copies.
-  assert.equal(html.split("&quot;&gt;&lt;script&gt;").length - 1, 6);
+  // key, stem (the tooltip), thumbnail, creator and url: five escaped copies.
+  assert.equal(html.split("&quot;&gt;&lt;script&gt;").length - 1, 5);
 });
 
 test("cardHtml keeps an empty creator row, so heights match", () => {
@@ -76,7 +76,6 @@ test("cardHtml keeps every row from cardModel's gaps", () => {
   );
   assert.ok(html.includes('<span class="cu-g-creator"></span>'));
   assert.ok(html.includes('<span class="cu-g-title">Amber</span>'));
-  assert.ok(html.includes('<span class="cu-g-detail">misc</span>'));
 });
 
 test("cardHtml shows a lazy thumbnail, or the stem without one", () => {
@@ -244,25 +243,128 @@ test("cardHtml always has the action slot and the state overlay, so heights matc
   }
 });
 
-test("cardHtml shows a metric badge on the thumbnail only when one is given", () => {
-  assert.ok(!cardHtml(model(), ui(), escapeHtml).includes("cu-g-metric"));
-  const html = cardHtml(model({ triggers: 2 }), ui({ metric: "↓ 11.6k" }), escapeHtml);
-  const thumb = html.slice(html.indexOf('<span class="cu-g-thumb">'), html.indexOf("</button>"));
-  assert.match(thumb, /<span class="cu-g-metric">↓ 11\.6k<\/span>/);
-  assert.ok(thumb.includes("cu-g-badge"));
+const statsOf = (fields) => ({
+  downloads: 674,
+  likes: 809,
+  comments: 719,
+  tipped: 266600,
+  ...fields,
 });
 
-test("on a stacked card the metric badge is lifted above the versions chip", () => {
-  const stacked = cardHtml(model(), ui({ versions: 3, metric: "↓ 11.6k" }), escapeHtml);
-  assert.match(stacked, /<span class="cu-g-metric cu-g-metric-stacked">↓ 11\.6k<\/span>/);
-  assert.ok(stacked.includes("3 versions ▾"));
-  const single = cardHtml(model(), ui({ versions: 1, metric: "↓ 11.6k" }), escapeHtml);
-  assert.ok(!single.includes("cu-g-metric-stacked"));
-  assert.ok(!cardHtml(model(), ui({ versions: 3 }), escapeHtml).includes("cu-g-metric"));
+test("cardHtml draws the pill with the type, the base and the other bases", () => {
+  const html = cardHtml(
+    model({ typeLabel: "Checkpoint", base: "Pony", moreBases: 3, stats: statsOf() }),
+    ui(),
+    escapeHtml
+  );
+  assert.match(html, /<span class="cu-g-pill">Checkpoint \| Pony \+3<\/span>/);
+  const plain = cardHtml(model({ typeLabel: "LoRA", base: "Pony", moreBases: 0 }), ui(), escapeHtml);
+  assert.match(plain, /<span class="cu-g-pill">LoRA \| Pony<\/span>/);
+  const none = cardHtml(model({ typeLabel: "LoRA", base: "Pony", moreBases: null }), ui(), escapeHtml);
+  assert.match(none, /<span class="cu-g-pill">LoRA \| Pony<\/span>/);
 });
 
-test("cardHtml escapes the metric", () => {
-  const html = cardHtml(model(), ui({ metric: "<b>" }), escapeHtml);
+test("cardHtml draws the creator's picture, or a disc with the initial", () => {
+  const withImage = cardHtml(
+    model({ creatorImage: "https://image.civitai.com/a&b.jpeg" }),
+    ui(),
+    escapeHtml
+  );
+  assert.ok(
+    withImage.includes('<img class="cu-g-avatar" src="https://image.civitai.com/a&amp;b.jpeg"')
+  );
+  const without = cardHtml(model({ creator: "maker" }), ui(), escapeHtml);
+  assert.ok(without.includes('<span class="cu-g-avatar">M</span>'));
+  assert.ok(!without.includes('<img class="cu-g-avatar"'));
+  // Only an https picture is drawn.
+  const unsafe = cardHtml(model({ creatorImage: "javascript:alert(1)" }), ui(), escapeHtml);
+  assert.ok(!unsafe.includes("javascript:"));
+  assert.ok(unsafe.includes('<span class="cu-g-avatar">'));
+  // No creator: the disc is there and empty.
+  assert.ok(
+    cardHtml(model({ creator: "" }), ui(), escapeHtml).includes('<span class="cu-g-avatar"></span>')
+  );
+});
+
+test("cardHtml draws the title, with the local version as a muted suffix", () => {
+  const html = cardHtml(model({ title: "Glow", versionSuffix: "v1" }), ui(), escapeHtml);
+  assert.ok(
+    html.includes('<span class="cu-g-title">Glow<span class="cu-g-ver"> · v1</span></span>')
+  );
+  const bare = cardHtml(model({ title: "Glow", versionSuffix: "" }), ui(), escapeHtml);
+  assert.ok(bare.includes('<span class="cu-g-title">Glow</span>'));
+});
+
+test("cardHtml draws downloads, comments, Buzz and likes with counts", () => {
+  const html = cardHtml(model({ stats: statsOf() }), ui(), escapeHtml);
+  assert.match(html, /pi-download[^>]*><\/i>674</);
+  assert.match(html, /pi-comment[^>]*><\/i>719</);
+  assert.match(html, /pi-bolt[^>]*><\/i>266\.6k</);
+  assert.match(
+    html,
+    /<span class="cu-g-likes"[^>]*><i class="pi pi-thumbs-up"[^>]*><\/i>809<\/span>/
+  );
+  assert.ok(html.includes('title="674 downloads"'));
+});
+
+test("cardHtml without stats still has every slot, empty", () => {
+  const html = cardHtml(model({ stats: null }), ui(), escapeHtml);
+  assert.ok(html.includes('<span class="cu-g-stats"></span>'));
+  assert.ok(html.includes('<span class="cu-g-likes"></span>'));
+  assert.ok(html.includes('class="cu-g-pill"'));
+  assert.ok(html.includes('class="cu-g-avatar"'));
+  assert.ok(html.includes('class="cu-g-title"'));
+  assert.ok(!html.includes("pi-download"));
+});
+
+test("cardHtml draws the sorted stat brighter", () => {
+  for (const [sort, icon] of [
+    ["downloads", "pi-download"],
+    ["comments", "pi-comment"],
+    ["likes", "pi-thumbs-up"],
+  ]) {
+    const html = cardHtml(model({ stats: statsOf() }), ui({ sort }), escapeHtml);
+    assert.equal(html.split("cu-g-hot").length - 1, 1, sort);
+    assert.match(html, new RegExp(`cu-g-hot[^>]*><i class="pi ${icon}`), sort);
+  }
+  const quiet = cardHtml(model({ stats: statsOf() }), ui({ sort: "name" }), escapeHtml);
+  assert.ok(!quiet.includes("cu-g-hot"));
+});
+
+test("cardHtml keeps the trigger badge on the creator line, clear of the pill", () => {
+  const html = cardHtml(model({ triggers: 2 }), ui(), escapeHtml);
+  const top = html.slice(
+    html.indexOf('<span class="cu-g-top">'),
+    html.indexOf('<span class="cu-g-info">')
+  );
+  assert.ok(top.includes("cu-g-pill"));
+  assert.ok(!top.includes("cu-g-badge"));
+  const by = html.slice(html.indexOf('<span class="cu-g-by">'), html.indexOf('<span class="cu-g-title">'));
+  assert.ok(by.includes("cu-g-badge"));
+  assert.ok(!cardHtml(model(), ui(), escapeHtml).includes("cu-g-badge"));
+  assert.ok(!html.includes("cu-g-metric"));
+});
+
+test("cardHtml draws the whole card as the image with the info overlaid", () => {
+  const html = cardHtml(model(), ui(), escapeHtml);
+  const face = html.slice(html.indexOf("<button"), html.indexOf("</button>"));
+  assert.ok(face.indexOf("cu-g-thumb") < face.indexOf("cu-g-info"));
+  // Only the picture is the thumb: what a blur would hit holds no text.
+  const thumb = face.slice(
+    face.indexOf('<span class="cu-g-thumb">'),
+    face.indexOf('<span class="cu-g-top">')
+  );
+  assert.ok(!thumb.includes("cu-g-info"));
+  assert.ok(!thumb.includes("cu-g-pill"));
+});
+
+test("cardHtml escapes the pill, the suffix and the stats", () => {
+  const evil = "<b>x</b>";
+  const html = cardHtml(
+    model({ typeLabel: evil, base: evil, moreBases: 1, versionSuffix: evil, stats: statsOf() }),
+    ui({ sort: evil }),
+    escapeHtml
+  );
   assert.ok(!html.includes("<b>"));
 });
 
