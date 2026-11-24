@@ -20,6 +20,8 @@ GROUP_KEYS = ("none", "type", "baseFamily")
 MATURE_MODES = ("show", "blur", "hide")
 RESULT_MODES = ("updates", "issues")
 ISSUE_STATUSES = ("error", "not_found")
+# A file Civitai doesn't know but another source identified: shown as Found, not an issue.
+FOUND_SOURCES = ("huggingface", "ai-toolkit", "civarchive")
 GROUP_PATH_SEPARATOR = "||"
 _UNGROUPED_LABEL = "Ungrouped"
 
@@ -794,6 +796,8 @@ def _build_group(
                     "hasLocalPreview": bool(member.get("hasLocalPreview")),
                     "status": member.get("status", ""),
                     "error": member.get("error", ""),
+                    "creatorName": member.get("creatorName", ""),
+                    "creatorStatus": member.get("creatorStatus", ""),
                     "downloaded": _added_after(member, downloaded_after),
                 }
             )
@@ -880,7 +884,7 @@ def _build_group(
         1
         for version in local_versions
         if not version.get("archived")
-        and (version.get("status") in ISSUE_STATUSES or version.get("alsoArchived"))
+        and _is_issue(version)
     )
 
     # A model page can carry releases on several base models, so the card is
@@ -968,6 +972,8 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
             "hasLocalPreview": bool(item.get("hasLocalPreview")),
             "status": item.get("status", ""),
             "error": item.get("error", ""),
+            "creatorName": item.get("creatorName", ""),
+            "creatorStatus": item.get("creatorStatus", ""),
         }
     ]
     return {
@@ -977,7 +983,7 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
         "creatorName": item.get("creatorName", ""),
         "modelUrl": item.get("modelUrl", ""),
         "isProvisional": provisional and bool(item.get("_seeded")),
-        "issueCount": 1 if item.get("status") in ISSUE_STATUSES else 0,
+        "issueCount": 1 if _is_issue(local_versions[0]) else 0,
         "archived": False,
         "hasUpdate": False,
         "hasHiddenUpdates": False,
@@ -1027,6 +1033,17 @@ def _sort_grouped(items: list[dict], sort: str | None) -> list[dict]:
             key=lambda group: (-int(group.get("daysBehind") or 0), (group.get("modelName") or "").lower()),
         )
     return items
+
+
+def _is_issue(version: dict) -> bool:
+    """Whether a drive row belongs in Issues. Archived rows never do; a found file only when also archived."""
+    if version.get("archived"):
+        return False
+    if version.get("alsoArchived"):
+        return True
+    if version.get("status") == "not_found" and version.get("fallbackSource") in FOUND_SOURCES:
+        return False
+    return version.get("status") in ISSUE_STATUSES
 
 
 def _in_mode(group: dict, mode: str, show_hidden: bool, *, with_downloaded: bool = True) -> bool:

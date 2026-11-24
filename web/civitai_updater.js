@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 import { renderGalleryView } from "./gallery_view.js";
+import { statusRowView } from "./status_row.js";
 import {
   CONFIRM_FOR,
   MODEL_DOWNLOAD_JOB,
@@ -9,12 +10,13 @@ import {
   galleryKey,
   isPaid,
   latestRecords,
-  recordMessage,
   rowDeleteHtml,
+  rowDownloadView,
+  rowHideHtml,
   versionActionsHtml,
   versionKey,
 } from "./model_actions.js";
-import { galleryOnlyBases, STAT_SORTS } from "./gallery_core.js";
+import { CATEGORY_LABELS, NO_CATEGORY, galleryOnlyBases } from "./gallery_core.js";
 import { archiveResult, checkDoneStatus, issueMessage, rowIssue, rowLabel } from "./check_results.js";
 import { infoHtml, menuHtml, moreMenuItems, savedArchiveFolder, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
@@ -63,9 +65,21 @@ const GROUP_OPTIONS = [
   { value: "baseFamily", label: "Base model", short: "Base" },
 ];
 
+// The pill's progress ring: a circle of radius 8, and how long a result stays out.
+const RING_LENGTH = 2 * Math.PI * 8;
+const STATUS_FLASH_MS = 4000;
+
+const VIEW_ICONS = {
+  gallery: "pi-images",
+  updates: "pi-sync",
+  issues: "pi-exclamation-triangle",
+  rename: "pi-pencil",
+};
+
 const GALLERY_ARRANGE_KEY = "warpstudio.gallery.arrange";
 const GALLERY_GROUPS = [
   { value: "base", label: "Base" },
+  { value: "category", label: "Category" },
   { value: "none", label: "None" },
 ];
 const GALLERY_SORTS = [
@@ -183,6 +197,8 @@ const state = {
   viewSwitchEl: null,
   jobBarEl: null,
   jobTextEl: null,
+  noticeActEl: null,
+  progressOn: false,
   gearEl: null,
   settingsEl: null,
   settingsOpen: false,
@@ -219,7 +235,8 @@ const state = {
   // The Gallery view, its pane, its filter options, and whether it has loaded.
   galleryView: null,
   galleryPaneEl: null,
-  galleryFacets: { modelTypes: [], baseModels: [] },
+  galleryFacets: { modelTypes: [], baseModels: [], categories: [] },
+  filterCategories: null, // the Gallery's ticked categories ("" is No category); null for all
   galleryLoaded: false,
   galleryTabEl: null,
   renameTabEl: null,
@@ -295,7 +312,7 @@ app.registerExtension({
     app.extensionManager.registerSidebarTab({
       id: TAB_ID,
       icon: TAB_ICON,
-      title: "Warp Studio",
+      title: "Studio",
       tooltip: "Your models: gallery, updates and renaming",
       type: "custom",
       render: (el) => renderTab(el),
@@ -353,21 +370,6 @@ async function renderTab(el) {
     <section class="cu-card">
       <div id="cu-view-switch" class="cu-view-switch" role="tablist" aria-label="Results view"></div>
       <div id="cu-loading-bar" class="cu-loading-bar" aria-hidden="true"></div>
-      <div id="cu-job-bar" class="cu-job-bar" hidden>
-        <div id="cu-progress-wrap" class="cu-progress-wrap">
-          <div class="cu-progress"><div id="cu-progress-fill" class="cu-progress-fill"></div></div>
-          <span id="cu-progress-text" class="cu-progress-pct"></span>
-          <span id="cu-progress-eta" class="cu-progress-eta"></span>
-        </div>
-        <div class="cu-job-row">
-          <span id="cu-job-text" class="cu-job-text"></span>
-          <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm" hidden>Check again</button>
-          <div id="cu-job-controls" class="cu-job-controls" style="display:none">
-            <button id="cu-pause" class="cu-btn cu-btn-sm" title="Pause or resume the current job">Pause</button>
-            <button id="cu-stop" class="cu-btn cu-btn-sm cu-btn-danger" title="Abort the current job">Stop</button>
-          </div>
-        </div>
-      </div>
       <div id="cu-status" class="cu-status" role="alert"></div>
       <div id="cu-gallery-tab">
         <div id="cu-tb-gallery" data-tb-tab="gallery"></div>
@@ -382,7 +384,7 @@ async function renderTab(el) {
         <div class="cu-action-bar">
           <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
           <div class="cu-more">
-            <button id="cu-more" type="button" class="cu-btn cu-btn-ghost" aria-label="More" aria-haspopup="true" aria-expanded="false">⋯</button>
+            <button id="cu-more" type="button" class="cu-btn cu-btn-ghost" aria-label="More" title="More" aria-haspopup="true" aria-expanded="false"><i class="pi pi-ellipsis-h" aria-hidden="true"></i></button>
             <div id="cu-more-menu" class="cu-tb-menu cu-more-menu" hidden></div>
           </div>
         </div>
@@ -396,11 +398,29 @@ async function renderTab(el) {
         </div>
       </div>
     </section>
+    <div class="cu-dock">
+      <div id="cu-job-bar" class="cu-job-bar is-hidden" role="status">
+        <svg id="cu-progress-wrap" class="cu-ring is-off" viewBox="0 0 20 20" aria-hidden="true">
+          <circle class="cu-ring-track" cx="10" cy="10" r="8"></circle>
+          <circle id="cu-progress-fill" class="cu-ring-fill" cx="10" cy="10" r="8"></circle>
+        </svg>
+        <span id="cu-job-text" class="cu-job-text"></span>
+        <span id="cu-progress-text" class="cu-progress-pct"></span>
+        <span id="cu-progress-eta" class="cu-progress-eta"></span>
+        <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm is-off">Check again</button>
+        <div id="cu-job-controls" class="cu-job-controls is-off">
+          <button id="cu-pause" type="button" class="cu-icon-btn" title="Pause" aria-label="Pause"><i class="pi pi-pause" aria-hidden="true"></i></button>
+          <button id="cu-stop" type="button" class="cu-icon-btn cu-pill-stop" title="Stop the job" aria-label="Stop the job"><i class="pi pi-stop-circle" aria-hidden="true"></i></button>
+        </div>
+        <button id="cu-dismiss" type="button" class="cu-icon-btn is-off" title="Dismiss" aria-label="Dismiss"><i class="pi pi-times" aria-hidden="true"></i></button>
+      </div>
+    </div>
   `;
 
   state.rootEl = root;
   state.sidecarWarningsEl = root.querySelector("#cu-sidecar-warnings");
   state.statusEl = root.querySelector("#cu-status");
+  state.noticeActEl = root.querySelector("#cu-notice-act");
   state.jobBarEl = root.querySelector("#cu-job-bar");
   state.jobTextEl = root.querySelector("#cu-job-text");
   state.gearEl = root.querySelector("#cu-gear");
@@ -459,6 +479,7 @@ async function renderTab(el) {
     query: () => state.galleryQuery,
     arrange: () => state.galleryArrange,
     stats: () => state.modelStats,
+    categories: () => state.filterCategories,
     includeDownloadable: () => state.includeDownloadable,
     downloads: () => state.downloads,
     canTrash: () => state.canTrash,
@@ -704,6 +725,7 @@ function bindEvents(root) {
   bindMoreMenu(root);
   root.querySelector("#cu-pause").addEventListener("click", async () => togglePauseResume());
   root.querySelector("#cu-stop").addEventListener("click", async () => stopCurrentJob());
+  root.querySelector("#cu-dismiss").addEventListener("click", () => clearError());
   root.querySelector("#cu-roots-toggle").addEventListener("click", () => {
     state.rootsExpanded = !state.rootsExpanded;
     renderRoots();
@@ -823,17 +845,12 @@ function bindEvents(root) {
 /* Check for Updates with fresh results shows them without a check. Say so, for a
    few seconds, in the job bar's row, with a way to check anyway. */
 function showCachedNotice() {
-  const bar = state.jobBarEl;
-  if (!bar || state.currentJobId) return;
+  if (!state.jobBarEl || state.currentJobId) return;
   hideCachedNotice();
-  bar.hidden = false;
-  if (state.progressWrapEl) state.progressWrapEl.hidden = true;
   const text = `Results from ${timeAgo(state.cachedAt)}`;
   state.noticeText = text;
   state.jobText = text;
   paintStatus();
-  const act = bar.querySelector("#cu-notice-act");
-  if (act) act.hidden = false;
   state.noticeTimer = setTimeout(hideCachedNotice, 5000);
 }
 
@@ -842,16 +859,10 @@ function hideCachedNotice() {
   const wasShown = Boolean(state.noticeTimer);
   state.noticeTimer = null;
   if (!wasShown) return;
-  const act = state.jobBarEl?.querySelector("#cu-notice-act");
-  if (act) act.hidden = true;
-  if (state.progressWrapEl) state.progressWrapEl.hidden = false;
   // Only the notice's own text goes; a status set since then stays.
-  if (state.jobText === state.noticeText) {
-    state.jobText = "";
-    paintStatus();
-  }
+  if (state.jobText === state.noticeText) state.jobText = "";
   state.noticeText = "";
-  if (state.jobBarEl && !state.currentJobId) state.jobBarEl.hidden = true;
+  paintStatus();
 }
 
 /* The ⚙ button: the settings open and close above the tabs. */
@@ -877,6 +888,7 @@ function filterCount(tab) {
   if (isNarrowed(state.filterBases, state.facets.baseModels)) count += 1;
   if (tab === "updates" && state.showHidden) count += 1;
   if (tab === "gallery" && state.includeDownloadable && downloadableCount() > 0) count += 1;
+  if (tab === "gallery" && state.filterCategories !== null) count += 1;
   return count;
 }
 
@@ -942,12 +954,31 @@ function baseOptions() {
   return state.facets.baseModels.map((value) => ({ value, label: value, checked: selected.includes(value) }));
 }
 
+/* The Gallery's categories: those its models have, and No category. A value of "" is No category. */
+function categoryOptions() {
+  const selected = state.filterCategories;
+  return state.galleryFacets.categories.map((value) => ({
+    value,
+    label: value ? CATEGORY_LABELS[value] : NO_CATEGORY,
+    checked: selected === null || selected.includes(value),
+  }));
+}
+
+/* A change to the Gallery's categories; ticking every one is the same as no filter. */
+function setCategories(selected) {
+  const all = state.galleryFacets.categories;
+  state.filterCategories = all.every((value) => selected.includes(value)) ? null : selected;
+}
+
 function menuSections(tab, name) {
   if (name === "filter") {
     const types = { kind: "checks", key: "types", title: "Types", options: typeOptions(), actions: true };
     const bases = { kind: "checks", key: "bases", title: "Bases", options: baseOptions(), actions: true };
     if (tab === "gallery") {
       const sections = [bases];
+      if (state.galleryFacets.categories.length > 0) {
+        sections.push({ kind: "checks", key: "categories", title: "Categories", options: categoryOptions(), actions: true });
+      }
       if (downloadableCount() > 0) {
         sections.push({ kind: "toggle", key: "includeDownloadable", label: "Include downloadable", checked: state.includeDownloadable });
       }
@@ -1050,7 +1081,13 @@ function refreshOpenMenus() {
 async function onToolbarChange(tab, input) {
   const key = input.dataset.key || "";
   const value = input.dataset.value ?? "";
-  if (key === "types" || key === "bases") {
+  if (key === "categories") {
+    const selected = new Set(state.filterCategories ?? state.galleryFacets.categories);
+    if (input.checked) selected.add(value);
+    else selected.delete(value);
+    setCategories([...selected]);
+    await onFiltersChanged();
+  } else if (key === "types" || key === "bases") {
     const selection = key === "types" ? "filterTypes" : "filterBases";
     const selected = new Set(state[selection] || []);
     if (input.checked) selected.add(value);
@@ -1098,6 +1135,11 @@ async function onToolbarChange(tab, input) {
 async function onToolbarSelectAll(button) {
   const all = button.dataset.tbAll !== undefined;
   const key = all ? button.dataset.tbAll : button.dataset.tbNone;
+  if (key === "categories") {
+    setCategories(all ? [...state.galleryFacets.categories] : []);
+    await onFiltersChanged();
+    return;
+  }
   const selection = key === "types" ? "filterTypes" : "filterBases";
   const facet = key === "types" ? "modelTypes" : "baseModels";
   state[selection] = all ? [...(state.facets[facet] || [])] : [];
@@ -1144,6 +1186,7 @@ async function startJob(endpoint, type, { includeArchive = false } = {}) {
       renderFilters();
       await loadResultPage(true);
       renderCacheInfo();
+      clearError();
       showCachedNotice();
       return;
     }
@@ -2004,10 +2047,11 @@ function renderViewSwitch() {
   // Issues has no tab without a check; fall back to the tab that stays.
   if (!state.checkJobId && state.resultMode === "issues") state.resultMode = "updates";
   const counts = state.modeCounts || {};
+  // An icon and the count; the tab's name is its tooltip and its accessible name.
   const tab = (mode, label, hint, withCount = true) => {
     const selected = state.resultMode === mode ? "true" : "false";
-    return `<button class="cu-view-tab" type="button" role="tab" data-view="${mode}" aria-selected="${selected}" title="${hint}">`
-      + `<span>${label}</span>${withCount ? `<span class="cu-view-count">${Number(counts[mode] || 0)}</span>` : ""}</button>`;
+    return `<button class="cu-view-tab" type="button" role="tab" data-view="${mode}" aria-selected="${selected}" aria-label="${label}" title="${label}: ${hint}">`
+      + `<i class="pi ${VIEW_ICONS[mode]}" aria-hidden="true"></i>${withCount ? `<span class="cu-view-count">${Number(counts[mode] || 0)}</span>` : ""}</button>`;
   };
   const galleryCount = state.galleryView?.count?.();
   counts.gallery = galleryCount;
@@ -2059,9 +2103,8 @@ async function loadModelStats() {
     const data = await getJson("/warp-studio/updater/model-stats");
     const next = new Map(Object.entries(data?.stats || {}));
     state.modelStats = next;
-    if (state.galleryLoaded && STAT_SORTS.includes(state.galleryArrange.sort)) {
-      state.galleryView?.render();
-    }
+    // Every card shows the numbers, and the categories come with them.
+    if (state.galleryLoaded) state.galleryView?.rerender();
   } catch (_) {
     // no numbers; the sorts fall back to name
   }
@@ -2200,13 +2243,28 @@ function paintDownloads() {
         escapeHtml,
       );
       if (slot.innerHTML !== html) slot.innerHTML = html;
-    }
-    for (const msg of root.querySelectorAll("[data-dl-msg]")) {
-      const text = recordMessage(state.downloads.get(msg.dataset.dlMsg));
-      if (msg.textContent !== text) msg.textContent = text;
+      paintRowDownload(slot.closest(".cu-ver-row"), rowDownloadView(record));
     }
   }
   state.galleryView?.paintDownloads?.();
+}
+
+// The row's own state: a bar along its bottom edge and, for a failure, the reason in
+// place of the version name. Attributes and text only, so the row never changes size.
+function paintRowDownload(row, view) {
+  if (!row) return;
+  if (row.dataset.dlState !== view.state) row.dataset.dlState = view.state;
+  const pct = `${view.pct ?? 0}%`;
+  if (row.style.getPropertyValue("--cu-dl-pct") !== pct) row.style.setProperty("--cu-dl-pct", pct);
+  const warned = view.warning ? "1" : "0";
+  if (row.dataset.dlWarn !== warned) row.dataset.dlWarn = warned;
+  const fail = row.querySelector(".cu-ver-fail");
+  if (fail) {
+    const text = view.failure || view.warning;
+    if (fail.textContent !== text) fail.textContent = text;
+    if (text) fail.title = text;
+    else fail.removeAttribute("title");
+  }
 }
 
 async function startDownload(payload, key) {
@@ -2369,6 +2427,7 @@ function onGalleryFacets(facets) {
   state.galleryFacets = {
     modelTypes: Array.isArray(facets?.modelTypes) ? facets.modelTypes : [],
     baseModels: Array.isArray(facets?.baseModels) ? facets.baseModels : [],
+    categories: Array.isArray(facets?.categories) ? facets.categories : [],
   };
   applyFacets(mergedFacets());
   renderFilters();
@@ -2456,9 +2515,7 @@ function renderRemoteVersionRow(item, version, hidden) {
   const link = version.versionUrl
     ? `<a class="cu-ver-link" href="${escapeHtml(version.versionUrl)}" target="_blank" rel="noreferrer noopener" title="${name}">${name}</a>`
     : `<span class="cu-ver-link" title="${name}">${name}</span>`;
-  const action = hidden
-    ? `<button class="cu-inline-btn" data-archive-action="restore" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Unhide</button>`
-    : `<button class="cu-inline-btn" data-archive-action="archive" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Hide</button>`;
+  const action = rowHideHtml(hidden, modelId, version.versionId, escapeHtml);
   const accessBadge = renderPaidBadge(version) || renderAvailabilityBadge(version.availability);
   const hiddenClass = hidden ? " is-hidden" : "";
   // The download slot: painted in place while a download runs, so the row keeps its size.
@@ -2469,22 +2526,23 @@ function renderRemoteVersionRow(item, version, hidden) {
   const record = state.downloads.get(key);
   const paid = isPaid(version);
   const slot = versionActionsHtml({ paid, canReplace }, record, escapeHtml);
+  const view = rowDownloadView(record);
   const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
   return `
-    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}">
+    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}" style="--cu-dl-pct: ${view.pct ?? 0}%">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>
       <span class="cu-ver-date">${escapeHtml(date)}</span>
       <span class="cu-ver-base">${escapeHtml(version.baseModel || "—")}</span>
       <span class="cu-ver-main">
         ${link}
         ${accessBadge}
+        <span class="cu-ver-fail"${view.failure || view.warning ? ` title="${escapeHtml(view.failure || view.warning)}"` : ""}>${escapeHtml(view.failure || view.warning)}</span>
       </span>
       <span class="cu-ver-acts">
         ${dlSlot}
         ${action}
       </span>
-    </div>
-    <div class="cu-issue-msg cu-dl-msg" data-dl-msg="${escapeHtml(key)}">${escapeHtml(recordMessage(record))}</div>`;
+    </div>`;
 }
 
 /* Buzz: downloading the release costs Buzz. Early access is free from its end
@@ -2598,11 +2656,18 @@ function renderRoots() {
 function updateControlButtons() {
   if (!state.pauseEl || !state.stopEl || !state.jobControlsEl) return;
   const active = Boolean(state.currentJobId);
-  state.pauseEl.textContent = active && state.currentJobStatus === "paused" ? "Resume" : "Pause";
+  const paused = active && state.currentJobStatus === "paused";
+  const label = paused ? "Resume" : "Pause";
+  const glyph = paused ? "pi-play" : "pi-pause";
+  if (!state.pauseEl.querySelector(`.${glyph}`)) {
+    state.pauseEl.innerHTML = `<i class="pi ${glyph}" aria-hidden="true"></i>`;
+  }
+  state.pauseEl.title = label;
+  state.pauseEl.setAttribute("aria-label", label);
   // The server refuses to pause the naming-model download (it cannot resume).
   state.pauseEl.style.display =
     state.currentJobType === "naming-model-download" || state.currentJobType === MODEL_DOWNLOAD_JOB ? "none" : "";
-  state.jobControlsEl.style.display = active ? "flex" : "none";
+  paintStatus();
 }
 
 function selectedTypes() {
@@ -2666,11 +2731,19 @@ function formatEta(seconds) {
 function updateProgress(current, total, visible) {
   if (!state.progressFillEl || !state.progressTextEl) return;
   if (visible) hideCachedNotice();
-  if (state.jobBarEl) state.jobBarEl.hidden = !visible;
+  if (state.progressOn && !visible) {
+    // The job's result stays out for a few seconds, then the pill goes.
+    state.flashUntil = Date.now() + STATUS_FLASH_MS;
+    clearTimeout(state.flashTimer);
+    state.flashTimer = setTimeout(paintStatus, STATUS_FLASH_MS + 50);
+  }
+  state.progressOn = Boolean(visible);
+  paintStatus();
   const safeTotal = Math.max(0, Number(total || 0));
   const safeCurrent = Math.max(0, Number(current || 0));
   const pct = safeTotal > 0 ? Math.min(100, Math.round((safeCurrent / safeTotal) * 100)) : 0;
-  state.progressFillEl.style.width = `${pct}%`;
+  state.progressFillEl.style.strokeDashoffset = String(RING_LENGTH * (1 - pct / 100));
+  state.progressWrapEl?.classList.toggle("is-spin", Boolean(visible) && safeTotal <= 0);
   state.progressTextEl.textContent = safeTotal > 0 ? `${pct}%` : "";
 
   if (!state.progressEtaEl) return;
@@ -2688,9 +2761,9 @@ function updateProgress(current, total, visible) {
   }
 }
 
-/* An error stays on screen under the job bar until the next job starts. Routine
-   text (progress, "Done", "Showing cached results") is the job bar's label while
-   a job runs; the last check's facts are behind the ⓘ. */
+/* The floating status pill: a running job's text and progress; when it ends, its
+   result for a few seconds. An error stays, in the error colour, until the next
+   job starts or it is dismissed. The last check's facts are behind the ⓘ. */
 function setStatus(message, level = "info") {
   state.statusText = message;
   if (level === "error") state.errorText = message;
@@ -2699,11 +2772,36 @@ function setStatus(message, level = "info") {
 }
 
 function paintStatus() {
-  if (state.statusEl && state.statusEl.textContent !== state.errorText) state.statusEl.textContent = state.errorText;
-  if (state.jobTextEl && state.jobTextEl.textContent !== state.jobText) {
-    state.jobTextEl.textContent = state.jobText;
-    state.jobTextEl.title = state.jobText;
+  const view = statusRowView({
+    running: state.progressOn,
+    jobText: state.jobText,
+    errorText: state.errorText,
+    noticeText: state.noticeText,
+    flash: Date.now() < (state.flashUntil || 0),
+  });
+  const setText = (el, text) => {
+    if (el && el.textContent !== text) el.textContent = text;
+  };
+  if (state.jobTextEl) {
+    setText(state.jobTextEl, view.text);
+    state.jobTextEl.title = view.text;
+    state.jobTextEl.classList.toggle("is-error", view.level === "error");
   }
+  // Screen readers get the error from the alert region, which takes no room.
+  setText(state.statusEl, state.errorText);
+  state.jobBarEl?.classList.toggle("is-hidden", !view.visible);
+  // Parts come and go inside the floating pill only: the list never moves.
+  const show = (el, on) => {
+    if (el) el.classList.toggle("is-off", !on);
+  };
+  show(state.progressWrapEl, view.progress);
+  show(state.progressTextEl, view.progress);
+  show(state.progressEtaEl, view.progress);
+  show(state.jobControlsEl, view.controls);
+  show(state.noticeActEl, view.noticeAct);
+  show(state.rootEl?.querySelector("#cu-dismiss"), view.dismiss);
+  if (state.noticeActEl) state.noticeActEl.disabled = !view.noticeAct;
+  if (state.jobControlsEl) state.jobControlsEl.inert = !view.controls;
 }
 
 function clearError() {
@@ -3445,24 +3543,68 @@ function injectStyles() {
       margin: 0;
     }
 
-    /* Only while a job runs, in every tab. */
-    .cu-job-bar {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin-bottom: 9px;
+    /* The status pill floats over the bottom of the panel, in every tab. Its dock
+       has no height and sticks to the bottom of the scrolled area, so the pill
+       coming and going never moves anything. */
+    .cu-dock {
+      position: sticky;
+      bottom: 0;
+      z-index: 6;
+      height: 0;
+      pointer-events: none;
     }
 
-    .cu-job-row {
+    .cu-job-bar {
+      position: absolute;
+      left: 50%;
+      bottom: 12px;
+      box-sizing: border-box;
       display: flex;
       align-items: center;
-      justify-content: space-between;
       gap: 8px;
-      min-height: 22px;
+      max-width: calc(100% - 20px);
+      height: 32px;
+      padding: 0 5px 0 9px;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: 16px;
+      background: #202026;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      transform: translateX(-50%);
+      pointer-events: auto;
+      transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0s;
+    }
+
+    .cu-job-bar.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      transform: translate(-50%, 6px);
+      pointer-events: none;
+      transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
+    }
+
+    .cu-job-bar .is-off {
+      display: none;
+    }
+
+    .cu-job-bar .cu-icon-btn {
+      border-color: transparent;
+      border-radius: 11px;
+    }
+
+    .cu-job-bar .cu-icon-btn:hover:not(:disabled) {
+      border-color: var(--cu-seam-strong);
+    }
+
+    .cu-job-bar .cu-pill-stop {
+      color: var(--cu-red-soft);
+    }
+
+    .cu-job-text.is-error {
+      color: var(--cu-amber);
     }
 
     .cu-job-text {
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -3535,6 +3677,7 @@ function injectStyles() {
     }
 
     .cu-job-controls {
+      display: flex;
       flex: 0 0 auto;
       gap: 6px;
       align-items: center;
@@ -3542,41 +3685,61 @@ function injectStyles() {
 
     /* ---- Progress ---- */
 
-    .cu-progress-wrap {
-      display: flex;
-      gap: 8px;
-      align-items: center;
+    /* A ring that fills; it spins while the total isn't known yet. */
+    .cu-ring {
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      transform: rotate(-90deg);
     }
 
-    .cu-progress {
-      flex: 1;
-      height: 3px;
-      background: var(--cu-seam);
-      overflow: hidden;
+    .cu-ring-track {
+      fill: none;
+      stroke: var(--cu-seam-strong);
+      stroke-width: 2.5;
     }
 
-    .cu-progress-fill {
-      height: 100%;
-      width: 0;
-      background: var(--cu-red);
-      transition: width 200ms linear;
+    .cu-ring-fill {
+      fill: none;
+      stroke: var(--cu-red);
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-dasharray: 50.27;
+      stroke-dashoffset: 50.27;
+      transition: stroke-dashoffset 200ms linear;
     }
 
+    .cu-ring.is-spin {
+      animation: cu-ring-spin 1s linear infinite;
+    }
+
+    .cu-ring.is-spin .cu-ring-fill {
+      stroke-dashoffset: 37.7;
+    }
+
+    @keyframes cu-ring-spin {
+      from { transform: rotate(-90deg); }
+      to { transform: rotate(270deg); }
+    }
+
+    /* Fixed widths and even digits: the numbers change, the pill doesn't wobble. */
     .cu-progress-pct {
+      flex: 0 0 auto;
+      min-width: 30px;
       font-family: var(--cu-mono);
       font-size: 10px;
-      color: var(--cu-ash);
-      min-width: 30px;
+      font-variant-numeric: tabular-nums;
+      color: var(--cu-bone);
       text-align: right;
     }
 
     .cu-progress-eta {
+      flex: 0 0 auto;
+      min-width: 70px;
       font-family: var(--cu-mono);
       font-size: 10px;
+      font-variant-numeric: tabular-nums;
       color: var(--cu-ash);
-      opacity: 0.75;
-      min-width: 84px;
-      text-align: right;
       white-space: nowrap;
     }
 
@@ -3703,17 +3866,14 @@ function injectStyles() {
 
     /* ---- Status line ---- */
 
-    .cu-status:empty {
-      display: none;
-    }
-
+    /* The error shows in the status row; this copy is for screen readers and takes no room. */
     .cu-status {
-      margin-bottom: 9px;
-      padding: 6px 9px;
-      border-left: 2px solid var(--cu-amber);
-      color: var(--cu-amber);
-      font-size: 11px;
-      overflow-wrap: anywhere;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
 
     /* ---- Scan report ---- */
@@ -3838,6 +3998,10 @@ function injectStyles() {
       color: var(--cu-bone);
     }
 
+    .cu-view-tab .pi {
+      font-size: 12px;
+    }
+
     .cu-view-count {
       font-family: var(--cu-mono);
       font-size: 9.5px;
@@ -3954,6 +4118,31 @@ function injectStyles() {
     .cu-tb-btn[data-active] {
       border-color: rgba(147, 181, 120, 0.55);
       color: var(--cu-moss);
+    }
+
+    /* Icon buttons: a square, or wider when a search shows its text. A dot marks
+       a filter or search that narrows the list. */
+    .cu-tb-icon {
+      position: relative;
+      justify-content: center;
+      min-width: var(--cu-h-ctl);
+      padding: 0 7px;
+      overflow: visible;
+    }
+
+    .cu-tb-icon .pi {
+      font-size: 12px;
+    }
+
+    .cu-tb-icon[data-active]::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      right: 3px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--cu-moss);
     }
 
     .cu-tb-query {
@@ -4431,6 +4620,15 @@ function injectStyles() {
       border-color: var(--cu-dust);
     }
 
+    /* Found: identified by another source, so not an issue; a neutral dot. */
+    .cu-ver-label[data-role="found"] {
+      color: var(--cu-ash);
+    }
+
+    .cu-ver-label[data-role="found"]::before {
+      border-color: var(--cu-dust);
+    }
+
     /* Downloaded since the check: the card stays in Updates until the next one. */
     .cu-ver-label[data-role="downloaded"] {
       color: var(--cu-moss);
@@ -4630,7 +4828,7 @@ function injectStyles() {
       align-items: center;
       justify-content: flex-end;
       gap: 6px;
-      height: 20px;
+      height: 22px;
       min-width: 0;
       flex: 0 1 auto;
     }
@@ -4638,11 +4836,138 @@ function injectStyles() {
     /* The actions never take more than 46% of the row (fit-content above): a long
        note gives way with an ellipsis, so the version name keeps some characters. */
     .cu-dl {
+      display: block;
+      width: 72px;
+      height: 22px;
+      flex: 0 0 72px;
+    }
+
+    /* One slot, one width: every state fits two icon buttons, or the percentage and a button. */
+    .cu-slot {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      width: 100%;
+      height: 22px;
+    }
+
+    .cu-icon-btn {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      min-width: 0;
-      flex: 0 1 auto;
+      justify-content: center;
+      box-sizing: border-box;
+      width: 24px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid var(--cu-seam-strong);
+      background: transparent;
+      color: var(--cu-dust);
+      border-radius: 4px;
+      font-size: 11px;
+      line-height: 1;
+      cursor: pointer;
+      flex: 0 0 24px;
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .cu-icon-btn:hover:not(:disabled) {
+      border-color: var(--cu-dust);
+      color: var(--cu-bone);
+    }
+
+    .cu-icon-btn:disabled {
+      cursor: default;
+    }
+
+    .cu-icon-btn[data-confirm] {
+      border-color: var(--cu-red);
+      color: var(--cu-red);
+      background: var(--cu-red-dim);
+    }
+
+    .cu-dl-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 22px;
+      flex: 0 0 24px;
+      font-size: 11px;
+      color: var(--cu-dust);
+    }
+
+    .cu-dl-icon.is-warn {
+      color: var(--cu-amber);
+    }
+
+    .cu-dl-icon.is-done {
+      color: var(--cu-moss);
+    }
+
+    .cu-dl-pct {
+      flex: 0 0 34px;
+      width: 34px;
+      text-align: right;
+      font-family: var(--cu-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 9.5px;
+      color: var(--cu-dust);
+      white-space: nowrap;
+    }
+
+    /* The row's download state: a 2px bar along its bottom edge, drawn in the row's own
+       space, and a failure that takes the version name's place. Neither adds any height. */
+    .cu-ver-row[data-dl-state] {
+      position: relative;
+      min-height: 22px;
+    }
+
+    .cu-ver-row[data-dl-state]::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 2px;
+      width: var(--cu-dl-pct, 0%);
+      background: var(--cu-moss);
+      border-radius: 1px;
+      opacity: 0;
+      pointer-events: none;
+      transition: width 0.4s linear, opacity 0.15s ease;
+    }
+
+    .cu-ver-row[data-dl-state="downloading"]::after {
+      opacity: 1;
+    }
+
+    .cu-ver-main {
+      position: relative;
+    }
+
+    .cu-ver-fail {
+      position: absolute;
+      inset: 0;
+      display: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      line-height: 22px;
+      color: var(--cu-red-soft);
+    }
+
+    .cu-ver-row[data-dl-warn="1"] .cu-ver-main > :not(.cu-ver-fail),
+    .cu-ver-row[data-dl-state="error"] .cu-ver-main > :not(.cu-ver-fail) {
+      visibility: hidden;
+    }
+
+    .cu-ver-row[data-dl-warn="1"] .cu-ver-fail {
+      display: block;
+      color: var(--cu-amber);
+    }
+
+    .cu-ver-row[data-dl-state="error"] .cu-ver-fail {
+      display: block;
     }
 
     .cu-dl-note {
@@ -4653,10 +4978,6 @@ function injectStyles() {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-
-    .cu-dl-msg:empty {
-      display: none;
     }
 
     .cu-inline-btn:hover {
@@ -4933,20 +5254,22 @@ function injectStyles() {
     .cu-g .cu-g-band-head:hover .cu-group-name { color: #ffffff; }
     .cu-g-band:not([data-workflow="true"]) .cu-g-fit { visibility: hidden; }
     .cu-g-band[data-folded] .cu-g-grid { display: none; }
-    .cu-g-mark { position: absolute; top: 34px; right: 6px; box-sizing: border-box; display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 10px; border: 1px solid rgba(147, 181, 120, 0.55); background: rgba(19, 19, 22, 0.88); color: var(--cu-moss); font-size: 11px; line-height: 1; pointer-events: none; }
+    .cu-g-mark { position: absolute; top: 52px; right: 6px; box-sizing: border-box; display: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 10px; border: 1px solid rgba(147, 181, 120, 0.55); background: rgba(19, 19, 22, 0.88); color: var(--cu-moss); font-size: 11px; line-height: 1; pointer-events: none; }
     .cu-g-mark[data-mark] { display: flex; }
     .cu-g-mark[data-mark="parked"] { border-color: var(--cu-seam-strong); color: var(--cu-dust); }
     .cu-g-card[data-mark="on"] .cu-g-pick { border-color: rgba(147, 181, 120, 0.55); }
     .cu-g-layer { position: absolute; inset: 0 0 auto 0; aspect-ratio: 3 / 4; pointer-events: none; }
-    .cu-g-vers { position: absolute; right: 6px; bottom: 6px; pointer-events: auto; }
-    .cu-g-vers { box-sizing: border-box; height: 16px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--cu-seam-strong); background: rgba(19, 19, 22, 0.8); color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9px; line-height: 1; cursor: pointer; }
-    .cu-g-vers:hover, .cu-g-vers:focus-visible { border-color: var(--cu-dust); }
-    .cu-g-vmenu { position: absolute; z-index: 3; inset: 0 0 auto 0; aspect-ratio: 3 / 4; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; padding: 4px; overflow: auto; border: 1px solid var(--cu-seam-strong); border-radius: 5px; background: rgba(19, 19, 22, 0.97); }
-    .cu-g-vitem { display: flex; justify-content: space-between; gap: 6px; padding: 4px 5px; border: 1px solid transparent; border-radius: 3px; background: none; color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9.5px; text-align: left; cursor: pointer; }
-    .cu-g-vitem:hover, .cu-g-vitem:focus-visible { border-color: var(--cu-seam-strong); }
-    .cu-g-vitem[aria-current="true"] { color: var(--cu-moss); }
-    .cu-g-vname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .cu-g-vdate { flex: 0 0 auto; color: var(--cu-dust); }
+    /* The versions pill matches the type pill; its list is the panel's own menu. */
+    .cu-g-vers { position: absolute; right: 6px; top: 34px; pointer-events: auto; display: inline-flex; align-items: center; gap: 4px; box-sizing: border-box; height: 22px; padding: 0 8px; border: 0; border-radius: 11px; background: rgba(19, 19, 22, 0.72); color: var(--cu-bone); font-family: var(--cu-mono); font-size: 9.5px; line-height: 1; cursor: pointer; }
+    .cu-g-vers .pi { font-size: 9px; color: var(--cu-ash); }
+    .cu-g-vers:hover, .cu-g-vers:focus-visible, .cu-g-vers[aria-expanded="true"] { background: rgba(19, 19, 22, 0.92); }
+    .cu-g-vmenu { position: absolute; z-index: 3; top: 60px; right: 6px; left: 6px; max-height: calc(100% - 66px); box-sizing: border-box; display: flex; flex-direction: column; padding: 4px; overflow: auto; border: 1px solid var(--cu-seam-strong); border-radius: 6px; background: #202026; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); animation: cu-fade-in 0.12s ease-out; }
+    .cu-g-vitem { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: var(--cu-bone); font-family: var(--cu-body); font-size: 11px; text-align: left; cursor: pointer; }
+    .cu-g-vitem:hover, .cu-g-vitem:focus-visible { background: var(--cu-seam); }
+    .cu-g-vcheck { flex: 0 0 auto; font-size: 9px; color: var(--cu-moss); visibility: hidden; }
+    .cu-g-vitem[aria-current="true"] .cu-g-vcheck { visibility: visible; }
+    .cu-g-vname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cu-g-vdate { flex: 0 0 auto; font-family: var(--cu-mono); font-size: 9.5px; color: var(--cu-dust); }
 
     .cu-g-error {
       padding: 6px 9px;
@@ -5010,8 +5333,9 @@ function injectStyles() {
 
     /* The whole face is the button that puts the model in the workflow. */
     .cu-g-pick {
-      display: flex;
-      flex-direction: column;
+      position: relative;
+      display: block;
+      aspect-ratio: 3 / 4;
       box-sizing: border-box;
       width: 100%;
       margin: 0;
@@ -5045,13 +5369,13 @@ function injectStyles() {
       cursor: default;
     }
 
+    /* The whole card is the picture; what it says lies over it. */
     .cu-g-thumb {
-      position: relative;
+      position: absolute;
+      inset: 0;
       display: block;
-      aspect-ratio: 3 / 4;
       overflow: hidden;
       background: var(--cu-raise);
-      border-bottom: 1px solid var(--cu-seam);
     }
 
     .cu-g-thumb img {
@@ -5080,11 +5404,39 @@ function injectStyles() {
       overflow-wrap: anywhere;
     }
 
+    /* Top row: the pill. The right is left to the link out. */
+    .cu-g-top {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      right: 34px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      pointer-events: none;
+    }
+
+    .cu-g-pill {
+      box-sizing: border-box;
+      flex: 0 1 auto;
+      min-width: 0;
+      height: 22px;
+      padding: 0 9px;
+      overflow: hidden;
+      border-radius: 11px;
+      background: rgba(19, 19, 22, 0.72);
+      color: var(--cu-bone);
+      font-family: var(--cu-mono);
+      font-size: 9.5px;
+      line-height: 22px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
     /* Green, as trigger words are in the prompt. */
     .cu-g-badge {
-      position: absolute;
-      left: 6px;
-      bottom: 6px;
+      flex: none;
+      margin-left: auto;
       display: inline-flex;
       align-items: center;
       height: 16px;
@@ -5098,73 +5450,148 @@ function injectStyles() {
       line-height: 1;
     }
 
-    /* Opposite the trigger badge, in the muted text colour. */
-    .cu-g-metric {
+    /* The bottom: the creator, the title and the numbers on a gradient. Three
+       fixed rows, so a card without numbers is as tall as one with them. */
+    .cu-g-info {
       position: absolute;
-      right: 6px;
-      bottom: 6px;
-      display: inline-flex;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 30px 7px 7px;
+      background: linear-gradient(to top, rgba(10, 10, 12, 0.92) 0%, rgba(10, 10, 12, 0.7) 60%, rgba(10, 10, 12, 0));
+      color: var(--cu-bone);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+      pointer-events: none;
+    }
+
+    .cu-g-by {
+      display: flex;
       align-items: center;
-      height: 16px;
-      padding: 0 5px;
-      border-radius: 3px;
+      gap: 5px;
+      height: 20px;
+      min-width: 0;
+    }
+
+    .cu-g-avatar {
+      box-sizing: border-box;
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--cu-raise);
       border: 1px solid var(--cu-seam-strong);
-      background: rgba(19, 19, 22, 0.8);
-      color: var(--cu-ash);
-      font-family: var(--cu-mono);
-      font-size: 9px;
+      color: var(--cu-bone);
+      font-family: var(--cu-disp);
+      font-size: 10px;
       line-height: 1;
-    }
-
-    /* The "n versions ▾" chip (16px high, 6px up) holds the corner: the number sits above it. */
-    .cu-g-metric.cu-g-metric-stacked {
-      bottom: 26px;
-    }
-
-    .cu-g-creator,
-    .cu-g-detail {
-      display: block;
-      height: 13px;
-      margin: 0 7px;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      line-height: 13px;
-      color: var(--cu-dust);
+      text-shadow: none;
     }
 
     .cu-g-creator {
-      margin-top: 6px;
-      font-size: 10px;
-    }
-
-    .cu-g-title {
-      display: -webkit-box;
-      -webkit-box-orient: vertical;
-      -webkit-line-clamp: 2;
-      height: 30px;
-      margin: 1px 7px 2px;
+      display: block;
+      min-width: 0;
       overflow: hidden;
-      overflow-wrap: anywhere;
-      font-family: var(--cu-disp);
-      font-size: 12px;
-      font-weight: 500;
-      line-height: 15px;
-      letter-spacing: 0.01em;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 10.5px;
+      line-height: 20px;
       color: var(--cu-bone);
     }
 
-    .cu-g-detail {
-      margin-bottom: 7px;
+    .cu-g-title {
+      display: block;
+      height: 17px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-family: var(--cu-disp);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 17px;
+      letter-spacing: 0.01em;
+      color: #ffffff;
+    }
+
+    .cu-g-ver {
+      font-weight: 400;
+      color: var(--cu-dust);
+    }
+
+    .cu-g-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      height: 22px;
+    }
+
+    .cu-g-stats {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      align-content: flex-start;
+      gap: 20px 8px;
+      min-width: 0;
+      height: 20px;
+      overflow: hidden;
       font-family: var(--cu-mono);
+      font-size: 9.5px;
+      line-height: 20px;
+    }
+
+    /* A number that does not fit drops out whole (Buzz first) instead of being cut. */
+    .cu-g-stat,
+    .cu-g-likes {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+      color: rgba(236, 233, 226, 0.72);
+    }
+
+    .cu-g-stat .pi,
+    .cu-g-likes .pi {
       font-size: 9.5px;
     }
 
-    /* Download, Cancel, Stop and Delete: top-left, the height of the link out.
+    .cu-g-likes {
+      box-sizing: border-box;
+      flex: none;
+      height: 20px;
+      padding: 0 8px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.14);
+      font-family: var(--cu-mono);
+      font-size: 10px;
+    }
+
+    .cu-g-likes:empty {
+      visibility: hidden;
+    }
+
+    /* The number the Gallery is sorted by. */
+    .cu-g-hot {
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .cu-g-likes.cu-g-hot {
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    /* Download, Cancel, Stop and Delete: top-left, under the pill.
        Delete shows on hover or focus; visibility keeps the box where it is. */
     .cu-g-act {
       position: absolute;
-      top: 6px;
+      top: 32px;
       left: 6px;
       display: flex;
       align-items: center;

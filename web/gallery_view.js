@@ -6,15 +6,16 @@
 // app comes in through the options rather than an import, so the markup
 // builders below can be tested in node.
 import {
+  CATEGORY_LABELS,
+  NO_CATEGORY,
   arrange,
   cardModel,
+  categoryOf,
   filterEntries,
   foldedIn,
   formatCount,
   galleryFacets,
   stackEntries,
-  statOf,
-  STAT_SORTS,
   toggleFolded,
 } from "./gallery_core.js";
 import { embeddings, forget, loras, missingLoras, models } from "./library.js";
@@ -89,17 +90,17 @@ function markHtml(mark, esc) {
   return `<span class="cu-g-mark" data-g-mark data-mark="${esc(mark)}" role="img" aria-label="${esc(known.label)}">${known.glyph}</span>`;
 }
 
-/** One card, from cardModel's raw text and ui = { mark, versions, versionLabel }.
+/** One card, from cardModel's raw text and ui = { mark, versions, versionLabel, sort }.
  *
- * Every row is there whether or not it has text, and each has a fixed height
- * in the styles, so a card without a creator or a preview is as tall as the
- * rest. The face is one button; the ↗ link and the version chip are its
- * siblings, because a link or a button inside a button is neither valid nor
- * reachable by keyboard.
+ * The whole card is the picture; the pill, the creator, the title and the numbers
+ * lie over it, so every card is as tall as the next whatever it has to say. A
+ * card without numbers keeps their row, empty. The face is one button; the ↗
+ * link and the version chip are its siblings, because a link or a button inside
+ * a button is neither valid nor reachable by keyboard.
  */
 export function cardHtml(model, ui, escapeHtml) {
   const esc = escaper(escapeHtml);
-  const { mark = null, versions = 1, versionLabel = "", metric = "" } = ui || {};
+  const { mark = null, versions = 1, versionLabel = "", sort = "" } = ui || {};
   const thumb = model.thumbnail
     ? `<img src="${esc(model.thumbnail)}" alt="" loading="lazy" decoding="async">`
     : `<span class="cu-g-noimg">${esc(model.stem)}</span>`;
@@ -107,25 +108,46 @@ export function cardHtml(model, ui, escapeHtml) {
     model.triggers > 0
       ? `<span class="cu-g-badge" title="${esc(plural(model.triggers, "trigger word"))}">⊕ ${esc(model.triggers)}</span>`
       : "";
-  // The versions chip takes the same corner: the number sits above it.
-  const metricClass = versions > 1 ? "cu-g-metric cu-g-metric-stacked" : "cu-g-metric";
-  const metricBadge = metric ? `<span class="${metricClass}">${esc(metric)}</span>` : "";
+  const more = model.moreBases > 0 ? ` +${model.moreBases}` : "";
+  const pill = `<span class="cu-g-pill">${esc(`${model.typeLabel || ""} | ${model.base || ""}${more}`)}</span>`;
+  const picture = /^https:\/\//i.test(model.creatorImage || "")
+    ? `<img class="cu-g-avatar" src="${esc(model.creatorImage)}" alt="" loading="lazy" decoding="async">`
+    : `<span class="cu-g-avatar">${esc(Array.from(model.creator || "")[0]?.toUpperCase() ?? "")}</span>`;
+  const suffix = model.versionSuffix
+    ? `<span class="cu-g-ver"> · ${esc(model.versionSuffix)}</span>`
+    : "";
+  const stat = (key, icon, noun, shown) => {
+    const hot = sort === key ? " cu-g-hot" : "";
+    const value = model.stats[key];
+    return `<span class="cu-g-stat${hot}" title="${esc(`${value} ${noun}`)}"><i class="pi pi-${icon}" aria-hidden="true"></i>${esc(formatCount(shown))}</span>`;
+  };
+  const stats = model.stats
+    ? stat("downloads", "download", "downloads", model.stats.downloads) +
+      stat("comments", "comment", "comments", model.stats.comments) +
+      stat("tipped", "bolt", "Buzz tipped", model.stats.tipped)
+    : "";
+  const likes = model.stats
+    ? `<span class="cu-g-likes${sort === "likes" ? " cu-g-hot" : ""}" title="${esc(`${model.stats.likes} likes`)}"><i class="pi pi-thumbs-up" aria-hidden="true"></i>${esc(formatCount(model.stats.likes))}</span>`
+    : `<span class="cu-g-likes"></span>`;
   const url = safeUrl(model.url);
   const link = url
     ? `<a class="cu-g-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="Open on Civitai" aria-label="${esc(`Open ${model.title} on Civitai`)}">↗</a>`
     : "";
   const chip =
     versions > 1
-      ? `<button type="button" class="cu-g-vers" data-g-vers aria-haspopup="true" aria-expanded="false" aria-label="${esc(`${versions} versions, showing ${versionLabel}`)}">${esc(versions)} versions ▾</button>`
+      ? `<button type="button" class="cu-g-vers" data-g-vers aria-haspopup="true" aria-expanded="false" aria-label="${esc(`${versions} versions, showing ${versionLabel}`)}" title="${esc(`${versions} versions`)}"><i class="pi pi-clone" aria-hidden="true"></i><span>${esc(versions)}</span></button>`
       : "";
   const marked = MARKS[mark] ? ` data-mark="${esc(mark)}"` : "";
   return (
     `<div class="cu-g-card" data-g-key="${esc(model.key)}"${marked}${model.missing ? " data-missing" : ""}>` +
     `<button type="button" class="cu-g-pick" title="${esc(model.stem)}"${model.missing ? ' aria-disabled="true"' : ""}>` +
-    `<span class="cu-g-thumb">${thumb}${badge}${metricBadge}</span>` +
-    `<span class="cu-g-creator">${esc(model.creator)}</span>` +
-    `<span class="cu-g-title">${esc(model.title)}</span>` +
-    `<span class="cu-g-detail">${esc(model.detail)}</span>` +
+    `<span class="cu-g-thumb">${thumb}</span>` +
+    `<span class="cu-g-top">${pill}</span>` +
+    `<span class="cu-g-info">` +
+    `<span class="cu-g-by">${picture}<span class="cu-g-creator">${esc(model.creator)}</span>${badge}</span>` +
+    `<span class="cu-g-title">${esc(model.title)}${suffix}</span>` +
+    `<span class="cu-g-foot"><span class="cu-g-stats">${stats}</span>${likes}</span>` +
+    `</span>` +
     `</button>${link}<span class="cu-g-layer">${markHtml(mark, esc)}${chip}</span>` +
     // Empty slots, siblings of the face: never dimmed, never a button in a button.
     `<span class="cu-g-act" data-g-act></span>` +
@@ -141,6 +163,7 @@ export function versionMenuHtml(items, escapeHtml) {
     .map(
       (item) =>
         `<button type="button" class="cu-g-vitem" data-g-ver="${esc(item.id)}"${item.current ? ' aria-current="true"' : ""}>` +
+        `<i class="pi pi-check cu-g-vcheck" aria-hidden="true"></i>` +
         `<span class="cu-g-vname">${esc(item.label)}</span>` +
         `<span class="cu-g-vdate">${esc(item.date)}</span></button>`
     )
@@ -250,21 +273,13 @@ function hookSelection(app) {
   };
 }
 
-const METRIC_GLYPHS = { downloads: "↓", likes: "♥", comments: "❝" };
-
-/** The badge text for a stat sort ("↓ 11.6k"); "" when not sorting by a number or none is known. */
-function metricOf(stack, sort, stats) {
-  if (!STAT_SORTS.includes(sort)) return "";
-  const value = statOf(stack, sort, stats);
-  return value === null ? "" : `${METRIC_GLYPHS[sort]} ${formatCount(value)}`;
-}
-
 const graphOf = (app) => app?.canvas?.graph ?? app?.graph ?? null;
 
 /* ---------------------------------------------------------------- the view */
 
 /* options: { escapeHtml, app, filter() -> { bases }, query() -> string,
-     arrange() -> { groupBy, sort }, stats() -> Map of model id to { downloads, likes, comments },
+     categories() -> the ticked category keys ("" is No category), or null for all,
+     arrange() -> { groupBy, sort }, stats() -> Map of model id to the check's numbers (see model_stats),
      includeDownloadable() -> boolean,
      onFacets(facets), onCount(), downloads() -> Map, canTrash() -> boolean,
      onDownload(name), onStop(requestId), onDelete(name, kind) -> Promise<"" | error> }
@@ -328,7 +343,7 @@ export function renderGalleryView(el, options) {
     if (!have.includes(type)) type = have.includes("loras") ? "loras" : have[0] || "loras";
   }
 
-  const facets = () => options.onFacets?.(galleryFacets(listed()));
+  const facets = () => options.onFacets?.(galleryFacets(listed(), options.stats?.()));
 
   /* ---- the version a stack shows ---- */
 
@@ -670,12 +685,15 @@ export function renderGalleryView(el, options) {
     const stats = options.stats?.();
     const wanted = stacks.map((stack) => {
       const member = shownOf(stack);
-      const model = cardModel(member);
+      const model = cardModel(
+        member,
+        member.model_id ? stats?.get?.(String(member.model_id)) : null
+      );
       const ui = {
         mark: null,
         versions: stack.members.length,
         versionLabel: versionName(member),
-        metric: metricOf(stack, sort, stats),
+        sort,
       };
       return { stack, model, html: cardHtml(model, ui, options.escapeHtml) };
     });
@@ -701,7 +719,16 @@ export function renderGalleryView(el, options) {
     return wanted.map((item) => cards.get(item.model.key).el);
   }
 
-  const foldedNow = (all) => foldedIn(readFolded(type), new Set(all.map(groupOf)));
+  /* The bands that exist whatever the filters hide: bases, or categories by label. */
+  const foldedNow = (all, groupBy) => {
+    const stats = options.stats?.();
+    const name = (entry) => {
+      if (groupBy !== "category") return groupOf(entry);
+      const key = categoryOf({ members: [entry] }, stats);
+      return key ? CATEGORY_LABELS[key] : NO_CATEGORY;
+    };
+    return foldedIn(readFolded(type), new Set(all.map(name)));
+  };
 
   function render() {
     closeMenu();
@@ -724,6 +751,8 @@ export function renderGalleryView(el, options) {
       const visible = filterEntries(all, {
         query: typeof options.query === "function" ? options.query() || "" : query,
         bases: filter.bases ?? null,
+        categories: options.categories?.() ?? null,
+        stats: options.stats?.(),
       });
       // A file that is not on this drive has no sibling versions: it stands alone.
       const stacks = [
@@ -739,7 +768,7 @@ export function renderGalleryView(el, options) {
         );
       } else {
         const { groupBy = "base", sort = "name" } = options.arrange?.() || {};
-        const folded = groupBy === "none" ? new Set() : foldedNow(all);
+        const folded = groupBy === "none" ? new Set() : foldedNow(all, groupBy);
         const bands = arrange(stacks, { groupBy, sort, fitting, stats: options.stats?.() });
         const title = fitTitle();
         content = fragment(

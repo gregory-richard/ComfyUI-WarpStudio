@@ -16,6 +16,10 @@ export const COPY = {
   downloadTitle: "Download this release",
   delete: "Delete",
   deleteAsk: "Delete?",
+  deleteConfirmTitle: "Click again to send it to the Recycle Bin",
+  retry: "Retry",
+  hide: "Hide",
+  unhide: "Unhide",
   deleting: "Deleting…",
   deleteTitle: "Send this LoRA and its sidecars to the Recycle Bin",
   deleteTitleFor: (noun) => `Send this ${noun} and its sidecars to the Recycle Bin`,
@@ -74,27 +78,80 @@ export function recordMessage(record) {
   return (record.warnings || []).join(" ");
 }
 
+/* What a version row's bar, failure and warning text need from the download record.
+   A finished download can carry warnings (a Replace whose old file stayed): they show
+   in the row like a failure does, so they are never lost. */
+export function rowDownloadView(record) {
+  const state = slotState(record);
+  return {
+    state,
+    pct: state === "downloading" ? percent(record) : null,
+    failure: state === "error" ? recordMessage(record) : "",
+    warning: state === "done" ? (record?.warnings || []).join(" ") : "",
+  };
+}
+
 const note = (text) => `<span class="cu-dl-note">${text}</span>`;
 
+/* An icon button: a fixed square holding a PrimeIcons glyph. */
+const iconButton = (icon, label, attrs = "", extraClass = "") =>
+  `<button type="button" class="cu-icon-btn${extraClass}"${attrs} title="${label}" aria-label="${label}"><i class="pi ${icon}" aria-hidden="true"></i></button>`;
+
+const icon = (name, label, extraClass = "") =>
+  `<span class="cu-dl-icon${extraClass}" title="${label}"><i class="pi ${name}" aria-hidden="true"></i></span>`;
+
+/* Everything sits in one slot element, which the page gives one fixed width: at most two
+   icon buttons, or a percentage and one button, in every state. */
 export function versionActionsHtml(slot, record, escapeHtml) {
-  if (slot?.paid) return note(COPY.earlyAccess);
+  const wrap = (inner, state) => `<span class="cu-slot" data-state="${state}">${inner}</span>`;
+  if (slot?.paid) return wrap(note(COPY.earlyAccess), "paid");
   const state = slotState(record);
-  const stopButton = (label) =>
-    `<button type="button" class="cu-inline-btn" data-dl-action="stop" data-request-id="${escapeHtml(record.id)}">${label}</button>`;
+  const stop = (label, glyph) =>
+    iconButton(glyph, label, ` data-dl-action="stop" data-request-id="${escapeHtml(record.id)}"`);
   // The slot says what it waits for, so the row needs no second line.
   if (state === "waiting") {
-    return `<span class="cu-dl-note" title="${escapeHtml(waitingText(record) || COPY.waiting)}">${escapeHtml(waitingText(record) || COPY.waiting)}</span>${stopButton(COPY.cancel)}`;
+    const reason = escapeHtml(waitingText(record) || COPY.waiting);
+    return wrap(icon("pi-clock", reason) + stop(COPY.cancel, "pi-times"), state);
   }
   if (state === "downloading") {
     const pct = percent(record);
-    return note(pct === null ? COPY.downloading : `${pct}%`) + stopButton(COPY.stop);
+    const text = pct === null ? "\u2026" : `${pct}%`;
+    return wrap(
+      `<span class="cu-dl-pct">${text}</span>` + stop(COPY.stop, "pi-stop-circle"),
+      state
+    );
   }
-  if (state === "done") return note(COPY.downloaded);
-  let html = `<button type="button" class="cu-inline-btn" data-dl-action="download" title="${COPY.downloadTitle}">${COPY.download}</button>`;
+  if (state === "done") {
+    const warning = (record?.warnings || []).join(" ");
+    return warning
+      ? wrap(icon("pi-exclamation-triangle", escapeHtml(warning), " is-warn"), state)
+      : wrap(icon("pi-check", COPY.downloaded, " is-done"), state);
+  }
+  if (state === "error") {
+    const action = slot?.canReplace && record?.replace ? "replace" : "download";
+    const title = action === "replace" ? COPY.replaceTitle : COPY.retry;
+    return wrap(
+      iconButton("pi-refresh", title, ` data-dl-action="${action}"`).replace(
+        `aria-label="${title}"`,
+        `aria-label="${COPY.retry}"`
+      ),
+      state
+    );
+  }
+  let html = iconButton("pi-download", COPY.downloadTitle, ' data-dl-action="download"');
   if (slot?.canReplace) {
-    html += `<button type="button" class="cu-inline-btn" data-dl-action="replace" title="${COPY.replaceTitle}">${COPY.replace}</button>`;
+    html += iconButton("pi-sync", COPY.replaceTitle, ' data-dl-action="replace"');
   }
-  return html;
+  return wrap(html, state);
+}
+
+/* Hide or Unhide a new version: an icon button beside the slot. */
+export function rowHideHtml(hidden, modelId, versionId, escapeHtml) {
+  const attrs = (action) =>
+    ` data-archive-action="${action}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(versionId || "")}"`;
+  return hidden
+    ? iconButton("pi-eye", COPY.unhide, attrs("restore"))
+    : iconButton("pi-eye-slash", COPY.hide, attrs("archive"));
 }
 
 export function finishedText(summary) {
@@ -144,12 +201,15 @@ export function galleryActionHtml(card, record, ui, escapeHtml) {
  */
 export function rowDeleteHtml(v, ui, escapeHtml) {
   if (!ui?.canTrash || v?.archived || v?.metadataOnly || !v?.modelPath) return "";
-  const attrs = `class="cu-inline-btn cu-ver-del" data-row-action="delete" data-path="${escapeHtml(v.modelPath)}" title="${COPY.deleteTitleFor("version")}"`;
-  if (ui.deleting)
-    return `<button type="button" ${attrs} data-deleting disabled>${COPY.deleting}</button>`;
-  if (ui.confirming)
-    return `<button type="button" ${attrs} data-confirm>${COPY.deleteAsk}</button>`;
-  return `<button type="button" ${attrs}>${COPY.delete}</button>`;
+  const path = ` data-row-action="delete" data-path="${escapeHtml(v.modelPath)}"`;
+  const mark = " cu-ver-del";
+  if (ui.deleting) {
+    return iconButton("pi-spin pi-spinner", COPY.deleting, `${path} data-deleting disabled`, mark);
+  }
+  if (ui.confirming) {
+    return iconButton("pi-trash", COPY.deleteConfirmTitle, `${path} data-confirm`, mark);
+  }
+  return iconButton("pi-trash", COPY.deleteTitleFor("version"), path, mark);
 }
 
 /* The Gallery card's state overlay: Waiting, the percentage, the error; Downloaded only just after. */

@@ -196,10 +196,25 @@ class JobManagerTests(unittest.TestCase):
         self.job.items = [
             self._fallback_item(modelId="", modelUrl="", status="not_found", fallbackSource="civarchive", hasLocalPreview=True)
         ]
-        grouped = self.manager.get_items("job-1", mode="issues")["items"][0]
+        grouped = self.manager.get_items("job-1", mode="all")["items"][0]
         self.assertEqual("", grouped["modelId"])
         v = grouped["localVersions"][0]
         self.assertEqual(("civarchive", True), (v["fallbackSource"], v["hasLocalPreview"]))
+
+    def test_local_versions_carry_the_creator_status_and_name(self) -> None:
+        self.job.items = [self._fallback_item(status="error", creatorStatus="gone")]
+        v = self.manager.get_items("job-1", mode="issues")["items"][0]["localVersions"][0]
+        self.assertEqual(("gone", "artist"), (v["creatorStatus"], v["creatorName"]))
+
+    def test_ungrouped_local_versions_carry_the_creator_status(self) -> None:
+        self.job.items = [self._fallback_item(modelId="", modelUrl="", status="error", creatorStatus="active")]
+        v = self.manager.get_items("job-1", mode="issues")["items"][0]["localVersions"][0]
+        self.assertEqual(("active", "artist"), (v["creatorStatus"], v["creatorName"]))
+
+    def test_creator_status_defaults_to_empty(self) -> None:
+        self.job.items = [self._fallback_item(status="error")]
+        v = self.manager.get_items("job-1", mode="issues")["items"][0]["localVersions"][0]
+        self.assertEqual("", v["creatorStatus"])
 
     def test_fallback_fields_default_when_the_item_lacks_them(self) -> None:
         self.job.items = [self._fallback_item(status="error")]

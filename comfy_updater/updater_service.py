@@ -5,7 +5,12 @@ from pathlib import Path
 import time
 from typing import Callable
 
-from .archive import ARCHIVE_NO_MODEL_FOLDERS_ERROR, list_archive_entries
+from .archive import (
+    ARCHIVE_INCOMPLETE_ERROR,
+    ARCHIVE_NO_MODEL_FOLDERS_ERROR,
+    ArchiveListingError,
+    list_archive_entries,
+)
 from .civitai_client import CivitaiClient, CivitaiRequestError
 from .fallback_http import FallbackHttp
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
@@ -477,6 +482,7 @@ class UpdaterService:
             local_preview_url, local_preview_type = _first_preview(version_data)
             # A removed model's creator and source can only come from its info file.
             info_applies = not _replaced(stored_hash, local_hash)
+            creator_name = _creator_name(existing_info) if info_applies else ""
             return {
                 "modelPath": str(model_path),
                 "modelType": model_type,
@@ -495,7 +501,8 @@ class UpdaterService:
                 "latestVersionName": "",
                 "latestBaseModel": "",
                 "latestVersionDate": "",
-                "creatorName": _creator_name(existing_info) if info_applies else "",
+                "creatorName": creator_name,
+                "creatorStatus": _creator_status(client, creator_name) if exc.status == 404 else "",
                 "fallbackSource": _fallback_source(existing_info) if info_applies else "",
                 "previewUrl": local_preview_url,
                 "previewType": local_preview_type,
@@ -618,7 +625,11 @@ class UpdaterService:
         request_delay_seconds = max(0.0, int(config.get("requestDelayMs", 120)) / 1000.0)
 
         type_roots = resolve_model_roots(config, model_types, include_custom_paths=include_custom)
-        entries, counts = list_archive_entries(archive_root, type_roots)
+        try:
+            entries, counts = list_archive_entries(archive_root, type_roots)
+        except ArchiveListingError:
+            # A partial listing would drop archived rows: the last results stay.
+            return {"mode": "archive", "archiveError": ARCHIVE_INCOMPLETE_ERROR}, []
         if not counts["typeFolders"]:
             # Not laid out like the models folder (or an empty, unmounted mount
             # point): reporting every archived model gone would be wrong.
@@ -888,6 +899,20 @@ def _fallback_source(info: dict | None) -> str:
 def _creator_name(info: dict | None) -> str:
     creator = info.get("creator") if isinstance(info, dict) else None
     return _text(creator.get("username")) if isinstance(creator, dict) else ""
+
+
+def _creator_status(client: CivitaiClient, username: str) -> str:
+    """For a removed model: "active" if its creator still has models, "gone" if the account lists none,
+    "missing" if Civitai has no such account, "" if unknown.
+
+    One request per username per run; an unknown answer is remembered too.
+    """
+    if not username:
+        return ""
+    cache = client.creator_status_cache
+    if username not in cache:
+        cache[username] = client.creator_lookup(username) or ""
+    return cache[username]
 
 
 def _fallback_fields(info: dict, file_name: str) -> dict:

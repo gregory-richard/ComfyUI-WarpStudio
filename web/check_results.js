@@ -26,15 +26,18 @@ export function rowIssue(v) {
       ? { role: "infoonly", label: "Info only" }
       : { role: "duplicate", label: "Duplicate" };
   }
-  return v.archived ? null : ISSUE_LABELS[v.status] || null;
+  if (v.archived) return null;
+  // A file another source identified is Found, not an issue; a failed lookup still is.
+  if (v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource]) return null;
+  return ISSUE_LABELS[v.status] || null;
 }
 
 /** The row's label and the role that colours its dot. A file another source identified says Found. */
 export function rowLabel(v) {
   const issue = rowIssue(v);
-  if (issue) {
-    const found = !v.alsoArchived && v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource];
-    return { role: issue.role, label: found ? FALLBACK_LABEL : issue.label };
+  if (issue) return { role: issue.role, label: issue.label };
+  if (!v.archived && v.status === "not_found" && FALLBACK_SOURCES[v.fallbackSource]) {
+    return { role: "found", label: FALLBACK_LABEL };
   }
   // Downloaded since the check: the card stays in Updates until the next one.
   if (v.downloaded) return { role: "downloaded", label: "Downloaded" };
@@ -42,6 +45,20 @@ export function rowLabel(v) {
   return v.metadataOnly
     ? { role: "metadata", label: "Metadata" }
     : { role: "saved", label: "Saved" };
+}
+
+function removedMessage(v) {
+  if (v.status !== "error" || !v.creatorName) return "";
+  if (v.creatorStatus === "active") {
+    return `Removed from Civitai. ${v.creatorName} still has models there.`;
+  }
+  if (v.creatorStatus === "gone") {
+    return `Removed from Civitai. ${v.creatorName} has no models there any more.`;
+  }
+  if (v.creatorStatus === "missing") {
+    return `Removed from Civitai. There's no account named ${v.creatorName} there any more.`;
+  }
+  return "";
 }
 
 /** The reason printed under an issue's row. */
@@ -52,12 +69,14 @@ export function issueMessage(v) {
       : `The same version is in the archive as ${v.alsoArchived}.`;
   }
   const source = FALLBACK_SOURCES[v.fallbackSource];
+  const removed = removedMessage(v);
   if (source && (v.status === "not_found" || v.status === "error")) {
     const found = `${v.hasLocalPreview ? "Info and preview" : "Info"} from ${source.phrase}.`;
     return v.status === "not_found"
       ? `Not on Civitai. ${found}`
-      : `${v.error || "The lookup failed."} ${found}`;
+      : `${removed || v.error || "The lookup failed."} ${found}`;
   }
+  if (removed) return removed;
   if (v.status === "not_found") {
     return "Civitai has no release with this file's hash. It may be converted, merged, private, or never uploaded.";
   }

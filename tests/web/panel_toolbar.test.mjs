@@ -36,13 +36,29 @@ test("a long query is cut to 18 characters with an ellipsis", () => {
   assert.ok(!shown.includes("abcdefghijklmnopqrs"));
 });
 
-test("the filter label counts active filters", () => {
-  assert.ok(toolbarHtml({ ...base, filtered: 2 }, escapeHtml).includes("Filter · 2"));
-  assert.ok(!toolbarHtml(base, escapeHtml).includes("Filter ·"));
+const buttonOf = (html, name) => html.match(new RegExp(`<button[^>]*data-tb="${name}"[^>]*>`))[0];
+
+test("Filter is an icon; its tooltip counts active filters and a dot marks them", () => {
+  const on = buttonOf(toolbarHtml({ ...base, filtered: 2 }, escapeHtml), "filter");
+  assert.ok(
+    on.includes('title="Filter: 2 active"') && on.includes('aria-label="Filter: 2 active"')
+  );
+  assert.ok(on.includes("data-active"));
+  const off = buttonOf(toolbarHtml(base, escapeHtml), "filter");
+  assert.ok(off.includes('title="Filter"') && !off.includes("data-active"));
+  assert.ok(toolbarHtml(base, escapeHtml).includes("pi-filter"));
 });
 
-test("the sort label names the sort", () => {
-  assert.ok(toolbarHtml({ ...base, sortLabel: "Newest" }, escapeHtml).includes("Sort · Newest"));
+test("Sort is an icon whose tooltip names the sort", () => {
+  const html = toolbarHtml({ ...base, sortLabel: "Newest" }, escapeHtml);
+  assert.ok(buttonOf(html, "sort").includes('title="Sort: Newest"'));
+  assert.ok(html.includes("pi-sort-alt"));
+});
+
+test("search and info are icons too, with no emoji left", () => {
+  const html = toolbarHtml(base, escapeHtml);
+  assert.ok(html.includes("pi-search") && html.includes("pi-info-circle"));
+  assert.ok(!html.includes("🔍") && !html.includes("ⓘ") && !html.includes("▾"));
 });
 
 test("info false leaves out the info button", () => {
@@ -61,7 +77,7 @@ test("Filter leads in every tab; 🔍 and ⓘ sit at the right end", () => {
     const row = html.slice(0, html.indexOf("</div>"));
     assert.ok(
       row.indexOf("<button") ===
-        row.indexOf('<button type="button" class="cu-tb-btn" data-tb="filter"')
+        row.indexOf('<button type="button" class="cu-tb-btn cu-tb-icon" data-tb="filter"')
     );
   }
   const all = toolbarHtml(base, escapeHtml);
@@ -371,27 +387,26 @@ test("updateToolbar leaves the field and menus and patches the labels", () => {
     made.push(el);
     return el;
   };
-  const live = { search: node("🔍"), filter: node("Filter ▾"), sort: node("Sort · Name ▾") };
+  const live = { search: node(""), filter: node(""), sort: node("") };
   const root = {
     ownerDocument: {
       createElement: () => {
         const holder = {
           set innerHTML(html) {
-            const hasSearch = html.includes('data-tb="search"');
-            holder.next = {
-              search: hasSearch ? node(html.includes("cu-tb-query") ? "🔍glow" : "🔍") : null,
-              filter: node(html.match(/data-tb="filter"[^>]*>([^<]*)</)[1]),
-              sort: html.includes('data-tb="sort"')
-                ? node(html.match(/data-tb="sort"[^>]*>([^<]*)</)[1])
-                : null,
+            const parse = (name) => {
+              const m = html.match(
+                new RegExp(`(<button[^>]*data-tb="${name}"[^>]*>)([\\s\\S]*?)</button>`)
+              );
+              if (!m) return null;
+              const el = node(m[2]);
+              for (const attr of ["aria-label", "title"]) {
+                const a = m[1].match(new RegExp(`${attr}="([^"]*)"`));
+                if (a) el.attrs[attr] = a[1];
+              }
+              if (m[1].includes("data-active")) el.attrs["data-active"] = "";
+              return el;
             };
-            if (hasSearch && html.includes("data-active"))
-              holder.next.search.attrs["data-active"] = "";
-            if (hasSearch) {
-              holder.next.search.attrs["aria-label"] = html.match(
-                /data-tb="search"[^>]*aria-label="([^"]*)"/
-              )[1];
-            }
+            holder.next = { search: parse("search"), filter: parse("filter"), sort: parse("sort") };
           },
           querySelector: (sel) => holder.next[sel.match(/data-tb="(\w+)"/)[1]],
         };
@@ -401,14 +416,16 @@ test("updateToolbar leaves the field and menus and patches the labels", () => {
     querySelector: (sel) => live[sel.match(/data-tb="(\w+)"/)[1]],
   };
   updateToolbar(root, { query: "glow", filtered: 2, sortLabel: "Newest", info: true }, escapeHtml);
-  assert.equal(live.search.innerHTML, "🔍glow");
+  assert.ok(live.search.innerHTML.includes("glow"));
   assert.ok("data-active" in live.search.attrs);
   assert.equal(live.search.attrs["aria-label"], "Search: glow");
-  assert.equal(live.filter.innerHTML, "Filter · 2 ▾");
-  assert.equal(live.sort.innerHTML, "Sort · Newest ▾");
+  assert.equal(live.filter.attrs["aria-label"], "Filter: 2 active");
+  assert.ok("data-active" in live.filter.attrs);
+  assert.equal(live.sort.attrs.title, "Sort: Newest");
   updateToolbar(root, { query: "", filtered: 0, sortLabel: "Newest", info: true }, escapeHtml);
   assert.ok(!("data-active" in live.search.attrs));
-  assert.equal(live.search.innerHTML, "🔍");
+  assert.ok(!("data-active" in live.filter.attrs));
+  assert.ok(!live.search.innerHTML.includes("glow"));
 });
 
 test("the info button opens its popover like Filter and Sort", () => {

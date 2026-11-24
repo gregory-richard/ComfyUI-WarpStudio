@@ -52,7 +52,7 @@ test("rows on the drive keep their labels", () => {
   assert.deepEqual(rowLabel(row({ status: "error" })), { role: "error", label: "Error" });
   assert.deepEqual(rowLabel(row({ status: "not_found" })), { role: "nomatch", label: "No match" });
   assert.deepEqual(rowLabel(row({ status: "not_found", fallbackSource: "huggingface" })), {
-    role: "nomatch",
+    role: "found",
     label: "Found",
   });
   assert.deepEqual(rowLabel(row({ metadataOnly: true })), { role: "metadata", label: "Metadata" });
@@ -138,4 +138,59 @@ test("rowLabel: an issue still wins over Downloaded", () => {
     role: "duplicate",
     label: "Duplicate",
   });
+});
+
+test("a file another source identified is not an issue", () => {
+  const found = row({ status: "not_found", fallbackSource: "huggingface" });
+  assert.equal(rowIssue(found), null);
+  assert.deepEqual(rowLabel(found), { role: "found", label: "Found" });
+});
+
+test("a failed lookup is an issue whatever found the file", () => {
+  assert.equal(rowIssue(row({ status: "error", fallbackSource: "civarchive" })).label, "Error");
+});
+
+test("a found file that is also archived stays an issue", () => {
+  const found = row({
+    status: "not_found",
+    fallbackSource: "huggingface",
+    alsoArchived: "A.safetensors",
+  });
+  assert.equal(rowIssue(found).label, "Duplicate");
+  assert.equal(rowIssue({ ...found, infoOnly: true }).label, "Info only");
+});
+
+test("not found with no source is still an issue", () => {
+  assert.equal(rowIssue(row({ status: "not_found" })).label, "No match");
+});
+
+test("a removed model says whether its creator is still on Civitai", () => {
+  const base = { status: "error", error: "404 Not Found.", creatorName: "kermit" };
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "active" })),
+    "Removed from Civitai. kermit still has models there."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "gone" })),
+    "Removed from Civitai. kermit has no models there any more."
+  );
+  assert.equal(
+    issueMessage(
+      row({ ...base, creatorStatus: "gone", fallbackSource: "civarchive", hasLocalPreview: true })
+    ),
+    "Removed from Civitai. kermit has no models there any more. Info and preview from civarchive."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "missing" })),
+    "Removed from Civitai. There's no account named kermit there any more."
+  );
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "missing", fallbackSource: "civarchive" })),
+    "Removed from Civitai. There's no account named kermit there any more. Info from civarchive."
+  );
+  assert.equal(issueMessage(row({ ...base, creatorStatus: "" })), "404 Not Found.");
+  assert.equal(
+    issueMessage(row({ ...base, creatorStatus: "active", creatorName: "" })),
+    "404 Not Found."
+  );
 });
