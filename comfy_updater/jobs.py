@@ -798,10 +798,12 @@ def _build_group(
                     "error": member.get("error", ""),
                     "creatorName": member.get("creatorName", ""),
                     "creatorStatus": member.get("creatorStatus", ""),
-                    "downloaded": _added_after(member, downloaded_after),
+                    "downloaded": not member.get("deleted") and _added_after(member, downloaded_after),
+                    "deleted": bool(member.get("deleted")),
                 }
             )
-        if local_version_id:
+        # A deleted file is not held any more: its release can be new again.
+        if local_version_id and not member.get("deleted"):
             local_version_ids.add(local_version_id)
 
         for remote_version in member.get("remoteVersions", []):
@@ -839,6 +841,7 @@ def _build_group(
             local_version["alsoArchived"] = archived_names[version_id]
             if local_version.get("metadataOnly"):
                 local_version["infoOnly"] = True
+    _mark_deleted_issues(local_versions)
     archived_only = bool(local_versions) and all(version.get("archived") for version in local_versions)
 
     # A local version without a date cannot be compared, and an empty newest
@@ -855,7 +858,9 @@ def _build_group(
         key=lambda version: (version.get("publishedAt", ""), (version.get("versionName") or "").lower()),
         reverse=True,
     )
-    newest_local_date = max((version.get("publishedAt", "") for version in local_versions if version.get("publishedAt")), default="")
+    # A deleted file is not held: the newest release you have decides what is new.
+    held = [version for version in local_versions if not version.get("deleted")] or local_versions
+    newest_local_date = max((version.get("publishedAt", "") for version in held if version.get("publishedAt")), default="")
 
     candidates = []
     # With no usable local date there is nothing to compare against, so no
@@ -915,6 +920,7 @@ def _build_group(
         # provisional; one whose files were re-checked already is final.
         "isProvisional": provisional and any(member.get("_seeded") for member in members),
         "issueCount": issue_count,
+        "deletedIssues": sum(1 for version in local_versions if version.get("issueWas")),
         "archived": archived_only,
         "hasUpdate": bool(new_versions),
         "hasHiddenUpdates": bool(hidden_versions),
@@ -974,8 +980,10 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
             "error": item.get("error", ""),
             "creatorName": item.get("creatorName", ""),
             "creatorStatus": item.get("creatorStatus", ""),
+            "deleted": bool(item.get("deleted")),
         }
     ]
+    _mark_deleted_issues(local_versions)
     return {
         "modelId": "",
         "modelType": item.get("modelType", ""),
@@ -984,6 +992,7 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
         "modelUrl": item.get("modelUrl", ""),
         "isProvisional": provisional and bool(item.get("_seeded")),
         "issueCount": 1 if _is_issue(local_versions[0]) else 0,
+        "deletedIssues": 1 if local_versions[0].get("issueWas") else 0,
         "archived": False,
         "hasUpdate": False,
         "hasHiddenUpdates": False,
@@ -1036,7 +1045,23 @@ def _sort_grouped(items: list[dict], sort: str | None) -> list[dict]:
 
 
 def _is_issue(version: dict) -> bool:
-    """Whether a drive row belongs in Issues. Archived rows never do; a found file only when also archived."""
+    """Whether a drive row belongs in Issues. Archived rows never do; a found file only when also archived.
+
+    A deleted row is no issue any more; ``issueWas`` keeps its card listed until the next check.
+    """
+    if version.get("deleted"):
+        return False
+    return _issue_kind(version)
+
+
+def _mark_deleted_issues(local_versions: list[dict]) -> None:
+    """Flag each deleted row that was an issue, so Issues keeps listing it (not counting it)."""
+    for version in local_versions:
+        if version.get("deleted") and _issue_kind(version):
+            version["issueWas"] = True
+
+
+def _issue_kind(version: dict) -> bool:
     if version.get("archived"):
         return False
     if version.get("alsoArchived"):
@@ -1054,7 +1079,7 @@ def _in_mode(group: dict, mode: str, show_hidden: bool, *, with_downloaded: bool
             or (with_downloaded and group.get("downloaded"))
         )
     if mode == "issues":
-        return bool(group.get("issueCount"))
+        return bool(group.get("issueCount") or (with_downloaded and group.get("deletedIssues")))
     return True
 
 

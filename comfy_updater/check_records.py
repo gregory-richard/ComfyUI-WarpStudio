@@ -27,25 +27,24 @@ def _norm(path: object) -> str:
 
 
 def edit_check_items(items: list[dict], *, remove: Iterable[str], add: list[dict]) -> bool:
-    """Drop the items whose ``modelPath`` or ``filePath`` is in ``remove``, then add ``add``.
+    """Mark the items whose ``modelPath`` or ``filePath`` is in ``remove`` deleted, then add ``add``.
 
-    An added item replaces the item with its ``modelPath``, or else is appended.
-    The list changes in place; True when anything changed.
+    A deleted item keeps its row, so its card says Deleted until the next check,
+    which no longer finds the file. An added item replaces the item with its
+    ``modelPath``, or else is appended. The list changes in place; True when
+    anything changed.
     """
     gone = {_norm(path) for path in remove} - {""}
     changed = False
     if gone:
-        kept = [
-            item
-            for item in items
-            if not (
+        for item in items:
+            if (
                 isinstance(item, dict)
+                and not item.get("deleted")
                 and (_norm(item.get("modelPath")) in gone or _norm(item.get("filePath")) in gone)
-            )
-        ]
-        if len(kept) != len(items):
-            items[:] = kept
-            changed = True
+            ):
+                item["deleted"] = True
+                changed = True
     for new in add:
         key = _norm(new.get("modelPath"))
         index = next(
@@ -96,7 +95,7 @@ def _update_locked(job_manager, data_dir: Path, remove: list[str], add: list[dic
         summary if isinstance(summary, dict) else {},
         [item for item in items if isinstance(item, dict)],
     )
-    summary["total"] = len(items)
+    summary["total"] = sum(1 for item in items if isinstance(item, dict) and not item.get("deleted"))
     payload["summary"] = summary
     write_json(path, payload)
 

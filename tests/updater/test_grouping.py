@@ -332,6 +332,37 @@ class GroupingTests(unittest.TestCase):
         groups = self._groups([self._found("", ""), self._found("m2", "")])
         self.assertEqual([1, 1], [g["issueCount"] for g in groups])
 
+    def test_a_deleted_row_stays_on_its_card_marked_deleted(self) -> None:
+        remote = [self._remote("1", "2026-01-01T00:00:00Z"), self._remote("2", "2026-03-01T00:00:00Z")]
+        old = {**self._on_d("m1", "1", "2026-01-01T00:00:00Z", remote), "deleted": True}
+        new = self._on_d("m1", "2", "2026-03-01T00:00:00Z", remote)
+        groups = self._groups([old, new])
+        self.assertEqual(1, len(groups))
+        rows = {v["versionId"]: v["deleted"] for v in groups[0]["localVersions"]}
+        self.assertEqual({"1": True, "2": False}, rows)
+        self.assertEqual(0, groups[0]["issueCount"])
+
+    def test_a_deleted_version_is_new_again(self) -> None:
+        remote = [self._remote("1", "2026-01-01T00:00:00Z"), self._remote("2", "2026-03-01T00:00:00Z")]
+        kept = self._on_d("m1", "1", "2026-01-01T00:00:00Z", remote)
+        gone = {**self._on_d("m1", "2", "2026-03-01T00:00:00Z", remote), "deleted": True}
+        groups = self._groups([kept, gone])
+        self.assertTrue(groups[0]["hasUpdate"])
+        self.assertEqual(["2"], [v["versionId"] for v in groups[0]["newVersions"]])
+
+    def test_a_deleted_issue_stays_listed_in_issues_but_is_not_counted(self) -> None:
+        self.job.items = [
+            {**self._on_d("m1", "7", "2026-01-01T00:00:00Z"), "deleted": True},
+            self._archived("m1", "7", "2026-01-01T00:00:00Z", name="Copy"),
+            {**self._found("m2", ""), "deleted": True},
+        ]
+        result = self.manager.get_items("job-1", mode="issues", limit=50)
+        self.assertEqual(2, result["total"])
+        self.assertEqual(0, result["modeCounts"]["issues"])
+        deleted = [v for card in result["items"] for v in card["localVersions"] if v.get("deleted")]
+        self.assertEqual(2, len(deleted))
+        self.assertTrue(all(v.get("issueWas") for v in deleted))
+
     def test_duplicates_and_info_only_files_both_show_in_issues(self) -> None:
         self.job.items = [
             self._on_d("m1", "7", "2026-01-01T00:00:00Z"),

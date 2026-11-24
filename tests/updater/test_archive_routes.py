@@ -543,6 +543,17 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
 
 
 class LastCheckAndStatsTests(_ArchiveRoutesCase):
+    def test_a_deleted_row_is_not_a_change_on_the_drive(self) -> None:
+        gone = self.d_item(modelPath=self.d_path + ".old", filePath=self.d_path + ".old", deleted=True)
+        self.write_last_check([self.d_item(), gone])
+        self.service.current_paths = {self.d_path.lower()}
+
+        status, body = self.call("GET", LAST_CHECK_ROUTE)
+
+        self.assertEqual(200, status)
+        self.assertEqual((0, 0), (body["data"]["filesAdded"], body["data"]["filesRemoved"]))
+        self.assertFalse(body["data"]["filesChanged"])
+
     def test_last_check_shows_archived_rows_and_the_archive_summary(self) -> None:
         self.write_last_check([self.d_item()])
         saved = self.save_archive([self.z_item()])

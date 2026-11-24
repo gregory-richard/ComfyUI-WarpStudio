@@ -1310,7 +1310,8 @@ class DownloadRouteTests(_Dirs):
         self.assertEqual("glow.safetensors", body["removed"][0])
         self.assertEqual(3, len(body["removed"]))
         self.assertFalse(weights.exists())
-        self.assertEqual([], self.jobs.get("check-1").items)
+        # The row stays, marked deleted, until the next check.
+        self.assertEqual([True], [item.get("deleted") for item in self.jobs.get("check-1").items])
 
     def test_delete_file_refuses_a_path_the_check_does_not_list(self) -> None:
         other = self.folder / "other.safetensors"
