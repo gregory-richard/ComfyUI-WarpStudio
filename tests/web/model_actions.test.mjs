@@ -11,6 +11,8 @@ import {
   percent,
   recordMessage,
   rowDeleteHtml,
+  rowDownloadView,
+  rowHideHtml,
   slotState,
   versionActionsHtml,
   versionKey,
@@ -67,50 +69,134 @@ test("slotState maps every record state", () => {
   assert.equal(slotState(rec({ state: "stopped" })), "idle");
 });
 
+const slotOf = (html) => html.match(/^<span class="cu-slot"[^>]*>([\s\S]*)<\/span>$/);
+const icons = (html) =>
+  [...html.matchAll(/<i class="pi ([^"]+)" aria-hidden="true"><\/i>/g)].map((m) => m[1]);
+const buttons = (html) => [...html.matchAll(/<button\b[^>]*>/g)].map((m) => m[0]);
+
 test("versionActionsHtml offers Replace only when the version can be replaced", () => {
   const plain = versionActionsHtml({ paid: false, canReplace: false }, undefined, escapeHtml);
   assert.ok(plain.includes('data-dl-action="download"'));
   assert.ok(!plain.includes('data-dl-action="replace"'));
+  assert.deepEqual(icons(plain), ["pi-download"]);
   const both = versionActionsHtml({ paid: false, canReplace: true }, undefined, escapeHtml);
   assert.ok(both.includes('data-dl-action="replace"'));
+  assert.deepEqual(icons(both), ["pi-download", "pi-sync"]);
   assert.ok(
     both.includes("Download this release, then send the version you have to the Recycle Bin")
   );
-  const afterError = versionActionsHtml(
-    { paid: false, canReplace: true },
-    rec({ state: "error" }),
-    escapeHtml
-  );
-  assert.ok(afterError.includes('data-dl-action="download"'));
+  for (const b of buttons(both)) {
+    assert.ok(b.includes('class="cu-icon-btn"'));
+    assert.ok(/ title="[^"]+"/.test(b));
+    assert.ok(/ aria-label="[^"]+"/.test(b));
+  }
+  assert.ok(buttons(plain)[0].includes('aria-label="Download this release"'));
 });
 
 test("versionActionsHtml shows Early access instead of the buttons", () => {
   const html = versionActionsHtml({ paid: true, canReplace: true }, undefined, escapeHtml);
   assert.ok(html.includes('<span class="cu-dl-note">Early access</span>'));
   assert.ok(!html.includes("data-dl-action"));
+  assert.ok(slotOf(html));
 });
 
-test("versionActionsHtml shows Waiting with Cancel and the percentage with Stop", () => {
+test("versionActionsHtml: waiting is a clock with its reason and Cancel", () => {
   const waiting = versionActionsHtml(
     { paid: false, canReplace: false },
-    rec({ id: "r9" }),
+    rec({ id: "r9", waitingFor: "check-updates" }),
     escapeHtml
   );
-  assert.ok(waiting.includes(">Waiting<"));
+  assert.deepEqual(icons(waiting), ["pi-clock", "pi-times"]);
+  assert.ok(waiting.includes('title="Waiting for the check"'));
   assert.ok(waiting.includes('data-dl-action="stop" data-request-id="r9"'));
-  assert.ok(waiting.includes(">Cancel<"));
+  assert.ok(waiting.includes('aria-label="Cancel"'));
+  assert.ok(!waiting.includes(">Waiting"));
+});
+
+test("versionActionsHtml: downloading is the percentage in mono and Stop", () => {
   const running = versionActionsHtml(
     { paid: false, canReplace: false },
     rec({ id: "r9", state: "downloading", written: 42, total: 100 }),
     escapeHtml
   );
-  assert.ok(running.includes(">42%<"));
-  assert.ok(running.includes(">Stop<"));
+  assert.ok(running.includes('<span class="cu-dl-pct">42%</span>'));
+  assert.deepEqual(icons(running), ["pi-stop-circle"]);
+  assert.ok(running.includes('aria-label="Stop"'));
   const unknown = versionActionsHtml({ paid: false }, rec({ state: "downloading" }), escapeHtml);
-  assert.ok(unknown.includes(">Downloading<"));
+  assert.ok(unknown.includes('<span class="cu-dl-pct">…</span>'));
+});
+
+test("versionActionsHtml: done is a check, error is Retry", () => {
   const done = versionActionsHtml({ paid: false }, rec({ state: "done" }), escapeHtml);
-  assert.ok(done.includes(">Downloaded<"));
-  assert.ok(!done.includes("data-dl-action"));
+  assert.deepEqual(icons(done), ["pi-check"]);
+  assert.ok(done.includes('title="Downloaded"'));
+  assert.ok(!done.includes("data-dl-action") && !done.includes("<button"));
+  const failed = versionActionsHtml(
+    { paid: false, canReplace: true },
+    rec({ state: "error", error: "x" }),
+    escapeHtml
+  );
+  assert.deepEqual(icons(failed), ["pi-refresh"]);
+  assert.ok(failed.includes('data-dl-action="download"'));
+  assert.ok(failed.includes('aria-label="Retry"'));
+  // A failed Replace retries as a Replace.
+  const failedReplace = versionActionsHtml(
+    { paid: false, canReplace: true },
+    rec({ state: "error", replace: true }),
+    escapeHtml
+  );
+  assert.ok(failedReplace.includes('data-dl-action="replace"'));
+  assert.ok(failedReplace.includes(`title="${COPY.replaceTitle}"`));
+});
+
+test("every download state sits in one slot element", () => {
+  const states = [
+    [{ paid: false, canReplace: true }, undefined],
+    [{ paid: false }, rec()],
+    [{ paid: false }, rec({ state: "downloading", written: 1, total: 2 })],
+    [{ paid: false }, rec({ state: "done" })],
+    [{ paid: false }, rec({ state: "error" })],
+    [{ paid: true }, undefined],
+  ];
+  for (const [slot, record] of states) {
+    const html = versionActionsHtml(slot, record, escapeHtml);
+    assert.ok(slotOf(html), html);
+    // At most two icon buttons, so one fixed width fits all.
+    assert.ok(buttons(html).length <= 2);
+  }
+});
+
+test("rowDownloadView: no record, waiting, downloading, done, error", () => {
+  assert.deepEqual(rowDownloadView(undefined), { state: "idle", pct: null, failure: "" });
+  assert.deepEqual(rowDownloadView(rec()), { state: "waiting", pct: null, failure: "" });
+  assert.deepEqual(rowDownloadView(rec({ state: "downloading", written: 25, total: 100 })), {
+    state: "downloading",
+    pct: 25,
+    failure: "",
+  });
+  assert.equal(rowDownloadView(rec({ state: "downloading" })).pct, null);
+  assert.deepEqual(rowDownloadView(rec({ state: "done", written: 5, total: 5 })), {
+    state: "done",
+    pct: null,
+    failure: "",
+  });
+  assert.deepEqual(rowDownloadView(rec({ state: "error", error: "No space left" })), {
+    state: "error",
+    pct: null,
+    failure: "No space left",
+  });
+});
+
+test("rowHideHtml: Hide and Unhide are icon buttons", () => {
+  const hide = rowHideHtml(false, "7", "8", escapeHtml);
+  assert.deepEqual(icons(hide), ["pi-eye-slash"]);
+  assert.ok(hide.includes('data-archive-action="archive"'));
+  assert.ok(hide.includes('aria-label="Hide"') && hide.includes('title="Hide"'));
+  const unhide = rowHideHtml(true, "7", "8", escapeHtml);
+  assert.deepEqual(icons(unhide), ["pi-eye"]);
+  assert.ok(unhide.includes('data-archive-action="restore"'));
+  assert.ok(unhide.includes('aria-label="Unhide"'));
+  assert.ok(!rowHideHtml(false, '"><b>', "8", escapeHtml).includes("<b>"));
 });
 
 test("versionActionsHtml escapes the request id", () => {
@@ -233,18 +319,18 @@ test("a waiting record names the job it waits for", () => {
   assert.equal(galleryStateText(rec({ state: "waiting" }), {}), "Waiting");
 });
 
-test("a waiting version row shows what it waits for in the slot and no second line", () => {
+test("a waiting version row shows what it waits for in the slot's title and no second line", () => {
   const slot = { paid: false, canReplace: true };
   const html = versionActionsHtml(slot, rec({ waitingFor: "check-updates" }), escapeHtml);
-  assert.ok(html.includes(">Waiting for the check<"));
-  assert.ok(html.includes(">Cancel<"));
+  assert.ok(html.includes('title="Waiting for the check"'));
+  assert.ok(html.includes('aria-label="Cancel"'));
   assert.equal(recordMessage(rec({ waitingFor: "check-updates" })), "");
   assert.ok(
     versionActionsHtml(slot, rec({ waitingFor: "other-job" }), escapeHtml).includes(
-      ">Waiting for another job<"
+      'title="Waiting for another job"'
     )
   );
-  assert.ok(versionActionsHtml(slot, rec(), escapeHtml).includes(">Waiting<"));
+  assert.ok(versionActionsHtml(slot, rec(), escapeHtml).includes('title="Waiting"'));
   const hostile = versionActionsHtml(slot, rec({ id: "r1", waitingFor: "<b>" }), escapeHtml);
   assert.ok(!hostile.includes("<b>"));
 });
@@ -256,7 +342,9 @@ test("rowDeleteHtml: a file on this drive gets Delete with its path", () => {
   const html = rowDeleteHtml(onDrive(), { canTrash: true }, escapeHtml);
   assert.ok(html.includes('data-row-action="delete"'));
   assert.ok(html.includes('data-path="D:/m/a.safetensors"'));
-  assert.ok(html.includes(`>${COPY.delete}<`));
+  assert.deepEqual(icons(html), ["pi-trash"]);
+  assert.ok(html.includes('class="cu-icon-btn cu-ver-del"'));
+  assert.ok(html.includes(`aria-label="${COPY.deleteTitleFor("version")}"`));
 });
 
 test("rowDeleteHtml: never for the archive, an info file alone, no path, or without the Recycle Bin", () => {
@@ -270,10 +358,14 @@ test("rowDeleteHtml: never for the archive, an info file alone, no path, or with
 test("rowDeleteHtml: asks, then deletes", () => {
   const asking = rowDeleteHtml(onDrive(), { canTrash: true, confirming: true }, escapeHtml);
   assert.ok(asking.includes("data-confirm"));
-  assert.ok(asking.includes(`>${COPY.deleteAsk}<`));
+  assert.deepEqual(icons(asking), ["pi-trash"]);
+  assert.equal(COPY.deleteConfirmTitle, "Click again to send it to the Recycle Bin");
+  assert.ok(asking.includes(`title="${COPY.deleteConfirmTitle}"`));
+  assert.ok(asking.includes(`aria-label="${COPY.deleteConfirmTitle}"`));
   const deleting = rowDeleteHtml(onDrive(), { canTrash: true, deleting: true }, escapeHtml);
   assert.ok(deleting.includes("disabled"));
-  assert.ok(deleting.includes(`>${COPY.deleting}<`));
+  assert.deepEqual(icons(deleting), ["pi-spin pi-spinner"]);
+  assert.ok(deleting.includes(`aria-label="${COPY.deleting}"`));
 });
 
 test("rowDeleteHtml: the path is escaped", () => {

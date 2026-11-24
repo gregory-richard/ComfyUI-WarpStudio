@@ -10,8 +10,9 @@ import {
   galleryKey,
   isPaid,
   latestRecords,
-  recordMessage,
   rowDeleteHtml,
+  rowDownloadView,
+  rowHideHtml,
   versionActionsHtml,
   versionKey,
 } from "./model_actions.js";
@@ -2193,13 +2194,25 @@ function paintDownloads() {
         escapeHtml,
       );
       if (slot.innerHTML !== html) slot.innerHTML = html;
-    }
-    for (const msg of root.querySelectorAll("[data-dl-msg]")) {
-      const text = recordMessage(state.downloads.get(msg.dataset.dlMsg));
-      if (msg.textContent !== text) msg.textContent = text;
+      paintRowDownload(slot.closest(".cu-ver-row"), rowDownloadView(record));
     }
   }
   state.galleryView?.paintDownloads?.();
+}
+
+// The row's own state: a bar along its bottom edge and, for a failure, the reason in
+// place of the version name. Attributes and text only, so the row never changes size.
+function paintRowDownload(row, view) {
+  if (!row) return;
+  if (row.dataset.dlState !== view.state) row.dataset.dlState = view.state;
+  const pct = `${view.pct ?? 0}%`;
+  if (row.style.getPropertyValue("--cu-dl-pct") !== pct) row.style.setProperty("--cu-dl-pct", pct);
+  const fail = row.querySelector(".cu-ver-fail");
+  if (fail) {
+    if (fail.textContent !== view.failure) fail.textContent = view.failure;
+    if (view.failure) fail.title = view.failure;
+    else fail.removeAttribute("title");
+  }
 }
 
 async function startDownload(payload, key) {
@@ -2449,9 +2462,7 @@ function renderRemoteVersionRow(item, version, hidden) {
   const link = version.versionUrl
     ? `<a class="cu-ver-link" href="${escapeHtml(version.versionUrl)}" target="_blank" rel="noreferrer noopener" title="${name}">${name}</a>`
     : `<span class="cu-ver-link" title="${name}">${name}</span>`;
-  const action = hidden
-    ? `<button class="cu-inline-btn" data-archive-action="restore" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Unhide</button>`
-    : `<button class="cu-inline-btn" data-archive-action="archive" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}">Hide</button>`;
+  const action = rowHideHtml(hidden, modelId, version.versionId, escapeHtml);
   const accessBadge = renderPaidBadge(version) || renderAvailabilityBadge(version.availability);
   const hiddenClass = hidden ? " is-hidden" : "";
   // The download slot: painted in place while a download runs, so the row keeps its size.
@@ -2462,22 +2473,23 @@ function renderRemoteVersionRow(item, version, hidden) {
   const record = state.downloads.get(key);
   const paid = isPaid(version);
   const slot = versionActionsHtml({ paid, canReplace }, record, escapeHtml);
+  const view = rowDownloadView(record);
   const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(current?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}">${slot}</span>`;
   return `
-    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}">
+    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" style="--cu-dl-pct: ${view.pct ?? 0}%">
       <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>
       <span class="cu-ver-date">${escapeHtml(date)}</span>
       <span class="cu-ver-base">${escapeHtml(version.baseModel || "—")}</span>
       <span class="cu-ver-main">
         ${link}
         ${accessBadge}
+        <span class="cu-ver-fail"${view.failure ? ` title="${escapeHtml(view.failure)}"` : ""}>${escapeHtml(view.failure)}</span>
       </span>
       <span class="cu-ver-acts">
         ${dlSlot}
         ${action}
       </span>
-    </div>
-    <div class="cu-issue-msg cu-dl-msg" data-dl-msg="${escapeHtml(key)}">${escapeHtml(recordMessage(record))}</div>`;
+    </div>`;
 }
 
 /* Buzz: downloading the release costs Buzz. Early access is free from its end
@@ -4654,7 +4666,7 @@ function injectStyles() {
       align-items: center;
       justify-content: flex-end;
       gap: 6px;
-      height: 20px;
+      height: 22px;
       min-width: 0;
       flex: 0 1 auto;
     }
@@ -4662,11 +4674,128 @@ function injectStyles() {
     /* The actions never take more than 46% of the row (fit-content above): a long
        note gives way with an ellipsis, so the version name keeps some characters. */
     .cu-dl {
+      display: block;
+      width: 72px;
+      height: 22px;
+      flex: 0 0 72px;
+    }
+
+    /* One slot, one width: every state fits two icon buttons, or the percentage and a button. */
+    .cu-slot {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      width: 100%;
+      height: 22px;
+    }
+
+    .cu-icon-btn {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      min-width: 0;
-      flex: 0 1 auto;
+      justify-content: center;
+      box-sizing: border-box;
+      width: 24px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid var(--cu-seam-strong);
+      background: transparent;
+      color: var(--cu-dust);
+      border-radius: 4px;
+      font-size: 11px;
+      line-height: 1;
+      cursor: pointer;
+      flex: 0 0 24px;
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .cu-icon-btn:hover:not(:disabled) {
+      border-color: var(--cu-dust);
+      color: var(--cu-bone);
+    }
+
+    .cu-icon-btn:disabled {
+      cursor: default;
+    }
+
+    .cu-icon-btn[data-confirm] {
+      border-color: var(--cu-red);
+      color: var(--cu-red);
+      background: var(--cu-red-dim);
+    }
+
+    .cu-dl-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 22px;
+      flex: 0 0 24px;
+      font-size: 11px;
+      color: var(--cu-dust);
+    }
+
+    .cu-dl-icon.is-done {
+      color: var(--cu-moss);
+    }
+
+    .cu-dl-pct {
+      flex: 0 0 34px;
+      width: 34px;
+      text-align: right;
+      font-family: var(--cu-mono);
+      font-variant-numeric: tabular-nums;
+      font-size: 9.5px;
+      color: var(--cu-dust);
+      white-space: nowrap;
+    }
+
+    /* The row's download state: a 2px bar along its bottom edge, drawn in the row's own
+       space, and a failure that takes the version name's place. Neither adds any height. */
+    .cu-ver-row[data-dl-state] {
+      position: relative;
+      min-height: 22px;
+    }
+
+    .cu-ver-row[data-dl-state]::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 2px;
+      width: var(--cu-dl-pct, 0%);
+      background: var(--cu-moss);
+      border-radius: 1px;
+      opacity: 0;
+      pointer-events: none;
+      transition: width 0.4s linear, opacity 0.15s ease;
+    }
+
+    .cu-ver-row[data-dl-state="downloading"]::after {
+      opacity: 1;
+    }
+
+    .cu-ver-main {
+      position: relative;
+    }
+
+    .cu-ver-fail {
+      position: absolute;
+      inset: 0;
+      display: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      line-height: 22px;
+      color: var(--cu-red-soft);
+    }
+
+    .cu-ver-row[data-dl-state="error"] .cu-ver-main > :not(.cu-ver-fail) {
+      visibility: hidden;
+    }
+
+    .cu-ver-row[data-dl-state="error"] .cu-ver-fail {
+      display: block;
     }
 
     .cu-dl-note {
@@ -4677,10 +4806,6 @@ function injectStyles() {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-
-    .cu-dl-msg:empty {
-      display: none;
     }
 
     .cu-inline-btn:hover {
