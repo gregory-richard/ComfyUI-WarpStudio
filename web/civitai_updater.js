@@ -5466,7 +5466,7 @@ function injectStyles() {
     }
 
     /* Top row: the pill. The right is left to the link out. */
-    .cu-g-top {
+    .cu-g-pills {
       position: absolute;
       top: 6px;
       left: 6px;

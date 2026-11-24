@@ -142,7 +142,7 @@ export function cardHtml(model, ui, escapeHtml) {
     `<div class="cu-g-card" data-g-key="${esc(model.key)}"${marked}${model.missing ? " data-missing" : ""}>` +
     `<button type="button" class="cu-g-pick" title="${esc(model.stem)}"${model.missing ? ' aria-disabled="true"' : ""}>` +
     `<span class="cu-g-thumb">${thumb}</span>` +
-    `<span class="cu-g-top">${pill}</span>` +
+    `<span class="cu-g-pills">${pill}</span>` +
     `<span class="cu-g-info">` +
     `<span class="cu-g-by">${picture}<span class="cu-g-creator">${esc(model.creator)}</span>${badge}</span>` +
     `<span class="cu-g-title">${esc(model.title)}${suffix}</span>` +

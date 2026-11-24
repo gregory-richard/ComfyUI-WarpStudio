@@ -343,10 +343,17 @@ test("cardHtml draws the sorted stat brighter", () => {
   assert.ok(!quiet.includes("cu-g-hot"));
 });
 
+test("cardHtml's pill row has a class of its own, not the Gallery head's", () => {
+  // The head (type switch and target line) is .cu-g-top; the card's row is placed absolutely.
+  const html = cardHtml(model(), ui(), escapeHtml);
+  assert.ok(html.includes('<span class="cu-g-pills">'));
+  assert.ok(!html.includes("cu-g-top"));
+});
+
 test("cardHtml keeps the trigger badge on the creator line, clear of the pill", () => {
   const html = cardHtml(model({ triggers: 2 }), ui(), escapeHtml);
   const top = html.slice(
-    html.indexOf('<span class="cu-g-top">'),
+    html.indexOf('<span class="cu-g-pills">'),
     html.indexOf('<span class="cu-g-info">')
   );
   assert.ok(top.includes("cu-g-pill"));
@@ -367,7 +374,7 @@ test("cardHtml draws the whole card as the image with the info overlaid", () => 
   // Only the picture is the thumb: what a blur would hit holds no text.
   const thumb = face.slice(
     face.indexOf('<span class="cu-g-thumb">'),
-    face.indexOf('<span class="cu-g-top">')
+    face.indexOf('<span class="cu-g-pills">')
   );
   assert.ok(!thumb.includes("cu-g-info"));
   assert.ok(!thumb.includes("cu-g-pill"));
