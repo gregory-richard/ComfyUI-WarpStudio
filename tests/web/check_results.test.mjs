@@ -139,3 +139,27 @@ test("rowLabel: an issue still wins over Downloaded", () => {
     label: "Duplicate",
   });
 });
+
+test("a file another source identified is not an issue", () => {
+  const found = row({ status: "not_found", fallbackSource: "huggingface" });
+  assert.equal(rowIssue(found), null);
+  assert.deepEqual(rowLabel(found), { role: "nomatch", label: "Found" });
+});
+
+test("a failed lookup is an issue whatever found the file", () => {
+  assert.equal(rowIssue(row({ status: "error", fallbackSource: "civarchive" })).label, "Error");
+});
+
+test("a found file that is also archived stays an issue", () => {
+  const found = row({
+    status: "not_found",
+    fallbackSource: "huggingface",
+    alsoArchived: "A.safetensors",
+  });
+  assert.equal(rowIssue(found).label, "Duplicate");
+  assert.equal(rowIssue({ ...found, infoOnly: true }).label, "Info only");
+});
+
+test("not found with no source is still an issue", () => {
+  assert.equal(rowIssue(row({ status: "not_found" })).label, "No match");
+});
