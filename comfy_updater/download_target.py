@@ -1,9 +1,10 @@
 """Where an Updates download goes and what it is called.
 
 The renamer names the new release as a dry run would (with the AI naming
-model), and the file lands in its base's home folder. Without a usable AI name
-it keeps Civitai's file name. A name already taken, or a Civitai file name that
-is not a plain file name, is refused, and nothing goes outside the model roots.
+model), and the file lands in its base's home folder. A base with no code yet
+takes the AI's code. Without a usable AI name it keeps Civitai's file name. A
+name already taken, or a Civitai file name that is not a plain file name, is
+refused, and nothing goes outside the model roots.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from .constants import INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX, SUPPORTED_MODEL_EXTENSIONS
 from .model_download import DownloadError, file_sha256
@@ -58,11 +59,23 @@ def stem_taken(folder: Path, stem: str) -> bool:
     return any(name.lower() in wanted for name in names)
 
 
-def base_folder(type_roots: list[Path], reference_folder: Path, code: str) -> Path | None:
-    """The home folder of a base code beside the reference folder (or below it), else None.
+class AiName(NamedTuple):
+    stem: str
+    code: str
+    # The base model whose code is the AI's, not yet in the table; "" for a known base.
+    new_base: str
 
-    Homes are judged as the dry run judges them, from the names of the files on
-    disk: one row per weights file or info file (the two of one stem counted once).
+
+def base_folder(type_roots: list[Path], reference_folder: Path, code: str) -> Path | None:
+    """The home folder of a base code beside the reference folder (or below it), else None."""
+    return _home_beside(_homes(type_roots), reference_folder, code)
+
+
+def _homes(type_roots: list[Path]) -> dict:
+    """{(parent folder, base code): home folder}, judged as the dry run judges them.
+
+    From the names of the files on disk: one row per weights file or info file
+    (the two of one stem counted once).
     """
     rows: list[dict] = []
     walked = set()
@@ -84,11 +97,26 @@ def base_folder(type_roots: list[Path], reference_folder: Path, code: str) -> Pa
             rows.extend(
                 {"folder": folder, "oldStem": stem, "status": "kept"} for stem in stems.values()
             )
-    homes = home_folders(rows)
+    return home_folders(rows)
+
+
+def _home_beside(homes: dict, reference_folder: Path, code: str) -> Path | None:
     for parent in (reference_folder.parent, reference_folder):
         home = homes.get((_norm(str(parent)), code))
         if home:
             return Path(home)
+    return None
+
+
+def _new_home(homes: dict, reference_folder: Path, code: str) -> Path | None:
+    """A folder named after a base with no home yet, beside the old version's folder when that
+    folder is named after its own base (a library kept one folder per base), else None."""
+    if not _bare_name(code):
+        return None
+    here = _norm(str(reference_folder))
+    for (_parent, home_code), home in homes.items():
+        if _norm(home) == here and home_code.lower() == reference_folder.name.lower():
+            return reference_folder.parent / code
     return None
 
 
@@ -127,10 +155,12 @@ def ai_stem(
     cache,
     clip_name: str,
     should_stop: Callable[[], bool],
-) -> tuple[str, str] | None:
-    """(new stem, base code) for one release as a dry run names it, else None.
+) -> AiName | None:
+    """The new stem and base code for one release as a dry run names it, else None.
 
-    None when the renamer skips the type or the name needs a look. The new file
+    None when the renamer skips the type or the name needs a look. A base with
+    no code yet is no reason to look: the AI's code is used (``new_base`` says
+    so), unless it gave none. The new file
     stands in under the name the user gave the version they have, so the renamer
     reads a creator from it when Civitai has none and judges an official file by
     it. A Civitai or naming-model error propagates.
@@ -178,9 +208,14 @@ def ai_stem(
     row = next((row for row in rows if row.get("key") == key), None)
     if row is None or row.get("status") not in ("change", "unchanged"):
         return None
-    if needs_review(row.get("flags")):
+    flags = list(row.get("flags") or [])
+    new_base = "new-base-code" in flags
+    if needs_review([flag for flag in flags if flag != "new-base-code"]):
         return None
-    return row["newStem"], row["parts"]["base"]
+    code = row["parts"]["base"]
+    if new_base and not code:
+        return None
+    return AiName(row["newStem"], code, str(row.get("baseModel") or "") if new_base else "")
 
 
 def _bare_name(name: str) -> bool:
@@ -203,7 +238,9 @@ def choose_target(
 ) -> Target:
     """Where the release's file goes: the AI's name if free, else Civitai's, in its base's home.
 
-    A base with no home there keeps the file beside the old version.
+    A base with no home there gets a folder of its own beside the old version's
+    when that one is named after its base; otherwise the file stays beside the
+    old version. The folder is not made here.
     """
     name = file.get("name") if isinstance(file, dict) else None
     name = name if isinstance(name, str) else ""
@@ -213,7 +250,10 @@ def choose_target(
     if not inside_roots(reference_folder, type_roots):
         raise DownloadError(OUTSIDE_ROOTS_MESSAGE)
     code = named[1] if named and named[1] else fallback_code
-    folder = (base_folder(type_roots, reference_folder, code) if code else None) or reference_folder
+    folder = reference_folder
+    if code:
+        homes = _homes(type_roots)
+        folder = _home_beside(homes, reference_folder, code) or _new_home(homes, reference_folder, code) or folder
     if not inside_roots(folder, type_roots):
         raise DownloadError(OUTSIDE_ROOTS_MESSAGE)
     if named and _bare_name(named[0] + suffix) and not stem_taken(folder, named[0]):

@@ -46,6 +46,7 @@ NO_FILE_ERROR = "Civitai lists no model file for this release."
 FILE_GONE_ERROR = "Civitai no longer has this file."
 INFO_GONE_ERROR = "Its info file is gone, or its weights are already there."
 OLD_FILE_GONE_WARNING = "The old version's file was already gone."
+NEW_BASE_WARNING = "New base model {base}: its files get the code {code}."
 KEPT_WITHOUT_INFO_WARNING = (
     "The old version was kept because the new version's info file could not be written."
 )
@@ -142,9 +143,17 @@ def _updates(request: DownloadRequest, report, should_stop, ctx: DownloadContext
         raise DownloadError(f"Could not look in the model folder: {_reason(exc)}") from exc
     request.file_name = target.path.name
 
-    seen = _download(client, target.path, file, sha, report, should_stop, ctx)
+    made = _make_folder(target.folder)
+    try:
+        seen = _download(client, target.path, file, sha, report, should_stop, ctx)
+    except BaseException:
+        if made:
+            _remove_if_empty(target.folder)
+        raise
 
     # The new weights are in place and checked; nothing below raises.
+    if target.named and named is not None and named.new_base:
+        _learn_base_code(ctx, request, named.new_base, named.code)
     info_path = target.folder / (target.stem + INFO_SIDECAR_SUFFIX)
     preview_path = target.folder / (target.stem + PREVIEW_SIDECAR_SUFFIX)
     info_written = _write_info(info_path, version, file, request)
@@ -267,6 +276,35 @@ def _ai_name(request, version, file, reference, client, report, should_stop, ctx
     except Exception as exc:  # noqa: BLE001 - no AI name is not a failed download
         print(f"Civitai updater: could not name {file_name} with the AI ({exc})")
         return None
+
+
+def _make_folder(folder: Path) -> bool:
+    """Make a new base's folder (its parent is the old version's); True when made here."""
+    if folder.is_dir():
+        return False
+    try:
+        folder.mkdir()
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        raise DownloadError(f"Could not make the folder {folder.name}: {_reason(exc)}") from exc
+    return True
+
+
+def _remove_if_empty(folder: Path) -> None:
+    try:
+        folder.rmdir()
+    except OSError:
+        pass
+
+
+def _learn_base_code(ctx, request, base_model: str, code: str) -> None:
+    """Keep the AI's code for a new base, so the next release of that base gets the same one."""
+    try:
+        ctx.base_codes.set(base_model, code)
+    except OSError as exc:
+        print(f"Civitai updater: could not save the code {code} for {base_model} ({exc})")
+    request.warnings.append(NEW_BASE_WARNING.format(base=base_model, code=code))
 
 
 def _download(client, target: Path, file: dict, sha: str, report, should_stop, ctx) -> tuple:
