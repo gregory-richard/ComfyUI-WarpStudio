@@ -5,14 +5,16 @@
 //   fill   how much of it is filled (0..1) while a check with a known total runs, else null
 //   busy   a check runs: a click does nothing
 //   spin   the check has started but has no total yet
-export function checkButtonView({ checking, status, progress, total, flashText }) {
+//   phase  "naming" while the releases found are being named, else the files are being checked
+export function checkButtonView({ checking, status, progress, total, flashText, phase }) {
   if (!checking) {
     return { label: flashText || "Check for Updates", fill: null, busy: false, spin: false };
   }
   const done = Math.max(0, Number(progress || 0));
   const all = Math.max(0, Number(total || 0));
   if (all <= 0) return { label: "Starting the check…", fill: null, busy: true, spin: true };
-  const label = status === "paused" ? `Paused at ${done} of ${all}` : `Checking ${done} of ${all}`;
+  const doing = phase === "naming" ? "Naming" : "Checking";
+  const label = status === "paused" ? `Paused at ${done} of ${all}` : `${doing} ${done} of ${all}`;
   return { label, fill: Math.min(1, done / all), busy: true, spin: false };
 }
 
