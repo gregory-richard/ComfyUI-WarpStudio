@@ -612,7 +612,8 @@ size:
 | A file in the archive | **Delete** · **Unarchive** |
 | A deleted file, or an info file alone | none |
 
-**Archive** and **Unarchive** show only once an archive folder is set. Delete,
+**Archive** and **Unarchive** show only once an archive folder is set. A file
+whose version is in the archive too (a **Duplicate**) has no **Archive**. Delete,
 Archive and Unarchive need the `send2trash` package. There is no **Replace** any
 more: download the new version, try it, then delete the old one.
 

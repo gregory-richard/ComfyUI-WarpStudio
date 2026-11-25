@@ -159,7 +159,8 @@ function fileSlot(item, v) {
     dlKey: v.moveKey || "",
     place: "drive",
     canDelete: true,
-    canMove: Boolean(v.versionId),
+    // A release already in the archive (a Duplicate) would get a second copy there.
+    canMove: Boolean(v.versionId) && !v.alsoArchived,
   };
 }
 

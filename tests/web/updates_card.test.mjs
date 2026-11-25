@@ -287,6 +287,18 @@ test("cardRows: deleted and info-only drive rows have no slot; a drive file with
   assert.deepEqual([slot.canDelete, slot.canMove], [true, false]);
 });
 
+test("cardRows: a drive copy of an archived release offers Delete, not a second Archive", () => {
+  const item = makeItem();
+  item.localVersions[0].alsoArchived = "moss - glow - v1 (ill) copy.safetensors";
+  const slot = rowsOf(item)[2].slot;
+  assert.deepEqual([slot.canDelete, slot.canMove], [true, false]);
+  const out = rowActionsHtml(slot, undefined, slotUi(), escapeHtml);
+  assert.match(out, /data-row-action="delete"/);
+  assert.doesNotMatch(out, /data-row-action="archive"|pi-box/);
+  // The archived copy itself can still come back.
+  assert.equal(rowsOf(item)[3].slot.canMove, true);
+});
+
 test("cardRows: a paid release says so in its slot", () => {
   const item = makeItem();
   item.newVersions[0].paid = "early";
