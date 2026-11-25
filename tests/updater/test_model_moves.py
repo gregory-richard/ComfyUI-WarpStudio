@@ -388,6 +388,29 @@ class MoveTests(_MoveCase):
         # The archive's other results stay.
         self.by_path(self.archive_items(), self.z / "Lora" / "sdxl" / "old.civitai.info")
 
+    def test_a_clean_archive_lists_nothing_in_issues(self) -> None:
+        # The moved row and its copy in the archive are one file, not a Duplicate.
+        self.lay(self.dk)
+        self.hold([self.d_item()], [])
+
+        self.move(self.archive_request())
+
+        restarted = JobManager()
+        restarted.load_cached_check(
+            read_data_file(self.data / "last_check.json"), extra_items=self.archive_items()
+        )
+        for label, jobs, job_id in (("job", self.jobs, "check-1"), ("restart", restarted, "cached")):
+            with self.subTest(label):
+                issues = jobs.get_items(job_id, mode="issues")
+                self.assertEqual([], issues["items"])
+                self.assertEqual(0, issues["modeCounts"]["issues"])
+                updates = jobs.get_items(job_id, mode="updates")["items"]
+                self.assertEqual(1, len(updates))
+                rows = updates[0]["localVersions"]
+                self.assertEqual([str(self.zk / "x.civitai.info")], [row["modelPath"] for row in rows])
+                self.assertIs(True, rows[0]["archived"])
+                self.assertNotIn("alsoArchived", rows[0])
+
     def test_unarchive_brings_a_version_back_to_its_folder(self) -> None:
         source = self.lay(self.zk)
         self.hold([], [self.z_item(), self.other_z_item()])

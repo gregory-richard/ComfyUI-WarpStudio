@@ -882,6 +882,9 @@ def _build_group(
             )
     for local_version in local_versions:
         version_id = local_version.get("versionId", "")
+        # A row moved to the archive is that archived file, not a second copy of it.
+        if local_version.get("moved"):
+            continue
         if not local_version.get("archived") and version_id in archived_names:
             local_version["alsoArchived"] = archived_names[version_id]
             if local_version.get("metadataOnly"):
