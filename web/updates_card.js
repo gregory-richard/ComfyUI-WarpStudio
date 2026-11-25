@@ -244,7 +244,8 @@ export function pickRowKey(rows, remembered, mode) {
   return rows.some((r) => r.key === remembered) ? remembered : defaultRowKey(rows, mode);
 }
 
-/* What a row's second line says: where the version is. */
+/* Everything a row's status line could say: where the version is. It is the line's
+   tooltip; the line itself shows the status, the date and rowMore. */
 export function infoLine(
   row,
   { mode = "updates", drive = "", formatDate = (iso) => iso, now } = {}
@@ -267,6 +268,15 @@ export function infoLine(
     tail = row.version.fileName || fileName(row.version.filePath || row.version.modelPath);
   }
   return [head, date, tail].filter(Boolean).join(SEP);
+}
+
+/* What a row's status line adds after the date: the price of a paid release, or in
+   Issues the issue itself. The status word already says the rest. */
+function rowMore(row, { mode = "updates", formatDate = (iso) => iso, now } = {}) {
+  if (mode === "issues" && row.issue) return issueMessage(row.version);
+  if (row.kind !== "new" || !row.slot.paid) return "";
+  const chip = paidChip({ ...row.version, paid: row.slot.paidKind }, { now, formatDate });
+  return chip ? chip.short : "";
 }
 
 // --- the slot ------------------------------------------------------------------------
@@ -462,6 +472,7 @@ function rowHtml(item, row, ui, esc) {
     : `<span class="cu-u-name" title="${esc(row.nameTitle)}">${esc(row.name)}</span>`;
   const failure = view.failure || view.warning;
   const info = infoLine(row, ui);
+  const more = rowMore(row, ui);
   const selected = row.key === ui.selectedKey ? ' aria-current="true"' : "";
   const slot = esc(JSON.stringify(row.slot));
   // The panel keeps each file's Delete question by path; a row needs only its own.
@@ -475,13 +486,15 @@ function rowHtml(item, row, ui, esc) {
     `<div class="cu-u-row" role="listitem" tabindex="0" data-u-row="${esc(row.key)}"` +
     ` data-pic="${esc(row.picture.url)}" data-pic-type="${esc(row.picture.type)}"` +
     ` data-local-path="${esc(row.localPath)}" data-pill="${esc(pillText(item, row))}"` +
-    ` data-info="${esc(info)}"${selected} data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}">` +
+    `${selected} data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}">` +
     `<span class="cu-u-tw">${thumbHtml(row, esc)}` +
     `<span class="cu-u-dot" data-role="${esc(row.role)}" aria-hidden="true"></span></span>` +
     // The name, and under it the status in words and the date: every row says both.
+    // Nothing sits above the rows, so a paid release's price and an issue go here too.
     `<span class="cu-u-main">${name}<span class="cu-u-fail"${failure ? ` title="${esc(failure)}"` : ""}>${esc(failure)}</span>` +
-    `<span class="cu-u-sub"><span class="cu-u-lb" data-role="${esc(row.role)}">${esc(row.label)}</span>` +
-    `${date ? `<span class="cu-u-date"> · ${esc(date)}</span>` : ""}</span></span>` +
+    `<span class="cu-u-sub" title="${esc(info)}"><span class="cu-u-lb" data-role="${esc(row.role)}">${esc(row.label)}</span>` +
+    `${date ? `<span class="cu-u-date"> · ${esc(date)}</span>` : ""}` +
+    `${more ? `<span class="cu-u-more"> · ${esc(more)}</span>` : ""}</span></span>` +
     `<span class="cu-dl cu-u-acts" data-dl-key="${esc(row.slot.dlKey)}" data-slot="${slot}">${rowActionsHtml(row.slot, record, slotUi, esc)}</span>` +
     `</div>`
   );
@@ -505,7 +518,6 @@ export function updatesCardHtml(item, rows, ui, escapeHtml) {
     : `<span class="cu-g-avatar">${esc(Array.from(creator)[0]?.toUpperCase() ?? "")}</span>`;
   const { numbers, likes } = statsHtml(stats, esc);
   const pill = pillText(item, selected);
-  const info = selected ? infoLine(selected, shown) : "";
   const fresh = rows.filter((r) => r.kind === "new").length;
   const tag =
     fresh > 1
@@ -515,7 +527,7 @@ export function updatesCardHtml(item, rows, ui, escapeHtml) {
     ? `<a class="cu-g-open" href="${esc(item.modelUrl)}" target="_blank" rel="noopener noreferrer" title="${esc(CARD_COPY.openOnCivitai(title))}" aria-label="${esc(CARD_COPY.openOnCivitai(title))}">↗</a>`
     : "";
   // The picture stands upright on the left and says what the Gallery's card says;
-  // the chosen version's line and the rows sit beside it.
+  // the rows sit beside it, each saying its own status.
   return (
     `<div class="cu-u-face">` +
     `<button type="button" class="cu-u-pic" data-u-pic aria-label="${esc(CARD_COPY.openPreview(title))}">` +
@@ -528,7 +540,6 @@ export function updatesCardHtml(item, rows, ui, escapeHtml) {
     `<span class="cu-g-foot"><span class="cu-g-stats">${numbers}</span>${likes}</span>` +
     `</span></button>${link}</div>` +
     `<div class="cu-u-side">` +
-    `<span class="cu-u-info" data-u-info title="${esc(info)}">${esc(info)}</span>` +
     `<div class="cu-u-rows" role="list">${rows.map((row) => rowHtml(item, row, shown, esc)).join("")}</div>` +
     `</div>`
   );
@@ -632,23 +643,6 @@ export const UPDATES_CARD_CSS = `
       text-overflow: ellipsis;
     }
 
-    .cu-u-info {
-      display: block;
-      flex: none;
-      box-sizing: border-box;
-      height: 19px;
-      margin: 0 0 3px;
-      padding: 0 6px;
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      border-radius: 3px;
-      background: var(--cu-raise);
-      font-family: var(--cu-mono);
-      font-size: 9.5px;
-      line-height: 19px;
-      color: var(--cu-bone);
-    }
 
     .cu-u-rows {
       flex: 1 1 auto;
@@ -723,7 +717,8 @@ export const UPDATES_CARD_CSS = `
       color: var(--cu-amber);
     }
 
-    .cu-u-date {
+    .cu-u-date,
+    .cu-u-more {
       color: var(--cu-dust);
     }
 

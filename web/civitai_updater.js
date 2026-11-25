@@ -1730,15 +1730,14 @@ function buildResultCard(item, cardIndex) {
   return card;
 }
 
-/* Show a row's version on its card: the row is marked, and the picture, the pill and
-   the info line follow it. Only those change, so nothing on the card moves. */
+/* Show a row's version on its card: the row is marked, and the picture and the pill
+   follow it. Only those change, so nothing on the card moves. */
 function selectRow(card, row) {
   if (!card || !row || row.getAttribute("aria-current") === "true") return;
   for (const other of card.querySelectorAll('.cu-u-row[aria-current]')) other.removeAttribute("aria-current");
   row.setAttribute("aria-current", "true");
   showPicture(card.querySelector(".cu-g-thumb"), pictureOf(row), PICTURE_WIDTH, noPreviewTile);
   setLine(card.querySelector("[data-u-pill]"), row.dataset.pill || "");
-  setLine(card.querySelector("[data-u-info]"), row.dataset.info || "");
   if (card.dataset.cardKey && row.dataset.uRow) state.cardSelection.set(card.dataset.cardKey, row.dataset.uRow);
 }
 
