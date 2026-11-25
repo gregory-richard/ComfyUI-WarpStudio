@@ -214,10 +214,11 @@ class RunNamingTests(unittest.TestCase):
     def test_a_pause_holds_the_naming_before_each_model(self) -> None:
         generator = FakeGenerator({"Glow": GLOW_ANSWER, "Fern": FERN_ANSWER})
         held_after: list = []
-        # Where the phase waits while the check is paused: before each model's call.
-        self.control.wait_if_paused = lambda: held_after.append(len(generator.calls))
+        # Where the phase waits while the check is paused: before each model's call, with
+        # the releases named so far already counted, so the button says where it paused.
+        self.control.wait_if_paused = lambda: held_after.append((len(generator.calls), self.progress[-1][0]))
         self.run_naming(generator)
-        self.assertEqual([0, 1], held_after)
+        self.assertEqual([(0, 0), (1, 2)], held_after)
 
     def test_a_stop_while_paused_names_no_further_model(self) -> None:
         generator = FakeGenerator({"Glow": GLOW_ANSWER, "Fern": FERN_ANSWER})

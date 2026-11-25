@@ -151,11 +151,11 @@ def run_naming(
     named = 0
     error = ""
     for task in tasks:
+        progress(done, total, f"Naming {done} of {total}")
         # A pause holds between models, as the check's own pause holds between files.
         control.wait_if_paused()
         if control.is_cancelled():
             break
-        progress(done, total, f"Naming {done} of {total}")
         try:
             names = _name_task(
                 task, client, generator, decisions, codes, cache, clip_name, control
