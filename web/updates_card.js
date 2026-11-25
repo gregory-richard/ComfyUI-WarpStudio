@@ -470,14 +470,18 @@ function rowHtml(item, row, ui, esc) {
       ? (row.slot.kind === "file" && ui.asking.get(row.slot.path)) || ""
       : ui.asking || "";
   const slotUi = { ...ui, asking };
+  const date = row.date ? (ui.formatDate ? ui.formatDate(row.date) : row.date) : "";
   return (
     `<div class="cu-u-row" role="listitem" tabindex="0" data-u-row="${esc(row.key)}"` +
     ` data-pic="${esc(row.picture.url)}" data-pic-type="${esc(row.picture.type)}"` +
     ` data-local-path="${esc(row.localPath)}" data-pill="${esc(pillText(item, row))}"` +
     ` data-info="${esc(info)}"${selected} data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}">` +
-    thumbHtml(row, esc) +
-    `<span class="cu-u-dot" data-role="${esc(row.role)}" title="${esc(row.label)}" aria-label="${esc(row.label)}"></span>` +
-    `<span class="cu-u-main">${name}<span class="cu-u-fail"${failure ? ` title="${esc(failure)}"` : ""}>${esc(failure)}</span></span>` +
+    `<span class="cu-u-tw">${thumbHtml(row, esc)}` +
+    `<span class="cu-u-dot" data-role="${esc(row.role)}" aria-hidden="true"></span></span>` +
+    // The name, and under it the status in words and the date: every row says both.
+    `<span class="cu-u-main">${name}<span class="cu-u-fail"${failure ? ` title="${esc(failure)}"` : ""}>${esc(failure)}</span>` +
+    `<span class="cu-u-sub"><span class="cu-u-lb" data-role="${esc(row.role)}">${esc(row.label)}</span>` +
+    `${date ? `<span class="cu-u-date"> · ${esc(date)}</span>` : ""}</span></span>` +
     `<span class="cu-dl cu-u-acts" data-dl-key="${esc(row.slot.dlKey)}" data-slot="${slot}">${rowActionsHtml(row.slot, record, slotUi, esc)}</span>` +
     `</div>`
   );
@@ -510,8 +514,10 @@ export function updatesCardHtml(item, rows, ui, escapeHtml) {
   const link = isHttps(item.modelUrl)
     ? `<a class="cu-g-open" href="${esc(item.modelUrl)}" target="_blank" rel="noopener noreferrer" title="${esc(CARD_COPY.openOnCivitai(title))}" aria-label="${esc(CARD_COPY.openOnCivitai(title))}">↗</a>`
     : "";
+  // The picture stands upright on the left and says what the Gallery's card says;
+  // the chosen version's line and the rows sit beside it.
   return (
-    `<div class="cu-u-top">` +
+    `<div class="cu-u-face">` +
     `<button type="button" class="cu-u-pic" data-u-pic aria-label="${esc(CARD_COPY.openPreview(title))}">` +
     `<span class="cu-g-thumb">${pictureHtml(selected, esc)}</span>` +
     `<span class="cu-g-pills"><span class="cu-g-pill" data-u-pill title="${esc(pill)}">${esc(pill)}</span></span>` +
@@ -519,10 +525,12 @@ export function updatesCardHtml(item, rows, ui, escapeHtml) {
     `<span class="cu-g-info">` +
     `<span class="cu-g-by">${avatar}<span class="cu-g-creator" title="${esc(creator)}">${esc(creator)}</span></span>` +
     `<span class="cu-g-title" title="${esc(title)}">${esc(title)}</span>` +
-    `<span class="cu-u-info" data-u-info title="${esc(info)}">${esc(info)}</span>` +
     `<span class="cu-g-foot"><span class="cu-g-stats">${numbers}</span>${likes}</span>` +
     `</span></button>${link}</div>` +
-    `<div class="cu-u-rows" role="list">${rows.map((row) => rowHtml(item, row, shown, esc)).join("")}</div>`
+    `<div class="cu-u-side">` +
+    `<span class="cu-u-info" data-u-info title="${esc(info)}">${esc(info)}</span>` +
+    `<div class="cu-u-rows" role="list">${rows.map((row) => rowHtml(item, row, shown, esc)).join("")}</div>` +
+    `</div>`
   );
 }
 
@@ -533,7 +541,7 @@ export function updatesCardHtml(item, rows, ui, escapeHtml) {
 export const UPDATES_CARD_CSS = `
     .cu-results {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
       gap: 6px;
       align-items: start;
     }
@@ -545,15 +553,18 @@ export const UPDATES_CARD_CSS = `
       grid-column: 1 / -1;
     }
 
+    /* Every card is as tall as the next, whatever it lists: the picture stands upright
+       on the left, and a model with many versions scrolls its rows inside the card. */
     .cu-item.cu-u-card {
-      display: block;
+      display: grid;
+      grid-template-columns: clamp(132px, 42%, 210px) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+      column-gap: 10px;
+      box-sizing: border-box;
+      height: 224px;
       min-width: 0;
-      padding: 0;
+      padding: 6px;
       overflow: hidden;
-    }
-
-    .cu-u-top {
-      position: relative;
     }
 
     .cu-u-pic {
@@ -561,16 +572,36 @@ export const UPDATES_CARD_CSS = `
       display: block;
       box-sizing: border-box;
       width: 100%;
-      height: 168px;
+      height: 100%;
       margin: 0;
       padding: 0;
       border: 0;
+      border-radius: 5px;
       background: var(--cu-raise);
       color: inherit;
       font: inherit;
       text-align: left;
       cursor: zoom-in;
       overflow: hidden;
+    }
+
+    /* The picture with the Gallery's overlay: pill, creator, title and numbers. */
+    .cu-u-face {
+      position: relative;
+      min-height: 0;
+      border-radius: 5px;
+      overflow: hidden;
+    }
+
+    .cu-u-face .cu-g-open {
+      opacity: 0.8;
+    }
+
+    .cu-u-side {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
     }
 
     .cu-u-pic video {
@@ -580,10 +611,6 @@ export const UPDATES_CARD_CSS = `
       width: 100%;
       height: 100%;
       object-fit: cover;
-    }
-
-    .cu-u-top:hover .cu-g-open {
-      opacity: 0.9;
     }
 
     /* The count of new releases, where the Gallery puts its version chip. */
@@ -607,31 +634,97 @@ export const UPDATES_CARD_CSS = `
 
     .cu-u-info {
       display: block;
-      height: 15px;
+      flex: none;
+      box-sizing: border-box;
+      height: 19px;
+      margin: 0 0 3px;
+      padding: 0 6px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      border-radius: 3px;
+      background: var(--cu-raise);
+      font-family: var(--cu-mono);
+      font-size: 9.5px;
+      line-height: 19px;
+      color: var(--cu-bone);
+    }
+
+    .cu-u-rows {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: thin;
+    }
+
+    /* Two lines a row: the name, and under it the status in words and the date. */
+    .cu-u-row {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) 52px;
+      align-items: center;
+      column-gap: 6px;
+      box-sizing: border-box;
+      height: 34px;
+      padding: 0 3px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    .cu-u-tw {
+      position: relative;
+      width: 16px;
+      height: 21px;
+    }
+
+    .cu-u-tw .cu-u-dot {
+      position: absolute;
+      right: -3px;
+      bottom: -3px;
+      box-shadow: 0 0 0 1.5px var(--cu-slate);
+    }
+
+    .cu-u-sub {
+      display: block;
+      height: 13px;
       overflow: hidden;
       white-space: nowrap;
       text-overflow: ellipsis;
       font-family: var(--cu-mono);
-      font-size: 9.5px;
-      line-height: 15px;
+      font-size: 9px;
+      line-height: 13px;
+      color: var(--cu-dust);
+    }
+
+    .cu-u-lb {
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
       color: var(--cu-ash);
     }
 
-    .cu-u-rows {
-      display: flex;
-      flex-direction: column;
-      padding: 3px 0;
+    .cu-u-lb[data-role="new"] {
+      color: var(--cu-red);
     }
 
-    .cu-u-row {
-      display: grid;
-      grid-template-columns: 28px 7px minmax(0, 1fr) 52px;
-      align-items: center;
-      column-gap: 7px;
-      box-sizing: border-box;
-      height: 30px;
-      padding: 0 8px;
-      cursor: pointer;
+    .cu-u-lb[data-role="saved"],
+    .cu-u-lb[data-role="downloaded"] {
+      color: #b7b4bd;
+    }
+
+    .cu-u-lb[data-role="archived"],
+    .cu-u-lb[data-role="hidden"],
+    .cu-u-lb[data-role="deleted"] {
+      color: var(--cu-dust);
+    }
+
+    .cu-u-lb[data-role="duplicate"],
+    .cu-u-lb[data-role="error"],
+    .cu-u-lb[data-role="infoonly"] {
+      color: var(--cu-amber);
+    }
+
+    .cu-u-date {
+      color: var(--cu-dust);
     }
 
     .cu-u-row:hover,
@@ -642,8 +735,8 @@ export const UPDATES_CARD_CSS = `
 
     .cu-u-tn {
       display: block;
-      width: 28px;
-      height: 22px;
+      width: 16px;
+      height: 21px;
       overflow: hidden;
       border-radius: 3px;
       background: var(--cu-raise);
@@ -718,24 +811,28 @@ export const UPDATES_CARD_CSS = `
     .cu-u-main {
       position: relative;
       min-width: 0;
-      height: 22px;
+      height: 30px;
     }
 
     .cu-u-name,
     .cu-u-fail {
       display: block;
       min-width: 0;
+      height: 17px;
       overflow: hidden;
       white-space: nowrap;
       text-overflow: ellipsis;
       font-size: 11px;
-      line-height: 22px;
+      line-height: 17px;
       color: var(--cu-bone);
     }
 
+    /* A failure or a warning takes the name's line; the status line stays. */
     .cu-u-fail {
       position: absolute;
-      inset: 0;
+      top: 0;
+      left: 0;
+      right: 0;
       display: none;
       color: var(--cu-red-soft);
     }

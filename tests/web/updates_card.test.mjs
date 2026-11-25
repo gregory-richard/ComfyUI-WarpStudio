@@ -640,7 +640,10 @@ test("updatesCardHtml: one row per version, marked, with the selected one curren
   assert.match(out, /role="list"/);
   assert.match(out, /role="listitem" tabindex="0"/);
   assert.match(out, /class="cu-u-tn"[^>]*><img [^>]*width=64\/1\.jpeg/);
-  assert.match(out, /class="cu-u-dot" data-role="new" title="New" aria-label="New"/);
+  // Every row says its status in words, with its date, under its name.
+  assert.match(out, /class="cu-u-lb" data-role="new">New<\/span><span class="cu-u-date"> · 2026-03-01</);
+  assert.match(out, /class="cu-u-lb" data-role="saved">Saved</);
+  assert.match(out, /class="cu-u-lb" data-role="archived">Archived</);
   assert.match(out, /class="cu-u-fail"/);
 });
 
@@ -745,10 +748,12 @@ test("updatesCardHtml escapes names, paths and the slot JSON", () => {
 });
 
 test("the card CSS keeps the layout still", () => {
-  assert.match(UPDATES_CARD_CSS, /\.cu-item\.cu-u-card/);
-  assert.match(UPDATES_CARD_CSS, /minmax\(300px, 1fr\)/);
-  assert.match(UPDATES_CARD_CSS, /28px 7px minmax\(0, 1fr\) 52px/);
-  assert.match(UPDATES_CARD_CSS, /height: 30px/);
+  assert.match(UPDATES_CARD_CSS, /\.cu-item\.cu-u-card \{[^}]*height: 224px/);
+  assert.match(UPDATES_CARD_CSS, /minmax\(min\(380px, 100%\), 1fr\)/);
+  // Rows scroll inside the card, so a model with many versions is no taller than the next.
+  assert.match(UPDATES_CARD_CSS, /\.cu-u-rows \{[^}]*overflow-y: auto/);
+  assert.match(UPDATES_CARD_CSS, /18px minmax\(0, 1fr\) 52px/);
+  assert.match(UPDATES_CARD_CSS, /\.cu-u-row \{[^}]*height: 34px/);
   assert.match(UPDATES_CARD_CSS, /text-overflow: ellipsis/);
   assert.match(UPDATES_CARD_CSS, /data-mature="blur"/);
 });
