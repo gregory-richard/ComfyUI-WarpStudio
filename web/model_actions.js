@@ -69,7 +69,7 @@ export const WAITING_FOR = {
   "naming-model-download": "the naming model download",
 };
 
-const waitingText = (record) =>
+export const waitingText = (record) =>
   record.waitingFor ? `Waiting for ${WAITING_FOR[record.waitingFor] ?? "another job"}` : "";
 
 export function recordMessage(record) {
@@ -96,7 +96,7 @@ export function rowDownloadView(record) {
 const note = (text) => `<span class="cu-dl-note">${text}</span>`;
 
 /* An icon button: a fixed square holding a PrimeIcons glyph. */
-const iconButton = (icon, label, attrs = "", extraClass = "") =>
+export const iconButton = (icon, label, attrs = "", extraClass = "") =>
   `<button type="button" class="cu-icon-btn${extraClass}"${attrs} title="${label}" aria-label="${label}"><i class="pi ${icon}" aria-hidden="true"></i></button>`;
 
 const icon = (name, label, extraClass = "") =>
@@ -113,7 +113,7 @@ function replaceTitle(slot) {
 /* A download in the button's place: a ring that fills, spinning while nothing is
    known yet (the request starts) and once every byte is in (the file is checked). */
 const RING = 2 * Math.PI * 7;
-function downloadRing(pct) {
+export function downloadRing(pct) {
   const spin = pct === null || pct <= 0 || pct >= 100;
   const title = pct === null || pct <= 0 ? COPY.starting : pct >= 100 ? COPY.checking : `${pct}%`;
   const offset = spin ? RING * 0.7 : RING * (1 - pct / 100);
@@ -185,10 +185,14 @@ export function rowHideHtml(hidden, modelId, versionId, escapeHtml) {
 }
 
 export function finishedText(summary) {
-  let text = `Done — ${Number(summary?.downloaded) || 0} downloaded`;
-  if (summary?.failed) text += `, ${summary.failed} failed`;
-  if (summary?.stopped) text += `, ${summary.stopped} stopped`;
-  return text;
+  const downloaded = Number(summary?.downloaded) || 0;
+  const moved = Number(summary?.moved) || 0;
+  const parts = [];
+  if (downloaded || !moved) parts.push(`${downloaded} downloaded`);
+  if (moved) parts.push(`${moved} moved`);
+  if (summary?.failed) parts.push(`${summary.failed} failed`);
+  if (summary?.stopped) parts.push(`${summary.stopped} stopped`);
+  return `Done — ${parts.join(", ")}`;
 }
 
 const NOUNS = {
