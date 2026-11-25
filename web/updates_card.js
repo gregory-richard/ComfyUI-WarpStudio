@@ -30,6 +30,7 @@ export const CARD_COPY = {
   archiveTitle: "Move this version to the archive drive",
   unarchive: "Unarchive",
   unarchiveTitle: "Move this version back to this drive",
+  moved: "Moved",
   deleteArchivedTitle: "Send this version and its sidecars to the archive drive's recycle bin",
   newTag: (n) => `${n} new`,
   openPreview: (t) => `Open the preview of ${t}`,
@@ -366,7 +367,11 @@ export function rowActionsHtml(slot, record, ui, escapeHtml) {
     return two(
       warning
         ? glyph("pi-exclamation-triangle", esc(warning), " is-warn")
-        : glyph("pi-check", COPY.downloaded, " is-done"),
+        : glyph(
+            "pi-check",
+            record?.kind === "move" ? CARD_COPY.moved : COPY.downloaded,
+            " is-done"
+          ),
       ""
     );
   }
@@ -436,6 +441,12 @@ function rowHtml(item, row, ui, esc) {
   const info = infoLine(row, ui);
   const selected = row.key === ui.selectedKey ? ' aria-current="true"' : "";
   const slot = esc(JSON.stringify(row.slot));
+  // The panel keeps each file's Delete question by path; a row needs only its own.
+  const asking =
+    ui.asking instanceof Map
+      ? (row.slot.kind === "file" && ui.asking.get(row.slot.path)) || ""
+      : ui.asking || "";
+  const slotUi = { ...ui, asking };
   return (
     `<div class="cu-u-row" role="listitem" tabindex="0" data-u-row="${esc(row.key)}"` +
     ` data-pic="${esc(row.picture.url)}" data-pic-type="${esc(row.picture.type)}"` +
@@ -444,7 +455,7 @@ function rowHtml(item, row, ui, esc) {
     thumbHtml(row, esc) +
     `<span class="cu-u-dot" data-role="${esc(row.role)}" title="${esc(row.label)}" aria-label="${esc(row.label)}"></span>` +
     `<span class="cu-u-main">${name}<span class="cu-u-fail"${failure ? ` title="${esc(failure)}"` : ""}>${esc(failure)}</span></span>` +
-    `<span class="cu-dl cu-u-acts" data-dl-key="${esc(row.slot.dlKey)}" data-slot="${slot}">${rowActionsHtml(row.slot, record, ui, esc)}</span>` +
+    `<span class="cu-dl cu-u-acts" data-dl-key="${esc(row.slot.dlKey)}" data-slot="${slot}">${rowActionsHtml(row.slot, record, slotUi, esc)}</span>` +
     `</div>`
   );
 }

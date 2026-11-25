@@ -575,6 +575,19 @@ test("updatesCardHtml: the pill, the N new tag, the names and the info line of t
   assert.match(out, /1\.2k/);
 });
 
+test("updatesCardHtml: a card redrawn while Delete asks keeps the question on that row", () => {
+  const out = card(makeItem(), { asking: new Map([[saved, "confirming"]]) });
+  assert.match(out, /data-row-action="delete"[^>]*data-path="[^"]*v1 \(ill\)\.safetensors"[^>]*data-confirm/);
+  assert.equal((out.match(/data-confirm/g) || []).length, 1);
+});
+
+test("rowActionsHtml: a finished move says Moved, a finished download Downloaded", () => {
+  const moved = html(file(), rec({ state: "done", kind: "move" }));
+  assert.match(moved, /pi-check[^]*title="Moved"|title="Moved"[^]*pi-check/);
+  const downloaded = html(release(), rec({ state: "done", kind: "download" }));
+  assert.match(downloaded, /title="Downloaded"/);
+});
+
 test("updatesCardHtml: one row per version, marked, with the selected one current", () => {
   const out = card();
   assert.equal((out.match(/data-u-row="/g) || []).length, 4);
