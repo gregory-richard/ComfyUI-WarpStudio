@@ -686,7 +686,8 @@ def _run_naming_phase(
 ) -> None:
     """Name the releases the check found new, with the check's own client, and note it in the summary.
 
-    Nothing runs, and no phase is set, when there is nothing to name or no usable AI.
+    Nothing runs, and no phase is set, when there is nothing to name. The phase starts
+    before the AI is looked for, and ends at once when there is none.
     """
 
     def archive_reference(model_path: str, model_type: str) -> Optional[Path]:
@@ -706,11 +707,14 @@ def _run_naming_phase(
     if not tasks:
         return
     phase = PhaseControl(control)
-    generator, clip = naming_generator(config_store.get(), naming.journal, phase.is_cancelled)
-    if generator is None:
-        return
+    # Looking for the AI reads every text encoder's header: a Stop meanwhile ends only the
+    # naming, not the check. The button counts the releases from here on.
     job_manager.set_phase(control.job_id, NAMING_PHASE)
+    progress(0, sum(len(task.version_ids) for task in tasks), "")
     try:
+        generator, clip = naming_generator(config_store.get(), naming.journal, phase.is_cancelled)
+        if generator is None:
+            return
         result = run_naming(
             tasks,
             client=client,

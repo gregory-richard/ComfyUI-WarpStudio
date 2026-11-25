@@ -19,7 +19,7 @@ from comfy_updater.archived_updates import ArchivedUpdateStore
 from comfy_updater.config_store import ConfigStore
 from comfy_updater.constants import CACHE_SCHEMA_VERSION
 from comfy_updater.download_queue import DownloadQueue
-from comfy_updater.jobs import JobManager, JobRecord, _group_items_by_model
+from comfy_updater.jobs import NAMING_PHASE, JobManager, JobRecord, _group_items_by_model
 from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
 from comfy_updater.routes import (
     _drop_refused_archive_folder,
@@ -661,6 +661,41 @@ class CheckNamingPhaseTests(_ArchiveRoutesCase):
         self.assertNotIn("naming", job.summary)
         self.assertEqual("", job.phase)
         self.assertEqual("completed", job.status)
+
+    def test_a_stop_while_the_naming_model_is_looked_for_ends_only_the_naming(self) -> None:
+        # Looking for the naming model reads every text encoder's header, which takes a while.
+        looked: list = []
+
+        def stopped_while_looking(config, journal, should_stop):
+            job = self.jobs.get_active()
+            looked.append(job.phase)
+            self.jobs.cancel(job.id)
+            looked.append(should_stop())
+            return self.generator, "clip"
+
+        routes_module.naming_generator.side_effect = stopped_while_looking
+        job = self.check()
+        self.assertEqual([NAMING_PHASE, True], looked)
+        self.assertEqual("completed", job.status)
+        self.assertFalse(job.control.is_cancelled())
+        self.assertEqual([], self.generator.calls)
+        self.assertEqual("", job.phase)
+        self.assertTrue((self.data_dir / "last_check.json").exists())
+
+    def test_the_phase_ends_when_no_naming_model_is_found(self) -> None:
+        looked: list = []
+
+        def none_found(config, journal, should_stop):
+            job = self.jobs.get_active()
+            looked.append((job.phase, job.progress, job.total))
+            return None, ""
+
+        routes_module.naming_generator.side_effect = none_found
+        job = self.check()
+        # The button counts the releases to name, not the files checked, while it looks.
+        self.assertEqual([(NAMING_PHASE, 0, 1)], looked)
+        self.assertEqual(("", "completed"), (job.phase, job.status))
+        self.assertNotIn("naming", job.summary)
 
     def test_a_check_with_nothing_to_name_skips_naming(self) -> None:
         named = NamedRelease(NameParts("maker", "glow", "v2", "", "ill"), "Illustrious", "")
