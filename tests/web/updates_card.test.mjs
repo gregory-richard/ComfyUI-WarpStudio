@@ -508,6 +508,16 @@ test("rowActionsHtml: Delete asks, then deletes", () => {
   assert.match(deleting, /data-deleting disabled/);
 });
 
+test("rowActionsHtml: Delete's question says where the file goes", () => {
+  const here = html(file(), undefined, { asking: "confirming" });
+  assert.match(here, /title="Click again to send it to the Recycle Bin"/);
+  const there = html(file({ place: "archive", path: archivedPath }), undefined, {
+    asking: "confirming",
+  });
+  assert.match(there, /title="Click again to send it to the archive drive&#039;s recycle bin"/);
+  assert.match(there, /aria-label="Click again to send it to the archive drive&#039;s recycle bin"/);
+});
+
 test("rowActionsHtml: a deleted file has two empty cells", () => {
   const out = html({ kind: "none" }, undefined);
   assert.equal((out.match(/class="cu-u-cell/g) || []).length, 2);

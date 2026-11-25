@@ -32,6 +32,7 @@ export const CARD_COPY = {
   unarchiveTitle: "Move this version back to this drive",
   moved: "Moved",
   deleteArchivedTitle: "Send this version and its sidecars to the archive drive's recycle bin",
+  deleteArchivedConfirmTitle: "Click again to send it to the archive drive's recycle bin",
   newTag: (n) => `${n} new`,
   openPreview: (t) => `Open the preview of ${t}`,
   openOnCivitai: (t) => `Open ${t} on Civitai`,
@@ -315,7 +316,10 @@ export function rowActionsHtml(slot, record, ui, escapeHtml) {
       return iconButton("pi-spin pi-spinner", COPY.deleting, `${own} data-deleting disabled`);
     }
     if (ui.asking === "confirming") {
-      return iconButton("pi-trash", COPY.deleteConfirmTitle, `${own} data-confirm`);
+      const ask = esc(
+        slot.place === "archive" ? CARD_COPY.deleteArchivedConfirmTitle : COPY.deleteConfirmTitle
+      );
+      return iconButton("pi-trash", ask, `${own} data-confirm`);
     }
     const title = esc(
       slot.place === "archive" ? CARD_COPY.deleteArchivedTitle : COPY.deleteTitleFor("version")
