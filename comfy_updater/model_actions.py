@@ -423,14 +423,21 @@ def _record(
 
 
 def delete_model(
-    weights: Path, *, trash: Callable[[str], None], job_manager, data_dir: Path
+    weights: Path,
+    *,
+    trash: Callable[[str], None],
+    job_manager,
+    data_dir: Path,
+    archive_folder: str = "",
 ) -> dict:
     """Send a LoRA's weights and every sidecar to the Recycle Bin.
 
     The weights go first and on their own. If they can't go, ``DownloadError``
     is raised and nothing else is touched, so weights ComfyUI holds open keep
     their info file and preview. A sidecar that can't go is only a warning.
-    The file then leaves the check results.
+    The file then leaves the check results; with ``archive_folder`` (a file on
+    the archive drive, sent to that drive's recycle bin), the saved archive
+    results too.
     """
     files = stem_files(weights)
     if not files:
@@ -455,7 +462,9 @@ def delete_model(
         except Exception as exc:  # noqa: BLE001 - the rest still go
             warnings.append(f"Could not send {path.name} to the Recycle Bin: {_reason(exc)}")
     try:
-        update_check_records(job_manager, data_dir, remove=[str(weights)], add=[])
+        update_check_records(
+            job_manager, data_dir, remove=[str(weights)], add=[], archive_folder=archive_folder
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"Civitai updater: could not update the check results ({exc})")
         warnings.append(f"Could not update the check results: {_reason(exc)}")

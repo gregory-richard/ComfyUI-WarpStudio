@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from comfy_updater import check_records
+from comfy_updater.archive import ARCHIVE_RESULTS_FILENAME, load_archive_results
 from comfy_updater.check_records import (
     check_item_for,
     downloaded_item,
@@ -271,6 +272,179 @@ class CheckRecordsTests(unittest.TestCase):
         update_check_records(self.manager, self.data, remove=[], add=[new])
         job.items[0]["remoteVersions"].clear()
         self.assertEqual(new, original)
+
+
+class ArchiveRecordsTests(unittest.TestCase):
+    """The archive drive's rows: kept in archive_check.json, never in last_check.json."""
+
+    restore = CheckRecordsTests.restore
+    save_check = CheckRecordsTests.save_check
+
+    def setUp(self) -> None:
+        CheckRecordsTests.setUp(self)
+        self.archive = self.tmp / "Z" / "models"
+        self.archive.mkdir(parents=True)
+        self.z_info = self.archive / "Lora" / "pony" / "maker - glow - v1 (pony).civitai.info"
+        self.z_weights = self.z_info.with_name("maker - glow - v1 (pony).safetensors")
+
+    def z_item(self, **fields) -> dict:
+        item = dict(
+            v1_item(self.z_weights),
+            modelPath=str(self.z_info),
+            metadataOnly=True,
+            archived=True,
+        )
+        item.update(fields)
+        return item
+
+    def save_archive(self, items: list[dict], *, folder: str = "", schema: int = CACHE_SCHEMA_VERSION) -> Path:
+        path = self.data / ARCHIVE_RESULTS_FILENAME
+        path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": schema,
+                    "archiveFolder": folder or str(self.archive),
+                    "checkedAt": "2026-03-02T00:00:00+00:00",
+                    "summary": {"mode": "archive", "total": len(items), "withoutInfo": 3},
+                    "items": items,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def archive_payload(self) -> dict:
+        return json.loads((self.data / ARCHIVE_RESULTS_FILENAME).read_text(encoding="utf-8"))
+
+    def test_a_deleted_archive_row_is_marked_in_the_archive_results(self) -> None:
+        job = self.restore([v1_item(self.v1), self.z_item()])
+        saved = self.save_check([v1_item(self.v1)])
+        before = saved.read_bytes()
+        self.save_archive([self.z_item()])
+
+        update_check_records(
+            self.manager,
+            self.data,
+            remove=[str(self.z_weights)],
+            add=[],
+            archive_folder=str(self.archive),
+        )
+
+        self.assertEqual([None, True], [item.get("deleted") for item in job.items])
+        payload = self.archive_payload()
+        self.assertEqual([True], [item.get("deleted") for item in payload["items"]])
+        self.assertEqual(0, payload["summary"]["total"])
+        self.assertEqual(3, payload["summary"]["withoutInfo"])
+        self.assertEqual("2026-03-02T00:00:00+00:00", payload["checkedAt"])
+        self.assertEqual(before, saved.read_bytes())
+
+    def test_an_added_archive_row_goes_to_the_archive_results_never_last_check(self) -> None:
+        job = self.restore([v1_item(self.v1)])
+        self.save_check([v1_item(self.v1)])
+        self.save_archive([])
+        added = self.z_item(movedAt="2026-11-25T10:00:00+00:00")
+
+        update_check_records(
+            self.manager,
+            self.data,
+            remove=[str(self.v1)],
+            add=[added],
+            archive_folder=str(self.archive),
+            moved=True,
+        )
+
+        self.assertEqual([str(self.v1), str(self.z_info)], [item["modelPath"] for item in job.items])
+        last = json.loads((self.data / "last_check.json").read_text(encoding="utf-8"))
+        self.assertEqual([str(self.v1)], [item["modelPath"] for item in last["items"]])
+        self.assertTrue(last["items"][0]["deleted"])
+        self.assertEqual([added], self.archive_payload()["items"])
+        self.assertEqual(1, self.archive_payload()["summary"]["total"])
+
+    def test_without_the_archive_folder_the_archive_results_are_left_alone(self) -> None:
+        self.restore([self.z_item()])
+        path = self.save_archive([self.z_item()])
+        before = path.read_bytes()
+
+        update_check_records(self.manager, self.data, remove=[str(self.z_weights)], add=[self.z_item()])
+
+        self.assertEqual(before, path.read_bytes())
+
+    def test_the_archive_results_are_made_for_a_first_archived_row(self) -> None:
+        added = self.z_item(movedAt="2026-11-25T10:00:00+00:00")
+        for label, setup in (
+            ("missing", lambda: None),
+            ("outdated", lambda: self.save_archive([self.z_item(modelId="9")], schema=CACHE_SCHEMA_VERSION - 1)),
+            ("another folder", lambda: self.save_archive([self.z_item(modelId="9")], folder=str(self.tmp / "Y"))),
+        ):
+            with self.subTest(label):
+                (self.data / ARCHIVE_RESULTS_FILENAME).unlink(missing_ok=True)
+                setup()
+
+                update_check_records(
+                    self.manager, self.data, remove=[], add=[added], archive_folder=str(self.archive)
+                )
+
+                self.assertEqual(
+                    {
+                        "schemaVersion": CACHE_SCHEMA_VERSION,
+                        "archiveFolder": str(self.archive),
+                        "checkedAt": "",
+                        "summary": {"mode": "archive", "total": 1},
+                        "items": [added],
+                    },
+                    self.archive_payload(),
+                )
+                items, summary = load_archive_results(self.data, str(self.archive))
+                self.assertEqual([added], items)
+                self.assertEqual("", summary["checkedAt"])
+
+    def test_no_archive_results_are_made_without_an_archived_row(self) -> None:
+        update_check_records(
+            self.manager,
+            self.data,
+            remove=[str(self.z_weights)],
+            add=[v1_item(self.v1)],
+            archive_folder=str(self.archive),
+        )
+        self.assertFalse((self.data / ARCHIVE_RESULTS_FILENAME).exists())
+
+    def test_unreadable_archive_results_are_never_replaced(self) -> None:
+        path = self.data / ARCHIVE_RESULTS_FILENAME
+        path.write_text("{not json", encoding="utf-8")
+
+        update_check_records(
+            self.manager, self.data, remove=[], add=[self.z_item()], archive_folder=str(self.archive)
+        )
+
+        self.assertEqual("{not json", path.read_text(encoding="utf-8"))
+
+    def test_moved_rows_are_marked_moved(self) -> None:
+        items = [v1_item(self.v1), v1_item(self.v2)]
+        self.assertTrue(edit_check_items(items, remove=[str(self.v1)], add=[], moved=True))
+        self.assertTrue(edit_check_items(items, remove=[str(self.v2)], add=[]))
+        self.assertEqual([True, True], [item["deleted"] for item in items])
+        self.assertEqual([True, None], [item.get("moved") for item in items])
+
+        job = self.restore([v1_item(self.v1), self.z_item()])
+        self.save_check([v1_item(self.v1)])
+        self.save_archive([self.z_item()])
+        update_check_records(
+            self.manager,
+            self.data,
+            remove=[str(self.v1), str(self.z_info)],
+            add=[],
+            archive_folder=str(self.archive),
+            moved=True,
+        )
+        last = json.loads((self.data / "last_check.json").read_text(encoding="utf-8"))
+        for label, rows in (
+            ("job", job.items),
+            ("last check", last["items"]),
+            ("archive check", self.archive_payload()["items"]),
+        ):
+            with self.subTest(label):
+                self.assertEqual([True], list({row.get("moved") for row in rows}))
+                self.assertEqual([True], list({row.get("deleted") for row in rows}))
 
 
 if __name__ == "__main__":

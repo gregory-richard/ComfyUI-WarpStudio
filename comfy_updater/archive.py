@@ -1,8 +1,12 @@
 """The archive folder: a drive old models are moved to, laid out like the models folder.
 
 Everything here only reads the archive. Its results are kept in the plugin's own
-data folder, never inside the archive, because nothing in this package may write,
-rename or delete anything there.
+data folder, never inside the archive. The archive is written to only when the
+user clicks for it: Archive copies a version in and Unarchive copies one back
+(``model_moves``), each checked before the original goes to the Recycle Bin, and
+Delete sends an archived file to that drive's recycle bin
+(``model_actions.delete_model``). Nothing renames a file there or deletes one
+for good.
 """
 
 from __future__ import annotations
