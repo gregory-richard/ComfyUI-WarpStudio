@@ -112,6 +112,7 @@ def register_routes(
     answer_cache=None,
     journal=None,
     dry_runs=None,
+    release_names=None,
 ) -> None:
     global _ROUTES_REGISTERED
     if _ROUTES_REGISTERED:
@@ -308,6 +309,7 @@ def register_routes(
             answer_cache,
             journal,
             updater_service=updater_service,
+            release_names=release_names,
         )
     else:
         print(
@@ -1425,7 +1427,7 @@ def _ensure_finish_listener(queue, job_manager, runner) -> None:
 
 
 def download_context(
-    config_store, job_manager, decisions, base_codes, answer_cache, journal
+    config_store, job_manager, decisions, base_codes, answer_cache, journal, release_names=None
 ) -> DownloadContext:
     """What one download needs, built on the job thread: it reads the naming models' headers."""
     config = config_store.get()
@@ -1461,11 +1463,21 @@ def download_context(
             config, [model_type], include_custom_paths=True
         ).get(model_type, []),
         lora_roots=lora_roots,
+        release_names=release_names,
     )
 
 
 def _register_model_action_routes(
-    routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, *, updater_service=None
+    routes,
+    config_store,
+    job_manager,
+    decisions,
+    base_codes,
+    answer_cache,
+    journal,
+    *,
+    updater_service=None,
+    release_names=None,
 ) -> DownloadQueue:
     queue = DownloadQueue()
 
@@ -1474,7 +1486,7 @@ def _register_model_action_routes(
         if problem:
             raise DownloadError(problem)
         ctx = download_context(
-            config_store, job_manager, decisions, base_codes, answer_cache, journal
+            config_store, job_manager, decisions, base_codes, answer_cache, journal, release_names
         )
         download_one(request, report=report, should_stop=should_stop, ctx=ctx)
 

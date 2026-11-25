@@ -22,6 +22,7 @@ from comfy_updater.download_queue import (
 from comfy_updater.jobs import JobManager, JobRecord
 from comfy_updater.model_actions import EARLY_ACCESS_ERROR
 from comfy_updater.naming_ai import SYSTEM_PROMPT
+from comfy_updater.release_names import ReleaseNameStore
 from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
 from comfy_updater.routes import (
     _PAUSE_ERRORS,
@@ -985,14 +986,17 @@ class DownloadRouteTests(_Dirs):
         self.jobs = JobManager()
         self.journal = RenameJournal(data_dir)
         self.routes = _Routes()
+        base_codes = BaseCodeStore(data_dir)
+        self.release_names = ReleaseNameStore(data_dir, base_codes)
         self.queue = _register_model_action_routes(
             self.routes,
             self.config_store,
             self.jobs,
             DecisionStore(data_dir),
-            BaseCodeStore(data_dir),
+            base_codes,
             AnswerCache(data_dir),
             self.journal,
+            release_names=self.release_names,
         )
         self.jobs.restore_job(
             "check-updates", "check-1", startedAt="", finishedAt="", summary={}, items=[self.item()]
@@ -1107,6 +1111,12 @@ class DownloadRouteTests(_Dirs):
         self.assertEqual(
             {"downloaded": 1, "failed": 0, "stopped": 0}, self.jobs.get(job_id).summary
         )
+
+    def test_the_download_context_carries_the_release_names(self) -> None:
+        self.post_download()
+        self.release.set()
+        _join_job_threads()
+        self.assertIs(self.release_names, self.contexts[0].release_names)
 
     def test_delete_problem(self) -> None:
         queue = DownloadQueue()

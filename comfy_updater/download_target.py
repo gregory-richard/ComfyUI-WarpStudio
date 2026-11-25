@@ -17,9 +17,9 @@ from typing import Callable, NamedTuple
 from .constants import INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX, SUPPORTED_MODEL_EXTENSIONS
 from .model_download import DownloadError, file_sha256
 from .naming_check import needs_review
-from .naming_scheme import FORBIDDEN_CHARS, RESERVED_STEMS
+from .naming_scheme import FORBIDDEN_CHARS, RESERVED_STEMS, NameParts, assemble
 from .rename_folders import _norm, home_folders
-from .renamer import RENAME_TYPES, Entry, _entry_key, _sort_model, name_groups
+from .renamer import RENAME_TYPES, Entry, _sort_model, name_groups
 
 OUTSIDE_ROOTS_MESSAGE = "That folder isn't one of your model folders."
 _TAKEN_SUFFIXES = (*SUPPORTED_MODEL_EXTENSIONS, INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX)
@@ -141,6 +141,124 @@ def _reference_stem(reference: Path) -> str:
     return name[: -len(reference.suffix)] if reference.suffix else name
 
 
+class NamedRelease(NamedTuple):
+    """One release's name as the renamer gave it, in parts."""
+
+    parts: NameParts
+    # The row's base model; its code is ``parts.base``.
+    base_model: str
+    # ``base_model`` when the code is the AI's (not yet in the table), else "".
+    new_base: str
+
+    @property
+    def stem(self) -> str:
+        return assemble(self.parts)
+
+
+class _OwnNames:
+    """The user's creator and title for a model stand in for its saved decisions, so the AI
+    decides only the version and a new base's code."""
+
+    def __init__(self, decisions, own: tuple[str, str]) -> None:
+        self._decisions = decisions
+        self._own = own
+
+    def model(self, model_id) -> dict:
+        return {**self._decisions.model(model_id), "creator": self._own[0], "title": self._own[1]}
+
+    def file(self, file_key: str) -> dict:
+        return self._decisions.file(file_key)
+
+    def version(self, version_id):
+        return self._decisions.version(version_id)
+
+
+def ai_stems(
+    model_id: str,
+    model: dict,
+    releases: list[tuple[dict, dict]],
+    *,
+    model_type: str,
+    reference: Path,
+    own: tuple[str, str] | None,
+    generator,
+    decisions,
+    base_codes,
+    cache,
+    clip_name: str,
+    should_stop: Callable[[], bool],
+) -> dict[str, NamedRelease]:
+    """The names of a model's releases as a dry run gives them, keyed by version id.
+
+    One AI call names them all (more only on a retry). Every release stands in
+    for a file beside the reference, under the name the user gave the version
+    they have, so the renamer reads a creator from it when Civitai has none and
+    judges an official file by it. A release gets no name when the renamer skips
+    the type, the name needs a look, a new base has no code, the name is the
+    reference's own, or another release has the same name. ``own`` is the user's
+    (creator, title) for the model. A Civitai or naming-model error propagates.
+    """
+    if model_type not in RENAME_TYPES or not releases:
+        return {}
+    model_id = str(model_id)
+    folder = reference.parent
+    stem = _reference_stem(reference)
+    entries: list[Entry] = []
+    for version, file in releases:
+        version_id = str(version["id"])
+        suffix = os.path.splitext(str(file.get("name") or ""))[1]
+        entries.append(
+            Entry(
+                # One path per release: the rows are told apart by it.
+                path=folder / f"{stem}.{version_id}{suffix}",
+                folder=folder,
+                stem=stem,
+                model_type=model_type,
+                metadata_only=False,
+                info=version,
+                model_id=model_id,
+                version_id=version_id,
+                sha256=file_sha256(file),
+                # No file yet: the precision comes from Civitai's file metadata.
+                has_weights=False,
+                identity={},
+                found={},
+            )
+        )
+    decided = _OwnNames(decisions, own) if own else decisions
+    group, _rows = _sort_model(model_id, model, entries, decided)
+    if group is None:
+        return {}
+    rows: list[dict] = []
+    name_groups(
+        [group],
+        generator,
+        decisions=decided,
+        base_codes=base_codes,
+        cache=cache,
+        clip_name=clip_name,
+        progress=lambda *args: None,
+        emit=rows.append,
+        control=_Stop(should_stop),
+    )
+    names: dict[str, NamedRelease] = {}
+    for row in rows:
+        if row.get("status") != "change":
+            continue
+        flags = list(row.get("flags") or [])
+        new_base = "new-base-code" in flags
+        if needs_review([flag for flag in flags if flag != "new-base-code"]):
+            continue
+        parts = row["parts"]
+        if new_base and not parts["base"]:
+            continue
+        base_model = str(row.get("baseModel") or "")
+        names[str(row["versionId"])] = NamedRelease(
+            NameParts(**parts), base_model, base_model if new_base else ""
+        )
+    return names
+
+
 def ai_stem(
     model_id: str,
     version: dict,
@@ -160,62 +278,29 @@ def ai_stem(
 
     None when the renamer skips the type or the name needs a look. A base with
     no code yet is no reason to look: the AI's code is used (``new_base`` says
-    so), unless it gave none. The new file
-    stands in under the name the user gave the version they have, so the renamer
-    reads a creator from it when Civitai has none and judges an official file by
-    it. A Civitai or naming-model error propagates.
+    so), unless it gave none. See ``ai_stems``. A Civitai or naming-model error
+    propagates.
     """
     if model_type not in RENAME_TYPES:
         return None
-    model_id = str(model_id)
-    folder = reference.parent
-    stem = _reference_stem(reference)
-    suffix = os.path.splitext(str(file.get("name") or ""))[1]
-    entry = Entry(
-        path=folder / (stem + suffix),
-        folder=folder,
-        stem=stem,
-        model_type=model_type,
-        metadata_only=False,
-        info=version,
-        model_id=model_id,
-        version_id=str(version["id"]),
-        sha256=file_sha256(file),
-        # No file yet: the precision comes from Civitai's file metadata.
-        has_weights=False,
-        identity={},
-        found={},
-    )
-    model = client.get_model(model_id, raise_on_error=True)
+    model = client.get_model(str(model_id), raise_on_error=True)
     if not isinstance(model, dict):
         return None
-    group, _rows = _sort_model(model_id, model, [entry], decisions)
-    if group is None:
-        return None
-    rows: list[dict] = []
-    name_groups(
-        [group],
-        generator,
+    named = ai_stems(
+        model_id,
+        model,
+        [(version, file)],
+        model_type=model_type,
+        reference=reference,
+        own=None,
+        generator=generator,
         decisions=decisions,
         base_codes=base_codes,
         cache=cache,
         clip_name=clip_name,
-        progress=lambda *args: None,
-        emit=rows.append,
-        control=_Stop(should_stop),
-    )
-    key = _entry_key(entry)
-    row = next((row for row in rows if row.get("key") == key), None)
-    if row is None or row.get("status") not in ("change", "unchanged"):
-        return None
-    flags = list(row.get("flags") or [])
-    new_base = "new-base-code" in flags
-    if needs_review([flag for flag in flags if flag != "new-base-code"]):
-        return None
-    code = row["parts"]["base"]
-    if new_base and not code:
-        return None
-    return AiName(row["newStem"], code, str(row.get("baseModel") or "") if new_base else "")
+        should_stop=should_stop,
+    ).get(str(version["id"]))
+    return AiName(named.stem, named.parts.base, named.new_base) if named else None
 
 
 def _bare_name(name: str) -> bool:
