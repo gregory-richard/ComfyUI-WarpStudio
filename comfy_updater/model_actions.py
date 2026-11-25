@@ -95,6 +95,8 @@ class DownloadContext:
     roots_for: Callable[[str], list]
     lora_roots: Callable[[], list]
     trash: Callable[[str], None] = send_to_trash
+    # The names the check gave the releases (a ReleaseNameStore); None asks the AI for each.
+    release_names: Any = None
 
 
 def download_one(request: DownloadRequest, *, report, should_stop, ctx: DownloadContext) -> None:
@@ -128,7 +130,9 @@ def _updates(request: DownloadRequest, report, should_stop, ctx: DownloadContext
     if request.replace_path and not inside_roots(Path(request.replace_path), roots):
         raise DownloadError(OUTSIDE_ROOTS_MESSAGE)
 
-    named = _ai_name(request, version, file, reference, client, report, should_stop, ctx)
+    named = ctx.release_names.get(request.version_id) if ctx.release_names is not None else None
+    if named is None:
+        named = _ai_name(request, version, file, reference, client, report, should_stop, ctx)
     _stop_if_asked(should_stop)
     code = ctx.base_codes.code(str(version.get("baseModel") or "")) or ""
     try:
