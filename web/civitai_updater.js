@@ -382,7 +382,7 @@ async function renderTab(el) {
       <div id="cu-updates-pane">
         <div id="cu-tb-updates" data-tb-tab="updates"></div>
         <div class="cu-action-bar">
-          <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip cu-check-btn" data-tooltip="Scan local files and compare with Civitai to check for newer versions."><span class="cu-check-label">Check for Updates</span></button>
+          <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip cu-check-btn" data-tooltip="Scan local files and compare with Civitai to check for newer versions."><svg class="cu-check-ring" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"></circle></svg><span class="cu-check-label">Check for Updates</span></button>
           <div class="cu-more">
             <button id="cu-more" type="button" class="cu-btn cu-btn-ghost" aria-label="More" title="More" aria-haspopup="true" aria-expanded="false"><i class="pi pi-ellipsis-h" aria-hidden="true"></i></button>
             <div id="cu-more-menu" class="cu-tb-menu cu-more-menu" hidden></div>
@@ -3733,17 +3733,32 @@ function injectStyles() {
       text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
     }
 
-    .cu-check-btn.is-spin .cu-check-label::before {
-      content: "";
-      display: inline-block;
-      width: 9px;
-      height: 9px;
-      margin-right: 6px;
-      border: 1.5px solid currentColor;
-      border-right-color: transparent;
-      border-radius: 50%;
-      vertical-align: -1px;
-      animation: cu-ring-spin 0.8s linear infinite;
+    /* The ring while the check starts: the same SVG ring as the pill's, drawn
+       once and turned whole (its own layer), at the button's left edge so the
+       centred label never shifts. */
+    .cu-check-ring {
+      position: absolute;
+      top: 50%;
+      left: 9px;
+      display: none;
+      width: 12px;
+      height: 12px;
+      margin-top: -6px;
+      will-change: transform;
+    }
+
+    .cu-check-ring circle {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-dasharray: 43.98;
+      stroke-dashoffset: 30.79;
+    }
+
+    .cu-check-btn.is-spin .cu-check-ring {
+      display: block;
+      animation: cu-ring-spin 1s linear infinite;
     }
 
     /* Meanwhile the ⋯ square beside it is the check's Stop. */
