@@ -221,6 +221,12 @@ def copy_verified(
     except OSError as exc:
         _discard(part)
         raise DownloadError(f"Could not copy {name}: {_reason(exc)}") from exc
+    except DownloadError as exc:
+        _discard(part)
+        # A rename that kept failing says why without its paths, like every other copy error.
+        if isinstance(exc.__cause__, OSError):
+            raise DownloadError(f"Could not copy {name}: {_reason(exc.__cause__)}") from exc
+        raise
     except BaseException:
         _discard(part)
         raise

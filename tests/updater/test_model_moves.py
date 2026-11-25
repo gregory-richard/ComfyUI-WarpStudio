@@ -536,6 +536,65 @@ class MoveTests(_MoveCase):
         self.assertFalse((self.z / "Lora").exists())
         self.assert_untouched(before, weights)
 
+    def test_a_final_rename_that_keeps_failing_says_could_not_copy_without_paths(self) -> None:
+        weights = self.lay(self.dk)
+        self.hold([self.d_item()], [])
+        before = self.everything()
+        denied = PermissionError(
+            errno.EACCES,
+            "Access is denied",
+            str(self.zk / "x.safetensors.part"),
+            None,
+            str(self.zk / "x.safetensors"),
+        )
+
+        with mock.patch("comfy_updater.model_download.RENAME_DELAY", 0):
+            with mock.patch("comfy_updater.model_download.os.rename", side_effect=denied):
+                with self.assertRaises(DownloadError) as caught:
+                    self.move(self.archive_request())
+
+        self.assertEqual("Could not copy x.safetensors: Access is denied", str(caught.exception))
+        self.assertFalse((self.z / "Lora").exists())
+        self.assert_untouched(before, weights)
+
+    def test_an_unarchive_that_fails_midway_leaves_the_archive_copy_and_no_folder(self) -> None:
+        source = self.lay(self.zk)
+        self.hold([], [self.z_item()])
+        before = self.everything()
+
+        with mock.patch.object(model_moves, "COPY_CHUNK", 1024):
+            with _breaking_open(lambda path: path.name.endswith(".part"), after=1):
+                with self.assertRaises(DownloadError) as caught:
+                    self.move(self.unarchive_request())
+
+        self.assertTrue(str(caught.exception).startswith("Could not copy x.safetensors:"))
+        self.assertNotIn(str(self.tmp), str(caught.exception))
+        self.assertFalse(self.dk.exists())
+        self.assert_untouched(before, source)
+
+    def test_a_refused_archive_original_keeps_both_copies_and_says_so(self) -> None:
+        source = self.lay(self.zk)
+        self.hold([], [self.z_item()])
+        attempts = []
+
+        def locked(path: str) -> None:
+            attempts.append(Path(path).name)
+            raise PermissionError(errno.EACCES, LOCKED)
+
+        self.ctx.trash = locked
+        request = self.unarchive_request()
+
+        self.move(request)
+
+        self.assertEqual(
+            [BOTH_COPIES_WARNING.format(name="x.safetensors", reason=LOCKED)], request.warnings
+        )
+        self.assertEqual(["x.safetensors"], attempts)
+        for name in ("x.safetensors", "x.civitai.info", "x.preview.png", "x.json"):
+            self.assertTrue((self.zk / name).is_file(), name)
+            self.assertTrue((self.dk / name).is_file(), name)
+        self.assertEqual(BODY, source.read_bytes())
+
     def test_a_copy_never_overwrites_a_file_or_a_part_left_behind(self) -> None:
         weights = self.lay(self.dk)
         self.zk.mkdir(parents=True)
