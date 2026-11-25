@@ -55,6 +55,8 @@ MOVE_BUSY_ERROR = "That file is being moved. Try again when it's done."
 HASH_MISMATCH_ERROR = (
     "The copy didn't match its SHA-256, so it was removed. The original is untouched."
 )
+# The copy reads back as written, but the original itself differs from its info file.
+SOURCE_HASH_MISMATCH_ERROR = "{name} doesn't match the SHA-256 in its info file, so it wasn't moved."
 BOTH_COPIES_WARNING = "Both copies are kept: {name} could not go to the Recycle Bin ({reason})."
 SIDECAR_COPY_WARNING = "Both copies are kept: {name} could not be copied ({reason})."
 ARCHIVE_CHANGED_ERROR = "The archive folder changed since this move was asked for. Try it again."
@@ -211,8 +213,11 @@ def copy_verified(
             copied = sha256_file(part, chunk_size=COPY_CHUNK, should_stop=should_stop)
         except HashingCancelled as exc:
             raise DownloadStopped() from exc
-        if written != total or copied != digest.hexdigest() or (expected and copied not in expected):
+        if written != total or copied != digest.hexdigest():
             raise DownloadError(HASH_MISMATCH_ERROR)
+        if expected and copied not in expected:
+            # The copy is what was read: the original is what its info file doesn't list.
+            raise DownloadError(SOURCE_HASH_MISMATCH_ERROR.format(name=source.name))
         _stop_if_asked(should_stop)
         _move_into_place(part, target)
     except FileExistsError as exc:  # the name was taken while the copy ran

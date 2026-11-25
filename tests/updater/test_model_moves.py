@@ -37,6 +37,7 @@ from comfy_updater.model_moves import (
     NOT_IN_TYPE_FOLDER_ERROR,
     NOT_ON_DRIVE_ERROR,
     SIDECAR_COPY_WARNING,
+    SOURCE_HASH_MISMATCH_ERROR,
     UNIDENTIFIED_MOVE_ERROR,
     MoveContext,
     archive_target,
@@ -464,7 +465,8 @@ class MoveTests(_MoveCase):
         self.assertEqual(NAME_TAKEN_ERROR.format(name="x.json"), str(caught.exception))
         self.assert_untouched(before, weights)
 
-    def test_a_copy_that_does_not_match_the_info_hash_is_removed(self) -> None:
+    def test_an_original_that_does_not_match_its_info_hash_is_not_moved(self) -> None:
+        # The copy reads back as written: it is the original that differs from its info.
         weights = self.lay(self.dk, info_payload(sha="0" * 64))
         self.hold([self.d_item()], [])
         before = self.everything()
@@ -472,7 +474,11 @@ class MoveTests(_MoveCase):
         with self.assertRaises(DownloadError) as caught:
             self.move(self.archive_request())
 
-        self.assertEqual(HASH_MISMATCH_ERROR, str(caught.exception))
+        self.assertEqual(
+            "x.safetensors doesn't match the SHA-256 in its info file, so it wasn't moved.",
+            str(caught.exception),
+        )
+        self.assertEqual(SOURCE_HASH_MISMATCH_ERROR.format(name="x.safetensors"), str(caught.exception))
         self.assertFalse((self.z / "Lora" / "krea2").exists())
         self.assertFalse((self.z / "Lora").exists())  # the type folder the move made goes too
         self.assert_untouched(before, weights)
