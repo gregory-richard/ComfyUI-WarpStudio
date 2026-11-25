@@ -1729,6 +1729,8 @@ def _register_model_action_routes(
         if request.source in MOVE_SOURCES:
             move_ctx = MoveContext(job_manager, config_store.data_dir, _archive_folder(config_store))
             move_one(request, report=report, should_stop=should_stop, ctx=move_ctx)
+            # The file's row in its new place may carry the key of its last trip away from it.
+            queue.forget_moves_from(request.move_to)
             return
         ctx = download_context(
             config_store, job_manager, decisions, base_codes, answer_cache, journal, release_names

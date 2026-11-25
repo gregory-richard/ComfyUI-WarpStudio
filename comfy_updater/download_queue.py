@@ -235,6 +235,20 @@ class DownloadQueue:
                 r for r in self._requests if r.key != key or r.state in _ACTIVE_STATES
             ]
 
+    def forget_moves_from(self, path: str) -> None:
+        """Drop the finished moves that copied from ``path``: a file moved back there since.
+
+        A move is keyed by its row's path, so the row of a file brought back (Archive,
+        then Unarchive) has its trip out's key, and would show that record as its own.
+        """
+        wanted = _norm(path)
+        with self._lock:
+            self._requests = [
+                r
+                for r in self._requests
+                if r.state in _ACTIVE_STATES or not r.move_from or _norm(r.move_from) != wanted
+            ]
+
     def _prune_locked(self) -> None:
         finished = [r for r in self._requests if r.state not in _ACTIVE_STATES]
         drop = len(finished) - KEEP_FINISHED

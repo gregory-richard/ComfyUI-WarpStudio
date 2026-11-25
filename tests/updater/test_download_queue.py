@@ -279,6 +279,26 @@ class DownloadQueueTests(unittest.TestCase):
         self.assertFalse(queue.moving(source))
         self.assertFalse(queue.moving(target))
 
+    def test_finished_moves_out_of_a_path_are_forgotten(self):
+        queue = DownloadQueue()
+        drive = os.path.join("models", "loras", "krea2", "x.safetensors")
+        archive = os.path.join("archive", "Lora", "krea2", "x.safetensors")
+        there, _ = queue.submit(_request("move:d", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.finish(there, "done")
+        back, _ = queue.submit(_request("move:z", move_from=archive, move_to=drive))
+        queue.take_next()
+        download, _ = queue.submit(_request("version:1"))
+
+        queue.forget_moves_from(os.path.join("models", "loras", ".", "krea2", "x.safetensors"))
+
+        # The finished trip out of the path goes; a running move, a download and others stay.
+        self.assertEqual(["move:z", "version:1"], [r["key"] for r in queue.snapshot()])
+        queue.finish(back, "done")
+        queue.forget_moves_from(archive)
+        self.assertEqual(["version:1"], [r["key"] for r in queue.snapshot()])
+        self.assertIs(download, queue.take_next())
+
     def test_a_download_moves_nothing(self):
         queue = DownloadQueue()
         queue.submit(_request("a", replace_path=os.path.join("models", "glow.safetensors")))
