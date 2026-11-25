@@ -62,3 +62,23 @@ test("freshCheckDialogHtml: asks with the results' age, Check again first", () =
 test("freshCheckDialogHtml: escapes the age", () => {
   assert.ok(!freshCheckDialogHtml("<b>x</b>", escapeHtml).includes("<b>x</b>"));
 });
+
+test("checkButtonView: the naming phase says how many releases are named", () => {
+  assert.deepEqual(
+    checkButtonView({ ...idle, checking: true, status: "running", progress: 3, total: 25, phase: "naming" }),
+    { label: "Naming 3 of 25", fill: 3 / 25, busy: true, spin: false },
+  );
+});
+
+test("checkButtonView: a paused naming phase says Paused at", () => {
+  const v = checkButtonView({ ...idle, checking: true, status: "paused", progress: 3, total: 25, phase: "naming" });
+  assert.equal(v.label, "Paused at 3 of 25");
+  assert.equal(v.fill, 3 / 25);
+});
+
+test("checkButtonView: the naming phase without a total still starts", () => {
+  assert.equal(
+    checkButtonView({ ...idle, checking: true, status: "running", phase: "naming" }).label,
+    "Starting the check…",
+  );
+});

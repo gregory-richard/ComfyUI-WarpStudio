@@ -101,6 +101,7 @@ export function checkDoneStatus(summary) {
     ],
   ];
   if (summary?.archiveError) lines.push([String(summary.archiveError), "error"]);
+  if (summary?.namingError) lines.push([String(summary.namingError), "error"]);
   return lines;
 }
 
