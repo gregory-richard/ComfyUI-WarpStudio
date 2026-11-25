@@ -580,13 +580,14 @@ const card = (item = makeItem(), fields, opts) => {
   return updatesCardHtml(item, rows, cardUi(fields), escapeHtml);
 };
 
-test("updatesCardHtml: the pill, the N new tag, the names and the info line of the selected row", () => {
+test("updatesCardHtml: the pill, the N new tag and the names, with no line above the rows", () => {
   const out = card();
   assert.match(out, /data-u-pill[^>]*>LoRA \| MiniMax H3 Image</);
   assert.match(out, /class="cu-u-new"[^>]*>2 new</);
   assert.match(out, /class="cu-g-title" title="glow lite">glow lite</);
   assert.match(out, /class="cu-g-creator" title="moss">moss</);
-  assert.match(out, /data-u-info[^>]*>New · 2026-03-01 · not downloaded</);
+  // Each row says its own status, so nothing sits above the rows.
+  assert.doesNotMatch(out, /data-u-info|cu-u-info|data-info=/);
   assert.match(out, /<img [^>]*src="https:\/\/image\.civitai\.com\/x\/abc\/width=450\/1\.jpeg"/);
   assert.match(
     out,
@@ -595,6 +596,22 @@ test("updatesCardHtml: the pill, the N new tag, the names and the info line of t
   assert.match(out, /class="cu-u-pic" data-u-pic/);
   assert.match(out, /aria-label="Open the preview of glow lite"/);
   assert.match(out, /1\.2k/);
+});
+
+test("updatesCardHtml: a row's status line adds the price of a paid release, and in Issues the issue", () => {
+  const paid = makeItem();
+  paid.newVersions[0].paid = "permanent";
+  assert.match(
+    card(paid),
+    /class="cu-u-date"> · 2026-03-01<\/span><span class="cu-u-more"> · Buzz · always<\/span>/
+  );
+  // A free release and a saved file add nothing: the status word says it.
+  assert.doesNotMatch(card(), /cu-u-more/);
+  const item = makeItem();
+  item.localVersions[0].status = "not_found";
+  const out = card(item, { mode: "issues" }, { mode: "issues" });
+  const message = escapeHtml(issueMessage(item.localVersions[0]));
+  assert.ok(out.includes(`<span class="cu-u-more"> · ${message}</span>`), out);
 });
 
 test("updatesCardHtml: a card redrawn while Delete asks keeps the question on that row", () => {
@@ -636,7 +653,7 @@ test("updatesCardHtml: one row per version, marked, with the selected one curren
   assert.match(out, /data-pic-type="video"/);
   assert.match(out, new RegExp(`data-local-path="${reEsc(escapeHtml(saved))}"`));
   assert.match(out, /data-pill="LoRA \| Illustrious"/);
-  assert.match(out, /data-info="Archived · 2025-06-01 · on Z:"/);
+  assert.match(out, /class="cu-u-sub" title="Archived · 2025-06-01 · on Z:"/);
   assert.match(out, /role="list"/);
   assert.match(out, /role="listitem" tabindex="0"/);
   assert.match(out, /class="cu-u-tn"[^>]*><img [^>]*width=64\/1\.jpeg/);
@@ -725,7 +742,7 @@ test("updatesCardHtml: every text carries its full text in its title", () => {
     "cu-g-pill",
     "cu-g-creator",
     "cu-g-title",
-    "cu-u-info",
+    "cu-u-sub",
     "cu-u-name",
     "cu-u-new",
   ]) {
