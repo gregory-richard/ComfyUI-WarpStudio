@@ -364,6 +364,12 @@ export function rowActionsHtml(slot, record, ui, escapeHtml) {
   }
   if (state === "done") {
     const warning = (record?.warnings || []).join(" ");
+    // A move that kept both copies leaves the file where it was: it keeps its buttons,
+    // and the warning shows in place of its name.
+    if (warning && slot.kind === "file") {
+      const [first, second] = resting();
+      return two(first, second);
+    }
     return two(
       warning
         ? glyph("pi-exclamation-triangle", esc(warning), " is-warn")

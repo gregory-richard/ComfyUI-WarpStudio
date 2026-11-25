@@ -249,6 +249,17 @@ class DownloadQueue:
                 if r.state in _ACTIVE_STATES or not r.move_from or _norm(r.move_from) != wanted
             ]
 
+    def forget_finished_moves(self) -> None:
+        """Drop every finished move: a completed check lists the files where they are now.
+
+        A record lives until a restart, and a move's warning would sit over its row's name
+        all that time. Waiting and running moves, and every download, stay.
+        """
+        with self._lock:
+            self._requests = [
+                r for r in self._requests if r.state in _ACTIVE_STATES or not r.move_from
+            ]
+
     def _prune_locked(self) -> None:
         finished = [r for r in self._requests if r.state not in _ACTIVE_STATES]
         drop = len(finished) - KEEP_FINISHED

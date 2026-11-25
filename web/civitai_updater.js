@@ -1429,6 +1429,8 @@ function pollJob(jobId) {
           if (status !== "completed") state.forceNextRecheck = true;
           if (job.summary && Object.keys(job.summary).length > 0) state.checkSummary = job.summary;
           takeArchiveResult(job.summary);
+          // A completed check forgets the finished moves: their rows show the files as they are now.
+          await loadDownloads().catch(() => {});
           await loadResultPage(true);
           loadModelStats();
         }

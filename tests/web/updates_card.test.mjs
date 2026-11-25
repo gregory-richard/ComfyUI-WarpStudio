@@ -588,6 +588,23 @@ test("rowActionsHtml: a finished move says Moved, a finished download Downloaded
   assert.match(downloaded, /title="Downloaded"/);
 });
 
+test("rowActionsHtml: a move that kept both copies gives the file its buttons back", () => {
+  const warned = rec({ state: "done", kind: "move", warnings: ["Both copies are kept: …"] });
+  const [del, move] = cells(html(file(), warned));
+  assert.match(del, /data-row-action="delete"/);
+  assert.match(move, /data-row-action="archive"/);
+  const [adel, aback] = cells(html(file({ place: "archive", path: archivedPath }), warned));
+  assert.match(adel, /data-row-action="delete"/);
+  assert.match(aback, /data-row-action="unarchive"/);
+  assert.doesNotMatch(html(file(), warned), /pi-exclamation-triangle|pi-check/);
+  // The warning itself shows in place of the row's name.
+  const item = makeItem();
+  const records = new Map([["move:0123456789abcdef", { ...warned, key: "move:0123456789abcdef" }]]);
+  const out = card(item, { records });
+  assert.match(out, /data-dl-state="done" data-dl-warn="1"/);
+  assert.match(out, /class="cu-u-fail" title="Both copies are kept: …">Both copies are kept: …</);
+});
+
 test("updatesCardHtml: one row per version, marked, with the selected one current", () => {
   const out = card();
   assert.equal((out.match(/data-u-row="/g) || []).length, 4);

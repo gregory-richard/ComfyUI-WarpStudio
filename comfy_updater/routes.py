@@ -1740,6 +1740,12 @@ def _register_model_action_routes(
     def runner(progress, emit, control):  # noqa: ARG001
         return run_queue(queue, work, progress=progress, control=control)
 
+    def forget_moves_after_a_check(record) -> None:
+        if record.type == CHECK_JOB and record.status == "completed":
+            queue.forget_finished_moves()
+
+    job_manager.add_finish_listener(forget_moves_after_a_check)
+
     def refused(problem):
         status, message = problem
         return web.json_response({"error": message}, status=status)

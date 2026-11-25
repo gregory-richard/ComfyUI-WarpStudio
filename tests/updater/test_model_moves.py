@@ -961,6 +961,29 @@ class MoveRouteTests(_MoveCase):
         self.assertEqual({move_key(str(self.zk / "x.civitai.info")): "done"}, records)
         self.assertNotIn(move_key(str(self.weights)), records)
 
+    def test_a_completed_check_forgets_the_finished_moves(self) -> None:
+        # The check lists the files where they are now: a move's warning would sit over the
+        # row's name until a restart.
+        self.release.set()
+        status, body = self.post_move()
+        self.assertEqual(200, status, body)
+        _join_job_threads()
+        self.assertEqual(["done"], [record["state"] for record in self.queue.snapshot()])
+
+        def stopped_check(progress, emit, control):
+            control.cancel()
+            return {}, []
+
+        stopped = self.jobs.start("check-updates", stopped_check)
+        _join_job_threads()
+        self.assertEqual("cancelled", stopped.status)
+        self.assertEqual(1, len(self.queue.snapshot()))  # a stopped check looked at nothing
+
+        checked = self.jobs.start("check-updates", lambda progress, emit, control: ({}, []))
+        _join_job_threads()
+        self.assertEqual("completed", checked.status)
+        self.assertEqual([], self.queue.snapshot())
+
     def test_a_move_needs_a_job_a_path_and_a_place(self) -> None:
         for payload in (
             {},

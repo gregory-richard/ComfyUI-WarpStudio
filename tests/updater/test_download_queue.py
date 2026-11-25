@@ -299,6 +299,29 @@ class DownloadQueueTests(unittest.TestCase):
         self.assertEqual(["version:1"], [r["key"] for r in queue.snapshot()])
         self.assertIs(download, queue.take_next())
 
+    def test_finished_moves_are_forgotten_and_the_rest_kept(self):
+        queue = DownloadQueue()
+        drive = os.path.join("models", "loras", "x.safetensors")
+        archive = os.path.join("archive", "Lora", "x.safetensors")
+        done, _ = queue.submit(_request("move:done", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.finish(done, "done")
+        failed, _ = queue.submit(_request("move:error", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.finish(failed, "error", "boom")
+        downloaded, _ = queue.submit(_request("version:1"))
+        queue.take_next()
+        queue.finish(downloaded, "done")
+        queue.submit(_request("move:running", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.submit(_request("move:waiting", move_from=drive, move_to=archive))
+
+        queue.forget_finished_moves()
+
+        self.assertEqual(
+            ["version:1", "move:running", "move:waiting"], [r["key"] for r in queue.snapshot()]
+        )
+
     def test_a_download_moves_nothing(self):
         queue = DownloadQueue()
         queue.submit(_request("a", replace_path=os.path.join("models", "glow.safetensors")))
