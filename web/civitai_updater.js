@@ -9,17 +9,23 @@ import {
   MODEL_DOWNLOAD_JOB,
   finishedText,
   galleryKey,
-  isPaid,
   latestRecords,
-  rowDeleteHtml,
   rowDownloadView,
-  rowHideHtml,
-  slotVersions,
-  versionActionsHtml,
-  versionKey,
 } from "./model_actions.js";
+import {
+  CARD_COPY,
+  PICTURE_WIDTH,
+  THUMB_WIDTH,
+  UPDATES_CARD_CSS,
+  archiveDriveLabel,
+  cardRows,
+  pickRowKey,
+  rowActionsHtml,
+  sizedImage,
+  updatesCardHtml,
+} from "./updates_card.js";
 import { CATEGORY_LABELS, NO_CATEGORY, galleryOnlyBases } from "./gallery_core.js";
-import { archiveResult, checkDoneStatus, issueMessage, rowIssue, rowLabel } from "./check_results.js";
+import { archiveResult, checkDoneStatus } from "./check_results.js";
 import { infoHtml, menuHtml, moreMenuItems, savedArchiveFolder, toolbarHtml, updateToolbar, wireToolbar } from "./panel_toolbar.js";
 import { noteUsed, promptNodesOf } from "./prompt_target.js";
 import { createScrollMemory, findScroller } from "./scroll_memory.js";
@@ -269,10 +275,16 @@ const state = {
   localPreviewCache: new Map(),
   localPreviewJobId: null,
   lightboxLocalUrls: null,
-  // Model downloads: the newest record per key (version:ID), and whether the
-  // server can send a replaced file to the Recycle Bin.
+  // Downloads and moves: the newest record per key (version:ID, move:…), and
+  // whether the server can send a file to the Recycle Bin.
   downloads: new Map(),
   canTrash: false,
+  // The row each Updates or Issues card shows, by card key, for the check it was
+  // picked in. A card redrawn by a refresh comes back on that row.
+  cardSelection: new Map(),
+  cardSelectionJobId: null,
+  // The running check's phase: "naming" once its releases are being named, else "".
+  currentPhase: "",
 };
 
 app.registerExtension({
@@ -287,7 +299,7 @@ app.registerExtension({
     { id: SETTINGS.useComfyPaths, name: "Use Comfy Default Paths", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Comfy Defaults"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.useExtraModelPaths, name: "Use extra_model_paths.yaml", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Extra Model Paths"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.useCustomPaths, name: "Use Custom Paths", type: "boolean", defaultValue: true, category: ["Warp Studio", "Civitai Path Sources", "Custom Paths"], onChange: () => scheduleSettingsSync() },
-    { id: SETTINGS.archiveFolder, name: "Archive Folder", type: "text", defaultValue: "", tooltip: "A folder of models you moved off this drive. Check with archive, under ⋯ in Updates, looks for new versions of them. Warp Studio only reads its .civitai.info files.", category: ["Warp Studio", "Civitai Path Sources", "Archive Folder"], onChange: () => scheduleSettingsSync() },
+    { id: SETTINGS.archiveFolder, name: "Archive Folder", type: "text", defaultValue: "", tooltip: "A folder of models you moved off this drive. Check with archive, under ⋯ in Updates, looks for new versions of them. Archive and Unarchive on a card move a version between this drive and the archive.", category: ["Warp Studio", "Civitai Path Sources", "Archive Folder"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.customCheckpoint, name: "Checkpoint Paths", type: "text", defaultValue: "", tooltip: "Optional extra checkpoint roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "Checkpoint"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.customLora, name: "LoRA Paths", type: "text", defaultValue: "", tooltip: "Optional extra LoRA roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "LoRA"], onChange: () => scheduleSettingsSync() },
     { id: SETTINGS.customVae, name: "VAE Paths", type: "text", defaultValue: "", tooltip: "Optional extra VAE roots. Use ';' or new lines.", category: ["Warp Studio", "Civitai Custom Paths", "VAE"], onChange: () => scheduleSettingsSync() },
@@ -606,6 +618,7 @@ function attachToRunningJob(job) {
   state.currentJobId = job.jobId;
   state.currentJobType = job.type;
   state.currentJobStatus = job.status || "running";
+  state.currentPhase = String(job.phase || "");
   state.currentProgress = job.progress || 0;
   state.currentTotal = job.total || 0;
   state.currentItemCount = job.itemCount || 0;
@@ -623,6 +636,7 @@ function clearCurrentJob() {
   state.currentJobId = null;
   state.currentJobType = null;
   state.currentJobStatus = null;
+  state.currentPhase = "";
   state.currentSummary = null;
   state.currentProgress = 0;
   state.currentTotal = 0;
@@ -740,23 +754,14 @@ function bindEvents(root) {
   root.querySelector("#cu-pause").addEventListener("click", async () => togglePauseResume());
   root.querySelector("#cu-stop").addEventListener("click", async () => stopCurrentJob());
   root.querySelector("#cu-dismiss").addEventListener("click", () => clearError());
-  const markReplaced = (ev, on) => {
-    const button = ev.target.closest?.('[data-dl-action="replace"]');
-    const slot = button?.closest(".cu-dl");
-    const card = slot?.closest(".cu-versions");
-    if (!card) return;
-    for (const row of card.querySelectorAll(".cu-ver-row.is-replacing")) row.classList.remove("is-replacing");
-    if (!on) return;
-    const target = (slot.dataset.modelPath || "").toLowerCase();
-    for (const link of card.querySelectorAll(".cu-copy-path[data-path]")) {
-      const path = (link.dataset.path || "").toLowerCase();
-      if (target && path.startsWith(target.replace(/\.civitai\.info$/, ""))) link.closest(".cu-ver-row")?.classList.add("is-replacing");
-    }
+  // Hovering, focusing or clicking a version row shows that version on its card.
+  const onRowPointed = (ev) => {
+    const row = ev.target?.closest?.(".cu-u-row");
+    if (row) selectRow(row.closest(".cu-u-card"), row);
   };
-  root.addEventListener("mouseover", (ev) => markReplaced(ev, true));
-  root.addEventListener("mouseout", (ev) => markReplaced(ev, false));
-  root.addEventListener("focusin", (ev) => markReplaced(ev, true));
-  root.addEventListener("focusout", (ev) => markReplaced(ev, false));
+  root.addEventListener("mouseover", onRowPointed);
+  root.addEventListener("focusin", onRowPointed);
+  root.addEventListener("click", onRowPointed);
   root.querySelector("#cu-roots-toggle").addEventListener("click", () => {
     state.rootsExpanded = !state.rootsExpanded;
     renderRoots();
@@ -822,37 +827,29 @@ function bindEvents(root) {
       restoreScroll(mode);
       return;
     }
-    const dlButton = target.closest("[data-dl-action]");
-    if (dlButton && dlButton.closest(".cu-dl")) {
-      const slot = dlButton.closest(".cu-dl");
-      const action = dlButton.dataset.dlAction;
-      if (action === "stop") {
-        await stopDownload(dlButton.dataset.requestId || "");
-      } else if (action === "download" || action === "replace") {
+    // A version row's two buttons: what they act on is the row's slot.
+    const rowButton = target.closest("[data-dl-action], [data-hide-action], [data-row-action]");
+    const acts = rowButton?.closest(".cu-u-acts");
+    if (acts) {
+      const slot = parseSlot(acts);
+      if (!slot) return;
+      const { dlAction, hideAction, rowAction } = rowButton.dataset;
+      if (dlAction === "stop") {
+        await stopDownload(rowButton.dataset.requestId || "");
+      } else if (dlAction === "download") {
         await startDownload(
-          {
-            source: "updates",
-            jobId: state.checkJobId,
-            modelId: slot.dataset.modelId,
-            versionId: slot.dataset.versionId,
-            modelPath: slot.dataset.modelPath,
-            replace: action === "replace",
-          },
-          slot.dataset.dlKey,
+          { source: "updates", jobId: state.checkJobId, modelId: slot.modelId, versionId: slot.versionId, modelPath: slot.path },
+          slot.dlKey,
         );
+      } else if (hideAction) {
+        if (!slot.modelId || !slot.versionId) return;
+        await toggleArchivedUpdate(slot.modelId, slot.versionId, hideAction === "show");
+      } else if (rowAction === "delete") {
+        await onRowDelete(slot.path || "");
+      } else if (rowAction === "archive" || rowAction === "unarchive") {
+        if (!slot.path) return;
+        await startMove({ jobId: state.checkJobId, path: slot.path, to: rowAction === "archive" ? "archive" : "drive" }, slot.dlKey);
       }
-      return;
-    }
-    const rowDelete = target.closest('[data-row-action="delete"]');
-    if (rowDelete) {
-      await onRowDelete(rowDelete);
-      return;
-    }
-    if (target.dataset.archiveAction) {
-      const modelId = target.dataset.modelId || "";
-      const versionId = target.dataset.versionId || "";
-      if (!modelId || !versionId) return;
-      await toggleArchivedUpdate(modelId, versionId, target.dataset.archiveAction === "restore");
       return;
     }
     const groupHead = target.closest("[data-group-key]");
@@ -905,6 +902,7 @@ function paintCheckButton() {
     progress: state.currentProgress,
     total: state.currentTotal,
     flashText: Date.now() < state.checkFlashUntil ? state.checkFlashText : "",
+    phase: state.currentPhase,
   });
   const label = button.querySelector(".cu-check-label");
   if (label && label.textContent !== view.label) label.textContent = view.label;
@@ -1259,6 +1257,7 @@ async function startJob(endpoint, type, { includeArchive = false } = {}) {
     state.currentJobId = data.jobId;
     state.currentJobType = type;
     state.currentJobStatus = "queued";
+    state.currentPhase = "";
     state.currentSummary = null;
     state.currentProgress = 0;
     state.currentTotal = 0;
@@ -1350,6 +1349,12 @@ function pollJob(jobId) {
       const itemCount = Number(job.itemCount || 0);
 
       state.currentJobStatus = status;
+      // The naming phase counts releases, not files: its own rate, so a fresh estimate.
+      // A check never goes back to its files after naming; it only finishes, so the
+      // button keeps counting the releases until the job ends.
+      const phase = String(job.phase || "") || (state.currentPhase === "naming" ? "naming" : "");
+      if (phase !== state.currentPhase) resetEta();
+      state.currentPhase = phase;
       state.currentSummary = job.summary || null;
       state.currentMessage = String(job.message || "");
       if (Array.isArray(job.summary?.sidecarWarnings)) {
@@ -1599,6 +1604,11 @@ function renderProgressCounts() {
     setStatus(state.currentMessage || `Processing ${state.currentProgress} of ${state.currentTotal}`);
     return;
   }
+  // The check's last phase counts the releases it names, as its button does.
+  if (state.currentJobType === "check-updates" && state.currentPhase === "naming") {
+    setStatus(state.currentMessage || `Naming ${state.currentProgress} of ${state.currentTotal}`);
+    return;
+  }
   const s = state.currentSummary;
   if (!s || !s.mode) {
     if (state.currentJobId) {
@@ -1671,7 +1681,7 @@ function renderScanReport() {
 
 function buildResultCard(item, cardIndex) {
   const card = document.createElement("article");
-  card.className = "cu-item";
+  card.className = "cu-item cu-u-card";
   card.style.setProperty("--cu-i", String(Math.min(cardIndex, 12)));
   if (item.nsfw && state.matureMode === "blur") card.dataset.mature = "blur";
   // Not re-checked yet by the running check: dimmed until it is.
@@ -1683,130 +1693,162 @@ function buildResultCard(item, cardIndex) {
     card.classList.add("cu-settled");
     state.freshPaths.delete(path);
   }
-  const issuesView = state.resultMode === "issues";
-  const localVersions = item.localVersions || [];
-  const newVersions = issuesView ? [] : (item.newVersions || []);
-  const hiddenVersions = !issuesView && state.showHidden ? (item.hiddenNewVersions || []) : [];
-  const firstPath = localVersions.length ? localVersions[0].modelPath : "";
-  const displayName = item.modelName ? escapeHtml(item.modelName) : escapeHtml(extractFilename(firstPath || "unknown"));
-
-  const typePill = item.modelType ? `<span class="cu-type-pill" data-type="${escapeHtml(item.modelType)}">${escapeHtml(capitalize(item.modelType))}</span>` : "";
-  const creatorHtml = item.creatorName ? `<span class="cu-creator">by ${escapeHtml(item.creatorName)}</span>` : "";
-
-  // One list, newest on top, in the order the server sends. A server not yet
-  // restarted sends none; its releases are all newer than its saved files.
-  const lists = { saved: localVersions, new: newVersions, hidden: hiddenVersions };
-  const order = (item.versionOrder || [
-    ...newVersions.map((_, i) => ["new", i]),
-    ...hiddenVersions.map((_, i) => ["hidden", i]),
-    ...localVersions.map((_, i) => ["saved", i]),
-  ]).filter(([kind, index]) => lists[kind]?.[index]);
-  const versionRows = order.map(([kind, index], position) => {
-    const v = lists[kind][index];
-    if (kind !== "saved") return renderRemoteVersionRow(item, v, kind === "hidden");
-    // Files of one model usually fail for one reason; print it once, under the
-    // last row of each run that shares it.
-    const [nextKind, nextIndex] = order[position + 1] || [];
-    const next = nextKind === "saved" ? localVersions[nextIndex] : null;
-    const showMessage = !next || !rowIssue(next) || issueMessage(next) !== issueMessage(v);
-    return renderLocalVersionRow(v, showMessage);
-  }).join("");
-
-  const localPath = localVersions.find((v) => v.hasLocalPreview)?.modelPath || "";
-  let thumbHtml;
-  if (item.previewUrl && item.previewType === "video") {
-    thumbHtml = `<video src="${escapeHtml(item.previewUrl)}#t=0.5" preload="metadata" muted playsinline></video>`;
-  } else if (item.previewUrl) {
-    thumbHtml = `<img src="${escapeHtml(item.previewUrl)}" alt="" loading="lazy">`;
-  } else if (localPath) {
-    thumbHtml = `<img alt="">`;
-  } else {
-    thumbHtml = `<div class="cu-thumb-empty">No preview</div>`;
-  }
-
-  card.innerHTML = `
-    <div class="cu-thumb">${thumbHtml}</div>
-    <div class="cu-item-body">
-      <div class="cu-item-header">
-        <div class="cu-ver-row cu-ver-row-model">
-          <span class="cu-ver-label cu-ver-label-model">${typePill || "<span></span>"}</span>
-          <span class="cu-ver-date"></span>
-          <span class="cu-ver-base"></span>
-          <div class="cu-ver-main">
-            <h4 title="${escapeHtml(firstPath)}">${displayName}</h4>
-            ${creatorHtml}
-          </div>
-        </div>
-      </div>
-      <div class="cu-versions">
-        ${versionRows}
-      </div>
-    </div>`;
+  const key = cardKey(item);
+  card.dataset.cardKey = key;
+  const mode = state.resultMode;
+  const rows = cardRows(item, { mode, showHidden: state.showHidden });
+  const selectedKey = pickRowKey(rows, state.cardSelection.get(key), mode);
+  card.innerHTML = updatesCardHtml(item, rows, {
+    mode,
+    selectedKey,
+    drive: archiveDriveLabel(state.savedArchiveFolder),
+    formatDate: shortDate,
+    copyTitle: copyPathTitle,
+    records: state.downloads,
+    asking: rowAsking,
+    canTrash: state.canTrash,
+    archiveSet: Boolean(state.savedArchiveFolder),
+    now: Date.now(),
+  }, escapeHtml);
   for (const el of card.querySelectorAll(".cu-copy-path")) {
     el.addEventListener("click", (e) => copyOrReveal(e.currentTarget, e.currentTarget.dataset.path || "", state.checkJobId));
   }
-  card.querySelector(".cu-thumb").addEventListener("click", () => openLightbox(item));
-  // A removed model's preview URL is dead too; show the empty tile instead of
-  // the browser's broken-image icon.
-  const thumbImg = card.querySelector(".cu-thumb img");
-  if (thumbImg) wireThumbImage(thumbImg, localPath, !thumbImg.getAttribute("src"));
-  // A dead online video falls back the same way, to a picture.
-  const thumbVideo = card.querySelector(".cu-thumb video");
-  if (thumbVideo) {
-    thumbVideo.addEventListener("error", () => {
-      const img = Object.assign(document.createElement("img"), { alt: "" });
-      thumbVideo.replaceWith(img);
-      wireThumbImage(img, localPath, true);
-    }, { once: true });
+  card.querySelector("[data-u-pic]")?.addEventListener("click", () => openLightbox(item));
+  // Each picture falls back to its file's local preview, then to the empty look.
+  const selected = card.querySelector('.cu-u-row[aria-current="true"]');
+  if (selected) showPicture(card.querySelector(".cu-g-thumb"), pictureOf(selected), PICTURE_WIDTH, noPreviewTile);
+  for (const row of card.querySelectorAll(".cu-u-row")) {
+    showPicture(row.querySelector(".cu-u-tn"), pictureOf(row), THUMB_WIDTH, emptyTile);
+  }
+  // A Delete being asked keeps its question through a redraw.
+  for (const acts of card.querySelectorAll(".cu-u-acts")) {
+    const slot = parseSlot(acts);
+    if (slot?.kind === "file" && rowAsking.has(slot.path)) paintRowSlot(acts);
   }
   return card;
 }
 
-// The local copy is the last resort: try it once, then show "No preview".
+/* Show a row's version on its card: the row is marked, and the picture, the pill and
+   the info line follow it. Only those change, so nothing on the card moves. */
+function selectRow(card, row) {
+  if (!card || !row || row.getAttribute("aria-current") === "true") return;
+  for (const other of card.querySelectorAll('.cu-u-row[aria-current]')) other.removeAttribute("aria-current");
+  row.setAttribute("aria-current", "true");
+  showPicture(card.querySelector(".cu-g-thumb"), pictureOf(row), PICTURE_WIDTH, noPreviewTile);
+  setLine(card.querySelector("[data-u-pill]"), row.dataset.pill || "");
+  setLine(card.querySelector("[data-u-info]"), row.dataset.info || "");
+  if (card.dataset.cardKey && row.dataset.uRow) state.cardSelection.set(card.dataset.cardKey, row.dataset.uRow);
+}
+
+function setLine(el, text) {
+  if (!el) return;
+  if (el.textContent !== text) el.textContent = text;
+  el.title = text;
+}
+
+const pictureOf = (row) => ({
+  url: row.dataset.pic || "",
+  type: row.dataset.picType || "",
+  localPath: row.dataset.localPath || "",
+});
+
+const noPreviewTile = () => Object.assign(document.createElement("span"), {
+  className: "cu-g-noimg",
+  textContent: CARD_COPY.noPreview,
+  title: CARD_COPY.noPreview,
+});
+// A row's thumbnail without a picture is its empty tile.
+const emptyTile = () => null;
+
+// Online pictures that failed to load this session: not asked for again.
+const deadPictures = new Set();
+
+/* A version's picture in its holder (the card's big picture or a row's thumbnail): the
+   online one, else the file's local preview, else the holder's empty look. An img
+   already there is reused, so a swap keeps the old picture until the new one is in. */
+function showPicture(holder, { url, type, localPath }, width, empty) {
+  if (!holder) return;
+  const current = holder.firstElementChild;
+  const put = (el) => {
+    if (current) current.replaceWith(el);
+    else holder.append(el);
+    return el;
+  };
+  const online = /^https:\/\//i.test(url || "") ? url : "";
+  if (online && type === "video" && !deadPictures.has(online)) {
+    const src = `${online}#t=0.5`;
+    let video = current?.tagName === "VIDEO" && current.getAttribute("src") === src ? current : null;
+    if (!video) {
+      video = Object.assign(document.createElement("video"), { preload: "metadata", muted: true, playsInline: true });
+      video.src = src;
+      put(video);
+    }
+    video._cuLocal = localPath;
+    if (!video._cuWired) {
+      video._cuWired = true;
+      // A dead online video falls back the same way, to a picture.
+      video.addEventListener("error", () => {
+        if (!video.parentNode) return;
+        deadPictures.add(online);
+        const img = Object.assign(document.createElement("img"), { alt: "" });
+        video.replaceWith(img);
+        wireThumbImage(img, video._cuLocal || "", true, empty);
+      }, { once: true });
+    }
+    return;
+  }
+  // A dead video, or a picture: an img, at the holder's width.
+  let src = online && type !== "video" ? sizedImage(online, width) : "";
+  if (deadPictures.has(src)) src = "";
+  if (!src && !localPath) {
+    const blank = empty();
+    if (blank) {
+      if (!current?.classList.contains(blank.className)) put(blank);
+    } else {
+      current?.remove();
+    }
+    return;
+  }
+  let img = current?.tagName === "IMG" ? current : null;
+  if (!img) img = put(Object.assign(document.createElement("img"), { alt: "", decoding: "async" }));
+  const same = src && img.getAttribute("src") === src;
+  wireThumbImage(img, localPath, !src, empty);
+  if (same) return;
+  if (src) img.src = src;
+  else img.removeAttribute("src");
+}
+
+// The local copy is the last resort: try it once, then show the empty look.
 // `loadNow` skips the online picture (there is none, or it already failed).
-function wireThumbImage(img, localPath, loadNow) {
-  const showNoPreview = () => img.replaceWith(Object.assign(document.createElement("div"), {
-    className: "cu-thumb-empty",
-    textContent: "No preview",
-  }));
+// Wiring the same img again (a row swap) silences what was pending for the last one.
+function wireThumbImage(img, localPath, loadNow, empty) {
+  const token = {};
+  img._cuWire = token;
+  const live = () => img._cuWire === token && Boolean(img.parentNode);
+  const showNoPreview = () => {
+    if (!live()) return;
+    const blank = empty();
+    if (blank) img.replaceWith(blank);
+    else img.remove();
+  };
   let triedLocal = false;
   const loadLocal = async () => {
     triedLocal = true;
     const url = await fetchLocalPreview(localPath);
+    if (!live()) return;
     if (url) img.src = url;
     else showNoPreview();
   };
-  img.addEventListener("error", () => {
+  img.onerror = () => {
+    if (!live()) return;
+    const failed = img.getAttribute("src") || "";
+    if (/^https:\/\//i.test(failed)) deadPictures.add(failed);
     if (localPath && !triedLocal) loadLocal();
     else showNoPreview();
-  });
+  };
   if (!loadNow) return;
   if (localPath) loadLocal();
   else showNoPreview();
-}
-
-function renderLocalVersionRow(v, showMessage = true) {
-  // A D row whose same version is also in the archive is an issue of its own;
-  // an archived row never is (see check_results.js).
-  const issue = rowIssue(v);
-  const date = v.publishedAt ? shortDate(v.publishedAt) : "";
-  const { role, label } = rowLabel(v);
-  const filePath = v.filePath || v.modelPath || "";
-  // A file Civitai never identified has no version name; its file name is
-  // what the user will recognize.
-  const name = v.versionName || extractFilename(filePath) || "?";
-  const message = issue && showMessage ? `<div class="cu-issue-msg">${escapeHtml(issueMessage(v))}</div>` : "";
-  // Delete sits where a new version's Download and Hide do.
-  const del = rowDeleteHtml(v, rowDeleteUi(v.modelPath), escapeHtml);
-  return `
-      <div class="cu-ver-row${del ? " cu-ver-row-acts" : ""}${v.deleted ? " is-deleted" : ""}">
-        <span class="cu-ver-label" data-role="${role}">${label}</span>
-        <span class="cu-ver-date">${escapeHtml(date || "\u2014")}</span>
-        <span class="cu-ver-base">${escapeHtml(v.baseModel || "\u2014")}</span>
-        <span class="cu-ver-main">
-          <span class="cu-ver-link cu-copy-path" data-path="${escapeHtml(filePath)}" title="${escapeHtml(copyPathTitle(filePath))}">${escapeHtml(name)}</span>
-        </span>${del ? `\n        <span class="cu-ver-acts">${del}</span>` : ""}
-      </div>${message}`;
 }
 
 // Delete on a card's version row, as in the Gallery: the first click asks, the ask
@@ -1815,9 +1857,42 @@ function renderLocalVersionRow(v, showMessage = true) {
 const rowAsking = new Map(); // modelPath -> "confirming" | "deleting"
 const rowAskTimers = new Map();
 
-function rowDeleteUi(path) {
-  const ask = rowAsking.get(path);
-  return { canTrash: state.canTrash, confirming: ask === "confirming", deleting: ask === "deleting" };
+function parseSlot(acts) {
+  try {
+    return JSON.parse(acts?.dataset.slot || "null");
+  } catch (_) {
+    return null;
+  }
+}
+
+// What a row's slot is drawn with besides its record.
+function rowSlotUi(slot) {
+  return {
+    canTrash: state.canTrash,
+    archiveSet: Boolean(state.savedArchiveFolder),
+    asking: slot?.kind === "file" ? rowAsking.get(slot.path) || "" : "",
+    now: Date.now(),
+    formatDate: shortDate,
+  };
+}
+
+/* Repaint one row's two action cells from its slot and record, and the row's own state.
+   Written only when the markup changed; focus stays in the same cell. */
+const slotScratch = document.createElement("template");
+function paintRowSlot(acts) {
+  const slot = parseSlot(acts);
+  if (!slot) return;
+  const record = slot.dlKey ? state.downloads.get(slot.dlKey) : undefined;
+  const html = rowActionsHtml(slot, record, rowSlotUi(slot), escapeHtml);
+  // Compared as the page serialises it, so an unchanged slot is never rewritten.
+  slotScratch.innerHTML = html;
+  if (acts.innerHTML !== slotScratch.innerHTML) {
+    const active = document.activeElement;
+    const cell = active && acts.contains(active) ? [...acts.children].indexOf(active.closest(".cu-u-cell")) : -1;
+    acts.innerHTML = html;
+    if (cell >= 0) (acts.children[cell]?.querySelector("button") || acts.closest(".cu-u-row"))?.focus({ preventScroll: true });
+  }
+  paintRowDownload(acts.closest(".cu-u-row"), rowDownloadView(record));
 }
 
 function setRowAsking(path, ask) {
@@ -1825,13 +1900,13 @@ function setRowAsking(path, ask) {
   rowAskTimers.delete(path);
   if (ask) rowAsking.set(path, ask);
   else rowAsking.delete(path);
-  for (const button of state.resultsEl?.querySelectorAll('[data-row-action="delete"]') || []) {
-    if (button.dataset.path === path) button.outerHTML = rowDeleteHtml({ modelPath: path }, rowDeleteUi(path), escapeHtml);
+  for (const acts of state.resultsEl?.querySelectorAll(".cu-u-acts[data-dl-key]") || []) {
+    const slot = parseSlot(acts);
+    if (slot?.kind === "file" && slot.path === path) paintRowSlot(acts);
   }
 }
 
-async function onRowDelete(button) {
-  const path = button.dataset.path || "";
+async function onRowDelete(path) {
   const ask = rowAsking.get(path);
   if (!path || ask === "deleting") return;
   if (ask !== "confirming") {
@@ -1883,9 +1958,11 @@ function resultsSignature() {
 }
 
 // Everything one card is drawn from. A re-checked card keeps its count and
-// changes its content, so the signature reads the whole item.
+// changes its content, so the signature reads the whole item. The archive
+// folder names the drive in its rows and offers Archive. Downloads, moves and
+// the row shown are painted in place, so they are not part of it.
 function cardSignature(item) {
-  return JSON.stringify(item);
+  return JSON.stringify([item, state.savedArchiveFolder]);
 }
 
 // A card's identity across reloads. A model Civitai never matched has no id: its first file stands in.
@@ -1906,6 +1983,12 @@ function resultsPageKey() {
 
 function renderResults() {
   if (!state.resultsEl) return;
+  // The rows picked on the cards belong to the check they were picked in.
+  if (state.cardSelectionJobId !== state.checkJobId) {
+    state.cardSelection.clear();
+    deadPictures.clear();
+    state.cardSelectionJobId = state.checkJobId;
+  }
   renderViewSwitch();
   renderCacheInfo();
   if (state.startupLoading && !state.resultItems.length) {
@@ -2236,6 +2319,7 @@ function bindJob(jobId, type, statusText) {
   state.currentJobId = jobId;
   state.currentJobType = type;
   state.currentJobStatus = "queued";
+  state.currentPhase = "";
   state.currentSummary = null;
   state.currentMessage = "";
   state.currentProgress = 0;
@@ -2295,40 +2379,21 @@ function watchDownloads() {
   }, 1000);
 }
 
-// Paint each card's download slot in place: only what changed is written, so nothing jumps.
+// Paint each card row's action slot in place: only what changed is written, so nothing jumps.
+// /downloads may answer after the cards were drawn, so the Recycle Bin is asked each time.
 function paintDownloads() {
-  const root = state.resultsEl;
-  if (root) {
-    for (const slot of root.querySelectorAll(".cu-dl[data-dl-key]")) {
-      const record = state.downloads.get(slot.dataset.dlKey);
-      // canReplace is worked out each time: /downloads may answer after the cards were drawn.
-      const canReplace = state.canTrash && slot.dataset.hasLocal === "1";
-      slot.dataset.canReplace = canReplace ? "1" : "0";
-      const html = versionActionsHtml(
-        {
-          paid: slot.dataset.paid === "1",
-          canReplace,
-          replaces: { name: slot.dataset.replaceName || "", file: slot.dataset.replaceFile || "" },
-          version: slot.dataset.versionName || "",
-        },
-        record,
-        escapeHtml,
-      );
-      if (slot.innerHTML !== html) slot.innerHTML = html;
-      paintRowDownload(slot.closest(".cu-ver-row"), rowDownloadView(record));
-    }
-  }
+  for (const acts of state.resultsEl?.querySelectorAll(".cu-u-acts[data-dl-key]") || []) paintRowSlot(acts);
   state.galleryView?.paintDownloads?.();
 }
 
-// The row's own state: a bar along its bottom edge and, for a failure, the reason in
-// place of the version name. Attributes and text only, so the row never changes size.
+// The row's own state and, for a failure or a warning, the reason in place of the
+// version name. Attributes and text only, so the row never changes size.
 function paintRowDownload(row, view) {
   if (!row) return;
   if (row.dataset.dlState !== view.state) row.dataset.dlState = view.state;
   const warned = view.warning ? "1" : "0";
   if (row.dataset.dlWarn !== warned) row.dataset.dlWarn = warned;
-  const fail = row.querySelector(".cu-ver-fail");
+  const fail = row.querySelector(".cu-u-fail");
   if (fail) {
     const text = view.failure || view.warning;
     if (fail.textContent !== text) fail.textContent = text;
@@ -2337,20 +2402,30 @@ function paintRowDownload(row, view) {
   }
 }
 
-async function startDownload(payload, key) {
+// Downloads and moves go through the same queue, one at a time, with the same ring.
+async function queueRequest(endpoint, payload, key, statusText) {
   try {
-    const data = await postJson("/warp-studio/updater/downloads", payload);
+    const data = await postJson(endpoint, payload);
     if (data.request) state.downloads.set(data.request.key || key, data.request);
     paintDownloads();
     // Held behind another job, the request has no job yet: the watch shows it and binds when it starts.
     watchDownloads();
     if (data.jobId && data.jobId !== state.currentJobId) {
-      bindJob(data.jobId, MODEL_DOWNLOAD_JOB, "Downloading\u2026");
+      bindJob(data.jobId, MODEL_DOWNLOAD_JOB, statusText);
     }
   } catch (error) {
     state.downloads.set(key, { key, state: "error", error: String(error?.message || error) });
     paintDownloads();
   }
+}
+
+async function startDownload(payload, key) {
+  await queueRequest("/warp-studio/updater/downloads", payload, key, "Downloading\u2026");
+}
+
+// Archive and Unarchive: payload = { jobId, path, to: "archive" | "drive" }.
+async function startMove(payload, key) {
+  await queueRequest("/warp-studio/updater/moves", payload, key, "Moving\u2026");
 }
 
 async function stopDownload(requestId) {
@@ -2578,50 +2653,6 @@ function carryAllSelectionForward(selectionKey, previousOptions, nextOptions) {
   }
 }
 
-function renderRemoteVersionRow(item, version, hidden) {
-  const modelId = item.modelId;
-  const date = version.versionDate ? shortDate(version.versionDate) : "—";
-  const name = escapeHtml(version.versionName || "?");
-  const link = version.versionUrl
-    ? `<a class="cu-ver-link" href="${escapeHtml(version.versionUrl)}" target="_blank" rel="noreferrer noopener" title="${name}">${name}</a>`
-    : `<span class="cu-ver-link" title="${name}">${name}</span>`;
-  const action = rowHideHtml(hidden, modelId, version.versionId, escapeHtml);
-  const accessBadge = renderPaidBadge(version) || renderAvailabilityBadge(version.availability);
-  const hiddenClass = hidden ? " is-hidden" : "";
-  // The download slot: painted in place while a download runs, so the row keeps its size.
-  const { reference, current } = slotVersions(item.localVersions);
-  const hasLocal = Boolean(current) && !current.metadataOnly;
-  const canReplace = state.canTrash && hasLocal;
-  const key = versionKey(version.versionId);
-  const record = state.downloads.get(key);
-  const paid = isPaid(version);
-  const replaceName = current?.versionName || "";
-  const replaceFile = extractFilename(current?.filePath || current?.modelPath || "");
-  const versionName = version.versionName || "";
-  const slot = versionActionsHtml(
-    { paid, canReplace, replaces: { name: replaceName, file: replaceFile }, version: versionName },
-    record,
-    escapeHtml,
-  );
-  const view = rowDownloadView(record);
-  const dlSlot = `<span class="cu-dl" data-dl-key="${escapeHtml(key)}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(version.versionId || "")}" data-model-path="${escapeHtml(reference?.modelPath || "")}" data-paid="${paid ? 1 : 0}" data-has-local="${hasLocal ? 1 : 0}" data-can-replace="${canReplace ? 1 : 0}" data-replace-name="${escapeHtml(replaceName)}" data-replace-file="${escapeHtml(replaceFile)}" data-version-name="${escapeHtml(versionName)}">${slot}</span>`;
-  return `
-    <div class="cu-ver-row cu-ver-row-acts${hiddenClass}" data-dl-state="${view.state}" data-dl-warn="${view.warning ? 1 : 0}">
-      <span class="cu-ver-label" data-role="${hidden ? "hidden" : "new"}">${hidden ? "Hidden" : "New"}</span>
-      <span class="cu-ver-date">${escapeHtml(date)}</span>
-      <span class="cu-ver-base">${escapeHtml(version.baseModel || "—")}</span>
-      <span class="cu-ver-main">
-        ${link}
-        ${accessBadge}
-        <span class="cu-ver-fail"${view.failure || view.warning ? ` title="${escapeHtml(view.failure || view.warning)}"` : ""}>${escapeHtml(view.failure || view.warning)}</span>
-      </span>
-      <span class="cu-ver-acts">
-        ${dlSlot}
-        ${action}
-      </span>
-    </div>`;
-}
-
 /* Buzz: downloading the release costs Buzz. Early access is free from its end
    date (dashed badge); a permanent paywall has none (solid badge). Civitai's
    public API gives no price. */
@@ -2637,20 +2668,6 @@ function renderPaidBadge(version) {
   const days = Math.max(1, Math.ceil((ends.getTime() - Date.now()) / 86400000));
   const title = `Early access: costs Buzz to download until ${shortDate(version.paidUntil)}, free after that.`;
   return `<span class="cu-buzz" data-paid="early" title="${escapeHtml(title)}">Buzz \u00b7 ${days}d left</span>`;
-}
-
-const AVAILABILITY_SHORT = { EarlyAccess: "Early", Private: "Private", Unsearchable: "Unlisted" };
-
-function renderAvailabilityBadge(availability) {
-  if (!availability || availability === "Public") return "";
-  const label = formatAvailability(availability);
-  const short = AVAILABILITY_SHORT[availability] || label;
-  return `<span class="cu-access-badge" data-availability="${escapeHtml(availability)}" title="${escapeHtml(label)}">${escapeHtml(short)}</span>`;
-}
-
-function formatAvailability(value) {
-  if (value === "EarlyAccess") return "Early access";
-  return String(value).replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
 function filterParams() {
@@ -3002,7 +3019,10 @@ async function syncSettingsToBackend() {
     }
     state.roots = data.effectiveRoots || state.roots;
     // A refused folder is not in the answer: the ⋯ menu stops offering it.
+    const folderBefore = state.savedArchiveFolder;
     state.savedArchiveFolder = savedArchiveFolder(data);
+    // The cards name the archive drive and offer Archive only with a folder.
+    if (state.savedArchiveFolder !== folderBefore) renderResults();
     const pathWarnings = Array.isArray(data.pathWarnings) ? data.pathWarnings : [];
     if (pathWarnings.length) {
       console.warn("Civitai updater:", pathWarnings.join(" "));
@@ -4478,13 +4498,7 @@ function injectStyles() {
       color: var(--cu-dust);
     }
 
-    /* ---- Results list ---- */
-
-    .cu-results {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
+    /* ---- Results list: a grid of cards (UPDATES_CARD_CSS, at the end) ---- */
 
     .cu-empty {
       color: var(--cu-dust);
@@ -6114,6 +6128,19 @@ function injectStyles() {
       color: #6a6772;
       font-family: "IBM Plex Mono", Consolas, ui-monospace, monospace;
       font-size: 9.5px;
+    }
+
+    /* ---- Updates and Issues cards (updates_card.js) ---- */
+    ${UPDATES_CARD_CSS}
+
+    /* A sidebar narrower than one 300px card holds one card at its own width. */
+    .cu-results {
+      grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+    }
+
+    /* A second-level band head spans the grid like the first-level one. */
+    .cu-results > .cu-subgroup-head-wrap {
+      grid-column: 1 / -1;
     }
   `;
   document.head.appendChild(style);
