@@ -506,7 +506,9 @@ Go to **Settings → Warp Studio**, the groups that start with "Civitai":
 Within the cache duration, `Check for Updates` shows the saved results instead
 of checking again, unless Model Scope differs from the last check, files were
 added or removed, `Force rehash` is ticked, or the last check was stopped.
-With fresh saved results, the click shows "Results from … ago" with **Check again** for about five seconds. The same **Check again** is in the ⓘ, which also holds when it was last checked, the counts and "Changes detected" when files changed; it always runs a check.
+With fresh saved results, the click asks first: "These results are from … ago. Check every file against Civitai again?" with **Check again** and **Keep these** (Escape or a click beside the box keeps them). **Check again** in the ⓘ, which also holds when it was last checked, the counts and "Changes detected" when files changed, always runs a check without asking.
+
+While a check runs, the button is its progress: it reads "Checking 491 of 746" and fills from the left as files are checked, and the **⋯** square beside it is **Stop**. When the check ends, the button shows its result ("Done — 25 updates found") for a few seconds. The pill at the bottom stays in for a check on Updates and Issues; it shows the check's progress on the Gallery and Rename tabs, where the button is not on screen, and an error on any tab.
 
 ### 4. Metadata workflow (Advanced)
 
@@ -527,7 +529,7 @@ Run `Fetch Missing Metadata`.
 - Default page size is `25` (options: `25`, `50`, `100`).
 - Metadata is polled every `800ms`.
 - Page 1 auto-refreshes while a check job is running (streaming feel).
-- While a check job is running, a card built from the previous check's results is marked `Provisional` until its files have been re-checked.
+- While a check job is running, a card built from the previous check's results is dimmed until its files have been re-checked.
 - If you navigate to another page, your page is preserved.
 
 ### 6. Reading a result card
@@ -834,9 +836,9 @@ archive disk, say) to match.
 Under **Settings → Warp Studio** (the groups that start with "Civitai"):
 
 - **API key** — optional, but some restricted resources need one.
-- **Cache duration** — how long **Check for Updates** shows the saved results
-  instead of checking again. Changing **Model Scope**, adding or removing model
-  files, or clicking **Check again** runs a real check inside that window.
+- **Cache duration** — how long **Check for Updates** asks before checking the
+  saved results again. Changing **Model Scope**, adding or removing model files,
+  or **Check again** in the ⓘ runs a real check inside that window without asking.
 - **Timeout, retries, delay between models** — for slow or rate-limited runs.
 - **Treat `.civitai.info` as installed** — count a valid orphan sidecar as an
   installed version, so a model you deleted but still track keeps reporting
@@ -1559,7 +1561,7 @@ model folder, it also carries `archiveError` and the saved results stay. A
 stopped archive pass saves nothing.
 
 The job is seeded with every item of the previous check so the panel keeps
-showing them (marked provisional) while models are re-checked. Once the job has
+showing them (dimmed, as provisional) while models are re-checked. Once the job has
 listed the files of the checked types, those seeds are aligned with the disk:
 seeds for deleted files are dropped, and new files with a usable
 `.civitai.info` get a seed built from it, so a release downloaded since the

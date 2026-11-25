@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 import { renderRenameView, createRenameStore, RENAME_JOB_TYPES } from "./rename_view.js";
 import { renderGalleryView } from "./gallery_view.js";
 import { statusRowView } from "./status_row.js";
+import { checkButtonView, freshCheckDialogHtml } from "./check_button.js";
 import {
   CONFIRM_FOR,
   MODEL_DOWNLOAD_JOB,
@@ -183,7 +184,10 @@ const state = {
   // Errors stay on screen under the job bar; routine text is the job bar's label while a job runs.
   errorText: "",
   jobText: "",
-  noticeText: "",
+  // The type of the job that ran last: a finished check shows its result on its button.
+  lastJobType: null,
+  checkFlashText: "",
+  checkFlashUntil: 0,
   resultMode: "gallery",
   modeCounts: { updates: 0, issues: 0 },
   stopRequested: false,
@@ -198,7 +202,8 @@ const state = {
   viewSwitchEl: null,
   jobBarEl: null,
   jobTextEl: null,
-  noticeActEl: null,
+  checkEl: null,
+  moreEl: null,
   progressOn: false,
   gearEl: null,
   settingsEl: null,
@@ -329,12 +334,6 @@ app.registerExtension({
 
 async function renderTab(el) {
   el.innerHTML = "";
-  if (state.noticeTimer) {
-    clearTimeout(state.noticeTimer);
-    state.noticeTimer = null;
-    if (state.jobText === state.noticeText) state.jobText = "";
-    state.noticeText = "";
-  }
   const root = document.createElement("div");
   root.className = "cu-root";
   root.innerHTML = `
@@ -383,7 +382,7 @@ async function renderTab(el) {
       <div id="cu-updates-pane">
         <div id="cu-tb-updates" data-tb-tab="updates"></div>
         <div class="cu-action-bar">
-          <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip" data-tooltip="Scan local files and compare with Civitai to check for newer versions.">Check for Updates</button>
+          <button id="cu-check" class="cu-btn cu-btn-primary cu-tooltip cu-check-btn" data-tooltip="Scan local files and compare with Civitai to check for newer versions."><span class="cu-check-label">Check for Updates</span></button>
           <div class="cu-more">
             <button id="cu-more" type="button" class="cu-btn cu-btn-ghost" aria-label="More" title="More" aria-haspopup="true" aria-expanded="false"><i class="pi pi-ellipsis-h" aria-hidden="true"></i></button>
             <div id="cu-more-menu" class="cu-tb-menu cu-more-menu" hidden></div>
@@ -408,7 +407,6 @@ async function renderTab(el) {
         <span id="cu-job-text" class="cu-job-text"></span>
         <span id="cu-progress-text" class="cu-progress-pct"></span>
         <span id="cu-progress-eta" class="cu-progress-eta"></span>
-        <button type="button" id="cu-notice-act" class="cu-btn cu-btn-sm is-off">Check again</button>
         <div id="cu-job-controls" class="cu-job-controls is-off">
           <button id="cu-pause" type="button" class="cu-icon-btn" title="Pause" aria-label="Pause"><i class="pi pi-pause" aria-hidden="true"></i></button>
           <button id="cu-stop" type="button" class="cu-icon-btn cu-pill-stop" title="Stop the job" aria-label="Stop the job"><i class="pi pi-stop-circle" aria-hidden="true"></i></button>
@@ -421,7 +419,8 @@ async function renderTab(el) {
   state.rootEl = root;
   state.sidecarWarningsEl = root.querySelector("#cu-sidecar-warnings");
   state.statusEl = root.querySelector("#cu-status");
-  state.noticeActEl = root.querySelector("#cu-notice-act");
+  state.checkEl = root.querySelector("#cu-check");
+  state.moreEl = root.querySelector("#cu-more");
   state.jobBarEl = root.querySelector("#cu-job-bar");
   state.jobTextEl = root.querySelector("#cu-job-text");
   state.gearEl = root.querySelector("#cu-gear");
@@ -620,6 +619,7 @@ function attachToRunningJob(job) {
 }
 
 function clearCurrentJob() {
+  if (state.currentJobType) state.lastJobType = state.currentJobType;
   state.currentJobId = null;
   state.currentJobType = null;
   state.currentJobStatus = null;
@@ -701,7 +701,16 @@ function bindMoreMenu(root) {
     menu.hidden = false;
     button.setAttribute("aria-expanded", "true");
   };
-  button.addEventListener("click", () => (menu.hidden ? open() : close(false)));
+  button.addEventListener("click", () => {
+    // While a check runs, this square is its Stop.
+    if (isChecking()) {
+      close(false);
+      stopCurrentJob();
+      return;
+    }
+    if (menu.hidden) open();
+    else close(false);
+  });
   menu.addEventListener("click", (event) => {
     const item = event.target.closest && event.target.closest("[data-more]");
     if (!item || item.disabled) return;
@@ -722,7 +731,11 @@ function bindMoreMenu(root) {
 }
 
 function bindEvents(root) {
-  root.querySelector("#cu-check").addEventListener("click", async () => startJob("/warp-studio/updater/jobs/check-updates", "check-updates"));
+  root.querySelector("#cu-check").addEventListener("click", async () => {
+    // While a check runs the button is its progress; Stop is the square beside it.
+    if (isChecking()) return;
+    await startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
+  });
   bindMoreMenu(root);
   root.querySelector("#cu-pause").addEventListener("click", async () => togglePauseResume());
   root.querySelector("#cu-stop").addEventListener("click", async () => stopCurrentJob());
@@ -782,12 +795,6 @@ function bindEvents(root) {
   root.addEventListener("click", async (ev) => {
     const target = ev.target;
     if (!(target instanceof HTMLElement)) return;
-    if (target.closest("#cu-notice-act")) {
-      hideCachedNotice();
-      state.forceNextRecheck = true;
-      startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
-      return;
-    }
     if (target.closest("#cu-gear")) {
       toggleSettings();
       return;
@@ -860,27 +867,61 @@ function bindEvents(root) {
   });
 }
 
-/* Check for Updates with fresh results shows them without a check. Say so, for a
-   few seconds, in the job bar's row, with a way to check anyway. */
-function showCachedNotice() {
-  if (!state.jobBarEl || state.currentJobId) return;
-  hideCachedNotice();
-  const text = `Results from ${timeAgo(state.cachedAt)}`;
-  state.noticeText = text;
-  state.jobText = text;
-  paintStatus();
-  state.noticeTimer = setTimeout(hideCachedNotice, 5000);
+/* Check for Updates while the saved results are fresh asks first, in a box over
+   the page: true to check again. Escape or a click beside it keeps the results. */
+function confirmFreshCheck() {
+  const root = state.rootEl;
+  if (!root || typeof HTMLDialogElement === "undefined") return Promise.resolve(true);
+  const dialog = document.createElement("dialog");
+  dialog.className = "cu-dialog";
+  dialog.setAttribute("aria-label", "Check again?");
+  dialog.innerHTML = freshCheckDialogHtml(timeAgo(state.cachedAt), escapeHtml);
+  // Inside the panel's root, so the box takes the panel's colours.
+  root.appendChild(dialog);
+  return new Promise((resolve) => {
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.close("keep");
+    });
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      resolve(dialog.returnValue === "check");
+    });
+    dialog.showModal();
+    dialog.querySelector('[value="check"]')?.focus();
+  });
 }
 
-function hideCachedNotice() {
-  if (state.noticeTimer) clearTimeout(state.noticeTimer);
-  const wasShown = Boolean(state.noticeTimer);
-  state.noticeTimer = null;
-  if (!wasShown) return;
-  // Only the notice's own text goes; a status set since then stays.
-  if (state.jobText === state.noticeText) state.jobText = "";
-  state.noticeText = "";
-  paintStatus();
+const isChecking = () => Boolean(state.currentJobId) && state.currentJobType === "check-updates";
+
+/* The Check for Updates button: the check's progress while one runs, then its
+   result for a few seconds. The ⋯ square beside it is Stop meanwhile. */
+function paintCheckButton() {
+  const button = state.checkEl;
+  if (!button) return;
+  const checking = isChecking();
+  const view = checkButtonView({
+    checking,
+    status: state.currentJobStatus,
+    progress: state.currentProgress,
+    total: state.currentTotal,
+    flashText: Date.now() < state.checkFlashUntil ? state.checkFlashText : "",
+  });
+  const label = button.querySelector(".cu-check-label");
+  if (label && label.textContent !== view.label) label.textContent = view.label;
+  button.classList.toggle("is-checking", view.busy);
+  button.classList.toggle("is-spin", view.spin);
+  button.style.setProperty("--cu-check-fill", `${Math.round((view.fill ?? 0) * 1000) / 10}%`);
+  button.setAttribute("aria-disabled", String(view.busy));
+  const more = state.moreEl;
+  if (more) {
+    const glyph = checking ? "pi-stop" : "pi-ellipsis-h";
+    if (!more.querySelector(`.${glyph}`)) more.innerHTML = `<i class="pi ${glyph}" aria-hidden="true"></i>`;
+    const text = checking ? "Stop the check" : "More";
+    more.title = text;
+    more.setAttribute("aria-label", text);
+    if (checking) more.removeAttribute("aria-haspopup");
+    else more.setAttribute("aria-haspopup", "true");
+  }
 }
 
 /* The ⚙ button: the settings open and close above the tabs. */
@@ -1027,7 +1068,6 @@ function infoLines() {
   if (!state.checkJobId) return ["No update check has run yet."];
   const lines = [];
   if (state.cachedAt) lines.push(`Last checked ${timeAgo(state.cachedAt)}`);
-  if (state.noticeTimer && state.cachedAt) lines.push(`Showing the saved results from ${timeAgo(state.cachedAt)}`);
   if (state.checkSummary) {
     lines.push(summaryLine(state.checkSummary));
   } else if (state.currentJobType === "check-updates") {
@@ -1195,8 +1235,8 @@ async function startJob(endpoint, type, { includeArchive = false } = {}) {
       && coversSameScope(modelTypes)) {
     const ttl = Number(getSetting(SETTINGS.cacheTtlMinutes, 240)) * 60 * 1000;
     const age = Date.now() - new Date(state.cachedAt).getTime();
-    if (ttl > 0 && age < ttl && state.cachedJobId) {
-      // Cache is still fresh — load the cached results without re-running.
+    if (ttl > 0 && age < ttl && state.cachedJobId && !(await confirmFreshCheck())) {
+      // Fresh results, and the box said keep them: show them without a check.
       state.checkJobId = state.cachedJobId;
       state.pageOffset = 0;
       state.checkFacets = { modelTypes: [], baseModels: [] };
@@ -1205,13 +1245,14 @@ async function startJob(endpoint, type, { includeArchive = false } = {}) {
       await loadResultPage(true);
       renderCacheInfo();
       clearError();
-      showCachedNotice();
       return;
     }
+    // A job may have started while the box was open.
+    if (state.currentJobId) return;
   }
   state.forceNextRecheck = false;
   clearError();
-  hideCachedNotice();
+  state.checkFlashUntil = 0;
 
   try {
     const data = await postJson(endpoint, payload);
@@ -1411,6 +1452,12 @@ function pollJob(jobId) {
           for (const [text, level] of checkDoneStatus(job.summary)) setStatus(text, level);
         } else {
           setStatus("Scan complete");
+        }
+        if (state.currentJobType === "check-updates" && status !== "failed") {
+          // Its result shows on its button for a few seconds; an error stays in the pill.
+          state.checkFlashText = status === "cancelled" ? "Check stopped" : checkDoneStatus(job.summary)[0][0];
+          state.checkFlashUntil = Date.now() + STATUS_FLASH_MS;
+          setTimeout(paintStatus, STATUS_FLASH_MS + 50);
         }
         resetEta();
         updateProgress(progress, total, false);
@@ -1627,6 +1674,8 @@ function buildResultCard(item, cardIndex) {
   card.className = "cu-item";
   card.style.setProperty("--cu-i", String(Math.min(cardIndex, 12)));
   if (item.nsfw && state.matureMode === "blur") card.dataset.mature = "blur";
+  // Not re-checked yet by the running check: dimmed until it is.
+  if (item.isProvisional) card.classList.add("is-provisional");
   const path = String((item.localVersions || [])[0]?.modelPath || "").toLowerCase();
   // Settle only once the card is final; a card still waiting for its
   // re-check stays in the set until it is.
@@ -1643,7 +1692,6 @@ function buildResultCard(item, cardIndex) {
 
   const typePill = item.modelType ? `<span class="cu-type-pill" data-type="${escapeHtml(item.modelType)}">${escapeHtml(capitalize(item.modelType))}</span>` : "";
   const creatorHtml = item.creatorName ? `<span class="cu-creator">by ${escapeHtml(item.creatorName)}</span>` : "";
-  const provisionalHtml = item.isProvisional ? `<span class="cu-provisional">Provisional</span>` : "";
 
   // One list, newest on top, in the order the server sends. A server not yet
   // restarted sends none; its releases are all newer than its saved files.
@@ -1687,7 +1735,6 @@ function buildResultCard(item, cardIndex) {
           <div class="cu-ver-main">
             <h4 title="${escapeHtml(firstPath)}">${displayName}</h4>
             ${creatorHtml}
-            ${provisionalHtml}
           </div>
         </div>
       </div>
@@ -2100,6 +2147,8 @@ function applyResultMode() {
   // A menu left open in a tab that is no longer shown would reappear with it.
   for (const wiring of Object.values(state.toolbarWiring)) wiring.close();
   renderViewSwitch();
+  // A running check shows on its button here, in the pill elsewhere.
+  paintStatus();
   if (rename && state.renameView) state.renameView.refresh();
   if (gallery) showGallery();
   restoreScroll(mode);
@@ -2758,7 +2807,6 @@ function formatEta(seconds) {
 
 function updateProgress(current, total, visible) {
   if (!state.progressFillEl || !state.progressTextEl) return;
-  if (visible) hideCachedNotice();
   if (state.progressOn && !visible) {
     // The job's result stays out for a few seconds, then the pill goes.
     state.flashUntil = Date.now() + STATUS_FLASH_MS;
@@ -2800,13 +2848,17 @@ function setStatus(message, level = "info") {
 }
 
 function paintStatus() {
+  // A check shows on its button, when the button is on screen (Updates and Issues).
+  const checkJob = (state.currentJobId ? state.currentJobType : state.lastJobType) === "check-updates";
+  const buttonInView = state.resultMode === "updates" || state.resultMode === "issues";
   const view = statusRowView({
     running: state.progressOn,
     jobText: state.jobText,
     errorText: state.errorText,
-    noticeText: state.noticeText,
     flash: Date.now() < (state.flashUntil || 0),
+    onButton: checkJob && buttonInView,
   });
+  paintCheckButton();
   const setText = (el, text) => {
     if (el && el.textContent !== text) el.textContent = text;
   };
@@ -2826,9 +2878,7 @@ function paintStatus() {
   show(state.progressTextEl, view.progress);
   show(state.progressEtaEl, view.progress);
   show(state.jobControlsEl, view.controls);
-  show(state.noticeActEl, view.noticeAct);
   show(state.rootEl?.querySelector("#cu-dismiss"), view.dismiss);
-  if (state.noticeActEl) state.noticeActEl.disabled = !view.noticeAct;
   if (state.jobControlsEl) state.jobControlsEl.inert = !view.controls;
 }
 
@@ -3661,6 +3711,72 @@ function injectStyles() {
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 6px;
       margin-bottom: 9px;
+    }
+
+    /* While a check runs the button is its progress: red fills it left to right
+       over a dim red track. Its size never changes. */
+    .cu-check-btn.is-checking,
+    .cu-check-btn.is-checking:hover,
+    .cu-check-btn.is-checking:active {
+      cursor: default;
+      border-color: rgba(255, 75, 62, 0.55);
+      background:
+        linear-gradient(180deg, #ff5749 0%, #f0392c 100%) left / var(--cu-check-fill, 0%) 100% no-repeat,
+        var(--cu-red-dim);
+      color: var(--cu-bone);
+      font-variant-numeric: tabular-nums;
+      box-shadow: none;
+      transition: background-size 600ms ease-out;
+    }
+
+    .cu-check-btn.is-checking .cu-check-label {
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+    }
+
+    .cu-check-btn.is-spin .cu-check-label::before {
+      content: "";
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 6px;
+      border: 1.5px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      vertical-align: -1px;
+      animation: cu-ring-spin 0.8s linear infinite;
+    }
+
+    /* Meanwhile the ⋯ square beside it is the check's Stop. */
+    .cu-check-btn.is-checking + .cu-more .cu-btn {
+      color: var(--cu-red-soft);
+      border-color: rgba(255, 75, 62, 0.45);
+    }
+
+    /* The box that asks before checking fresh results again. */
+    .cu-dialog {
+      max-width: min(340px, calc(100vw - 32px));
+      padding: 16px 18px 14px;
+      border: 1px solid var(--cu-seam-strong);
+      border-radius: 8px;
+      background: var(--cu-slate);
+      color: var(--cu-bone);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+    }
+
+    .cu-dialog::backdrop {
+      background: rgba(8, 8, 10, 0.55);
+    }
+
+    .cu-dialog-text {
+      margin: 0 0 14px;
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+
+    .cu-dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
     }
 
     /* The ⋯ button and its menu, which opens under it like the toolbar's. */
@@ -4510,16 +4626,9 @@ function injectStyles() {
       text-overflow: ellipsis;
     }
 
-    .cu-provisional {
-      font-family: var(--cu-mono);
-      font-size: 8.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--cu-dust);
-      border: 1px dashed var(--cu-seam-strong);
-      border-radius: 3px;
-      padding: 1px 5px;
-      white-space: nowrap;
+    /* A card the running check has not re-checked yet: dimmed until it is. */
+    .cu-item.is-provisional {
+      opacity: 0.42;
     }
 
     /* ---- The release rail ----
@@ -5776,7 +5885,7 @@ function injectStyles() {
     }
 
     @keyframes cu-settle {
-      0% { border-color: var(--cu-red); background: rgba(255, 75, 62, 0.07); }
+      0% { border-color: var(--cu-red); background: rgba(255, 75, 62, 0.07); opacity: 0.42; }
       100% { border-color: var(--cu-seam); background: rgba(0, 0, 0, 0.18); }
     }
 

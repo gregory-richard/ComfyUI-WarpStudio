@@ -236,11 +236,13 @@ Most adult models need a Civitai API key to download. Set it under **Warp Studio
 
 **Check for Updates** and a **⋯** menu sit at the top of **Updates** and
 **Issues**. **Check for Updates** scans and compares; with fresh saved results it
-shows "Results from … ago" with **Check again** for a few seconds instead. The
+asks first whether to check again. While a check runs the button is its
+progress ("Checking 491 of 746", filling as it goes), the **⋯** beside it is
+**Stop**, and the cards not re-checked yet are dimmed. The
 **⋯** menu holds **Fetch Missing Metadata**, which only downloads sidecars and
 previews for models that lack them, and, once an archive folder is set,
-**Check with archive**. Jobs can be paused, resumed and stopped, and survive a
-page reload. The toolbar has
+**Check with archive**. Other jobs can be paused, resumed and stopped in the pill
+at the bottom, and every job survives a page reload. The toolbar has
 **Filter** (types, bases, hidden), **Sort** (grouping, order, page size) and ⓘ,
 which holds when it was last checked, the counts, "Changes detected" and
 **Check again**. **Rename** has **Filter** only. The list stays still while a

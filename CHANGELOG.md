@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - **Nothing jumps any more when a job starts or ends**: the job's progress floats in a pill at the bottom of the panel, with a ring, the percentage, the time left, Pause and Stop. When the job ends it shows the result for a few seconds and goes. An error stays in the pill, in amber, until you dismiss it or start the next job
+- **Check for Updates shows its own progress**: while a check runs the button reads "Checking 491 of 746" and fills from the left, and the **⋯** beside it becomes **Stop**. When it ends, the button shows the result for a few seconds. The pill shows a check only on tabs without the button. The cards not re-checked yet are dimmed until they are, instead of a small Provisional tag
+- **Check for Updates on fresh results asks first** whether to check every file again (**Check again** or **Keep these**), instead of quietly showing the saved results
 - **The tabs, Filter, Sort, search and ⋯ are icons**: each tab shows its icon and its count, with its name in the tooltip. A dot on Filter or search says it is narrowing the list
 - **A card's versions** sit in a small pill like the type pill, and open a list in the panel's own menu style
 - **A download shows in its own button**: a clock while it waits, a ring that spins while it starts, fills as it downloads and spins again while the file is checked, then a check mark. The bar along the row is gone

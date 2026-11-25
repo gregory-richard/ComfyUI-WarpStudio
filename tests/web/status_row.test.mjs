@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { statusRowView } from "../../web/status_row.js";
 
-const idle = { running: false, jobText: "", errorText: "", noticeText: "", flash: false };
+const idle = { running: false, jobText: "", errorText: "", flash: false, onButton: false };
 
 test("statusRowView: nothing to say hides the pill", () => {
   const v = statusRowView(idle);
@@ -19,7 +19,6 @@ test("statusRowView: a running job shows its text, progress and controls", () =>
     level: "info",
     progress: true,
     controls: true,
-    noticeAct: false,
     dismiss: false,
   });
 });
@@ -47,20 +46,25 @@ test("statusRowView: an error stays, in the error level, with a dismiss", () => 
   assert.equal(v.progress, false);
 });
 
-test("statusRowView: the cached notice wins over an older error, with Check again", () => {
-  const v = statusRowView({
-    ...idle,
-    errorText: "The archive folder can't be reached.",
-    noticeText: "Results from 5 min ago",
-  });
-  assert.equal(v.text, "Results from 5 min ago");
-  assert.equal(v.level, "info");
-  assert.equal(v.noticeAct, true);
-  assert.equal(v.dismiss, false);
+test("statusRowView: a check shown on its button keeps the pill in", () => {
+  const v = statusRowView({ ...idle, running: true, jobText: "Processing 6 of 20", onButton: true });
+  assert.equal(v.visible, false);
+  assert.equal(v.controls, false);
+  // Its result flashes on the button too.
+  assert.equal(statusRowView({ ...idle, jobText: "Done — 3 updates found", flash: true, onButton: true }).visible, false);
 });
 
-test("statusRowView: a notice never shows while a job runs", () => {
-  const v = statusRowView({ ...idle, running: true, jobText: "Processing", noticeText: "Results" });
-  assert.equal(v.text, "Processing");
-  assert.equal(v.noticeAct, false);
+test("statusRowView: an error while a check runs on its button shows in the pill", () => {
+  const v = statusRowView({ ...idle, running: true, jobText: "Processing", errorText: "Reconnecting... (Attempt 1/5)", onButton: true });
+  assert.equal(v.visible, true);
+  assert.equal(v.text, "Reconnecting... (Attempt 1/5)");
+  assert.equal(v.progress, false);
+});
+
+test("statusRowView: an error still shows in the pill when the check is on its button", () => {
+  const v = statusRowView({ ...idle, jobText: "Done", errorText: "The archive folder can't be reached.", flash: true, onButton: true });
+  assert.equal(v.visible, true);
+  assert.equal(v.text, "The archive folder can't be reached.");
+  assert.equal(v.level, "error");
+  assert.equal(v.dismiss, true);
 });
