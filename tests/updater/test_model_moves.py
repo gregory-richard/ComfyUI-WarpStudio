@@ -916,6 +916,28 @@ class MoveRouteTests(_MoveCase):
         self.assertEqual(str(self.d / "moss" / "x.safetensors"), request.move_to)
         self.assertFalse((self.d / "moss").exists())  # made by the move, not by the route
 
+    def test_a_file_moved_back_shows_no_record_of_its_trip_out(self) -> None:
+        # Archive, then Unarchive: the row back on this drive has the key the Archive was
+        # queued under, and that finished record would take the place of its buttons.
+        self.release.set()
+        status, body = self.post_move()
+        self.assertEqual(200, status, body)
+        _join_job_threads()
+        self.assertEqual("done", self.queue.snapshot()[0]["state"])
+
+        # What the Archive did: the version is in the archive now, and listed there.
+        self.lay(self.zk)
+        for path in self.dk.iterdir():
+            path.unlink()
+        self.hold([], [self.z_item()])
+        status, body = self.post_move(path=str(self.zk / "x.civitai.info"), to="drive")
+        self.assertEqual(200, status, body)
+        _join_job_threads()
+
+        records = {record["key"]: record["state"] for record in self.queue.snapshot()}
+        self.assertEqual({move_key(str(self.zk / "x.civitai.info")): "done"}, records)
+        self.assertNotIn(move_key(str(self.weights)), records)
+
     def test_a_move_needs_a_job_a_path_and_a_place(self) -> None:
         for payload in (
             {},
