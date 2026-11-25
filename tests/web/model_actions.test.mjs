@@ -3,7 +3,9 @@ import { test } from "node:test";
 
 import {
   COPY,
+  downloadRing,
   finishedText,
+  iconButton,
   galleryActionHtml,
   galleryStateText,
   isPaid,
@@ -16,6 +18,7 @@ import {
   slotState,
   slotVersions,
   versionActionsHtml,
+  waitingText,
   versionKey,
   galleryKey,
 } from "../../web/model_actions.js";
@@ -134,7 +137,10 @@ test("versionActionsHtml: a download is a ring where Download was, and Stop", ()
     rec({ state: "downloading", written: 100, total: 100 }),
     escapeHtml
   );
-  assert.ok(checking.includes("is-spin") && checking.includes('title="Checking the file…"'), checking);
+  assert.ok(
+    checking.includes("is-spin") && checking.includes('title="Checking the file…"'),
+    checking
+  );
 });
 
 test("versionActionsHtml: Replace names the version it replaces and the file that goes", () => {
@@ -271,6 +277,22 @@ test("finishedText counts what finished", () => {
   );
   assert.equal(finishedText({ downloaded: 1 }), "Done — 1 downloaded");
   assert.ok(COPY.download);
+});
+
+test("finishedText counts moves apart from downloads", () => {
+  assert.equal(finishedText({ moved: 1 }), "Done — 1 moved");
+  assert.equal(finishedText({ downloaded: 2 }), "Done — 2 downloaded");
+  assert.equal(
+    finishedText({ downloaded: 2, moved: 1, failed: 1 }),
+    "Done — 2 downloaded, 1 moved, 1 failed"
+  );
+});
+
+test("the card's building blocks are exported", () => {
+  assert.match(iconButton("pi-x", "Close", ' data-a="1"'), /title="Close" aria-label="Close"/);
+  assert.match(downloadRing(40), /aria-valuenow="40"/);
+  assert.equal(waitingText({ waitingFor: "scan" }), "Waiting for the metadata fetch");
+  assert.equal(waitingText({}), "");
 });
 
 const dlrec = (fields) => ({ id: "r1", key: "gallery:a.safetensors", ...fields });
