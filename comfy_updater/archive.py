@@ -214,6 +214,20 @@ def save_archive_results(data_dir: Path, archive_folder: str, summary: dict, ite
     )
 
 
+def drop_deleted_archive_items(data_dir: Path, archive_folder: str) -> None:
+    """Rewrite the saved archive results without their ``deleted`` items, keeping when they ran."""
+    data = _load_results(data_dir, archive_folder)
+    items = data.get("items") if data else None
+    if not isinstance(items, list):
+        return
+    kept = [item for item in items if not (isinstance(item, dict) and item.get("deleted"))]
+    if len(kept) == len(items):
+        return
+    summary = data.get("summary")
+    summary = {**summary, "total": len(kept)} if isinstance(summary, dict) else {"total": len(kept)}
+    write_json(data_dir / ARCHIVE_RESULTS_FILENAME, {**data, "summary": summary, "items": kept})
+
+
 def _load_results(data_dir: Path, archive_folder: str) -> dict | None:
     if not archive_folder:
         return None

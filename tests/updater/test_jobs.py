@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from comfy_updater.archived_updates import ArchivedUpdateStore
-from comfy_updater.jobs import JobManager, JobRecord, card_version_order
+from comfy_updater.jobs import NAMING_PHASE, JobManager, JobRecord, card_version_order
 from comfy_updater.updater_service import _normalize_remote_versions
 
 
@@ -910,6 +910,91 @@ class ReservationTests(unittest.TestCase):
         manager.release_reservation()
         self.assertIsNotNone(manager.start("scan", lambda p, e, c: ({}, [])))
         _wait_idle(manager)
+
+
+class NamingPhaseJobTests(unittest.TestCase):
+    """Stop in the naming phase ends only the naming; the check's results stay."""
+
+    def setUp(self) -> None:
+        self.manager = JobManager()
+
+    def run_job(self, body):
+        """Start a check whose runner enters the naming phase and calls ``body(control, job_id)``."""
+        entered = threading.Event()
+        release = threading.Event()
+        seen: dict = {}
+
+        def runner(progress, item_cb, control):  # noqa: ARG001
+            self.manager.set_phase(control.job_id, NAMING_PHASE)
+            entered.set()
+            release.wait(timeout=5)
+            seen["cancelled"] = control.is_cancelled()
+            seen["stopped"] = control.phase_stopped()
+            self.manager.set_phase(control.job_id, "")
+            return {}, [{"modelPath": "a"}]
+
+        job = self.manager.start("check-updates", runner)
+        self.assertTrue(entered.wait(timeout=5))
+        body(job, release)
+        deadline = time.time() + 5
+        while job.status in ("running", "paused", "queued") and time.time() < deadline:
+            time.sleep(0.01)
+        return job, seen
+
+    def test_the_job_reports_its_phase(self) -> None:
+        phases: list = []
+
+        def body(job, release):
+            phases.append(job.as_dict()["phase"])
+            release.set()
+
+        job, _seen = self.run_job(body)
+        self.assertEqual([NAMING_PHASE], phases)
+        self.assertEqual("", job.as_dict()["phase"])
+
+    def test_stop_during_the_naming_phase_ends_only_that_phase(self) -> None:
+        messages: list = []
+
+        def body(job, release):
+            messages.append(self.manager.cancel(job.id).message)
+            release.set()
+
+        job, seen = self.run_job(body)
+        self.assertEqual(["Stopping the naming"], messages)
+        self.assertEqual(("completed", "Completed"), (job.status, job.message))
+        self.assertEqual((False, True), (seen["cancelled"], seen["stopped"]))
+
+    def test_stop_while_paused_in_naming_resumes_and_ends_the_phase(self) -> None:
+        states: list = []
+
+        def body(job, release):
+            self.assertEqual("paused", self.manager.pause(job.id).status)
+            states.append(self.manager.cancel(job.id).status)
+            release.set()
+
+        job, seen = self.run_job(body)
+        self.assertEqual(["running"], states)
+        self.assertEqual("completed", job.status)
+        self.assertTrue(seen["stopped"])
+
+    def test_stop_outside_the_naming_phase_cancels_as_before(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def runner(progress, item_cb, control):  # noqa: ARG001
+            entered.set()
+            release.wait(timeout=5)
+            return {}, []
+
+        job = self.manager.start("check-updates", runner)
+        self.assertTrue(entered.wait(timeout=5))
+        self.manager.cancel(job.id)
+        self.assertTrue(job.control.is_cancelled())
+        release.set()
+        deadline = time.time() + 5
+        while job.status == "running" and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual("cancelled", job.status)
 
 
 if __name__ == "__main__":

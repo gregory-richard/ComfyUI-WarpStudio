@@ -18,6 +18,7 @@ from aiohttp import web
 
 from .archive import (
     archive_reference_path,
+    drop_deleted_archive_items,
     folder_key,
     load_archive_items,
     load_archive_results,
@@ -41,7 +42,7 @@ from .constants import (
     USER_AGENT,
 )
 from .download_queue import MODEL_DOWNLOAD_JOB, DownloadQueue, DownloadRequest, run_queue
-from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
+from .jobs import MATURE_MODES, NAMING_PHASE, RESULT_MODES, _normalize_cached_item_urls
 from .model_actions import (
     EARLY_ACCESS_ERROR,
     INFO_GONE_ERROR,
@@ -59,6 +60,7 @@ from .model_files import (
     resolve_name,
 )
 from .naming_ai import SYSTEM_PROMPT
+from .naming_phase import NamingDeps, PhaseControl, naming_tasks, run_naming
 from .naming_check import base_named_by, base_vocabulary, name_check_flags, needs_review, users_own_words, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
 from .path_resolver import custom_path_problem, normalize_model_types, resolve_model_roots
@@ -178,7 +180,16 @@ def register_routes(
             return web.json_response({"error": "A job is already running."}, status=409)
         return web.json_response({"jobId": job.id})
 
-    _register_check_routes(routes, config_store, updater_service, job_manager)
+    naming = None
+    if None not in (decisions, base_codes, answer_cache, journal, release_names):
+        naming = NamingDeps(
+            decisions=decisions,
+            base_codes=base_codes,
+            answer_cache=answer_cache,
+            journal=journal,
+            release_names=release_names,
+        )
+    _register_check_routes(routes, config_store, updater_service, job_manager, naming=naming)
 
     @routes.get("/warp-studio/updater/jobs/active")
     @_guarded
@@ -637,7 +648,68 @@ def _model_stats(items: list) -> dict:
     return stats
 
 
-def _register_check_routes(routes, config_store, updater_service, job_manager) -> None:
+def naming_generator(config: dict, journal, should_stop) -> tuple[Optional[ComfyTextGenerator], str]:
+    """The AI that names releases, with its model's file name; ``(None, "")`` when none is usable.
+
+    Reads every text encoder's header and blocks on ComfyUI's own server: only for a job thread.
+    """
+    models = list_naming_models()
+    if not rename_status(config, has_text_generation(), models, journal)["available"]:
+        return None, ""
+    clip = _matching_model(config.get("namingModel", ""), models)
+    return ComfyTextGenerator(comfy_base_url(), clip, SYSTEM_PROMPT, should_stop=should_stop), clip
+
+
+def _run_naming_phase(
+    naming, config_store, updater_service, job_manager, client, control, progress, rows, archive_folder, job_summary
+) -> None:
+    """Name the releases the check found new, with the check's own client, and note it in the summary.
+
+    Nothing runs, and no phase is set, when there is nothing to name or no usable AI.
+    """
+
+    def archive_reference(model_path: str, model_type: str) -> Optional[Path]:
+        if not archive_folder:
+            return None
+        type_roots = {
+            name: [Path(path) for path in paths]
+            for name, paths in updater_service.get_effective_roots([model_type]).items()
+        }
+        return archive_reference_path(Path(archive_folder), Path(model_path), model_type, type_roots)
+
+    tasks = naming_tasks(
+        job_manager.naming_cards(rows),
+        named=naming.release_names.has,
+        archive_reference=archive_reference,
+    )
+    if not tasks:
+        return
+    phase = PhaseControl(control)
+    generator, clip = naming_generator(config_store.get(), naming.journal, phase.is_cancelled)
+    if generator is None:
+        return
+    job_manager.set_phase(control.job_id, NAMING_PHASE)
+    try:
+        result = run_naming(
+            tasks,
+            client=client,
+            generator=generator,
+            decisions=naming.decisions,
+            base_codes=naming.base_codes,
+            cache=naming.answer_cache,
+            clip_name=clip,
+            store=naming.release_names,
+            progress=progress,
+            control=phase,
+        )
+    finally:
+        job_manager.set_phase(control.job_id, "")
+    job_summary["naming"] = {"named": result["named"], "total": result["total"]}
+    if result["error"]:
+        job_summary["namingError"] = result["error"]
+
+
+def _register_check_routes(routes, config_store, updater_service, job_manager, naming=None) -> None:
     @routes.post("/warp-studio/updater/jobs/check-updates")
     @_guarded
     async def start_check_updates_job(request):
@@ -666,11 +738,14 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
         saved_archive_items = [
             _normalize_cached_item_urls(item)
             for item in await asyncio.to_thread(load_archive_items, data_dir, archive_folder)
-            if isinstance(item, dict)
+            if isinstance(item, dict) and not item.get("deleted")
         ]
 
         def runner(progress, item_cb, control):
             nonlocal item_count
+            # One client for the D walk, the archive pass and the naming: what it has fetched
+            # about a model on the drive is not asked for again.
+            client = updater_service.make_client(lambda: control.is_cancelled() or control.phase_stopped())
 
             def sync_seeds(files):
                 # Without a previous check there is nothing stale to correct.
@@ -694,6 +769,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
 
             summary, items = updater_service.run_check_updates(
                 payload, progress, item_cb_with_progress, control, files_callback=sync_seeds,
+                client=client,
             )
             # A check of a subset of types replaces only that subset in the
             # cache; the previous results for the other types are kept, so
@@ -726,7 +802,8 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
                     job_summary["archiveError"] = ARCHIVE_UNREACHABLE_ERROR
                 else:
                     archive_summary, fresh_items = updater_service.run_archive_check(
-                        payload, progress, item_cb_with_progress, control, archive_root=archive_root,
+                        payload, progress, item_cb_with_progress, control,
+                        archive_root=archive_root, client=client,
                     )
                     if archive_summary.get("archiveError"):
                         # Nothing was looked up (no model folders in it): its last results stay.
@@ -739,11 +816,19 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
                             saved_archive_items, fresh_items, archive_summary, payload["modelTypes"]
                         )
                         save_archive_results(data_dir, archive_folder, archive_summary, archive_items)
+            if archive_folder and not control.is_cancelled():
+                # A deleted or moved archive row lasts until this check, which has now looked.
+                drop_deleted_archive_items(data_dir, archive_folder)
             archive_info = load_archive_summary(data_dir, archive_folder)
             if archive_info:
                 # Counted as the Updates list shows them: after Hide, and not when on the drive.
                 archive_info["withUpdates"] = job_manager.archived_update_count(items + list(archive_items))
                 job_summary["archive"] = archive_info
+            if naming is not None and not control.is_cancelled():
+                _run_naming_phase(
+                    naming, config_store, updater_service, job_manager, client, control, progress,
+                    items + list(archive_items), archive_folder, job_summary,
+                )
             progress_path.unlink(missing_ok=True)
             return job_summary, items + list(archive_items)
 

@@ -51,10 +51,21 @@ class UpdaterService:
         item_callback: ItemCallback | None = None,
         control=None,
         files_callback: FilesCallback | None = None,
+        client=None,
     ) -> tuple[dict, list[dict]]:
         return self._run(
             payload, progress, mode="check", item_callback=item_callback, control=control,
-            files_callback=files_callback,
+            files_callback=files_callback, client=client,
+        )
+
+    def make_client(self, should_stop=None) -> CivitaiClient:
+        """A Civitai client from the settings, for a caller that shares one across passes."""
+        config = self.config_store.get()
+        return CivitaiClient(
+            api_key=config.get("apiKey", ""),
+            timeout_seconds=int(config.get("requestTimeoutSeconds", 30)),
+            max_retries=int(config.get("maxRetries", 4)),
+            should_stop=should_stop,
         )
 
     def get_effective_roots(
@@ -91,6 +102,7 @@ class UpdaterService:
         item_callback: ItemCallback | None = None,
         control=None,
         files_callback: FilesCallback | None = None,
+        client=None,
     ) -> tuple[dict, list[dict]]:
         config = self.config_store.get()
         model_types = normalize_model_types(payload.get("modelTypes"))
@@ -115,12 +127,8 @@ class UpdaterService:
         progress(0, total, f"Discovered {total} model files")
 
         should_stop = control.is_cancelled if control else None
-        client = CivitaiClient(
-            api_key=config.get("apiKey", ""),
-            timeout_seconds=int(config.get("requestTimeoutSeconds", 30)),
-            max_retries=int(config.get("maxRetries", 4)),
-            should_stop=should_stop,
-        )
+        if client is None:
+            client = self.make_client(should_stop)
         # Files still without a preview after the Civitai step ask the other sources.
         fallback = (
             _ScanFallback(config, self.config_store.data_dir, should_stop)
@@ -617,6 +625,7 @@ class UpdaterService:
         control=None,
         *,
         archive_root: Path,
+        client=None,
     ) -> tuple[dict, list[dict]]:
         """Check the models in the archive folder against Civitai without writing there."""
         config = self.config_store.get()
@@ -639,12 +648,8 @@ class UpdaterService:
         progress(0, total, f"Discovered {total} archived models")
 
         should_stop = control.is_cancelled if control else None
-        client = CivitaiClient(
-            api_key=config.get("apiKey", ""),
-            timeout_seconds=int(config.get("requestTimeoutSeconds", 30)),
-            max_retries=int(config.get("maxRetries", 4)),
-            should_stop=should_stop,
-        )
+        if client is None:
+            client = self.make_client(should_stop)
         stats = {"resolved": 0, "notFound": 0, "withUpdates": 0, "errors": 0}
         items: list[dict] = []
 
