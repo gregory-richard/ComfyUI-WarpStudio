@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, Optional
 
 SEPARATOR = " - "
 FORBIDDEN_CHARS = set('<>:"/\\|?*')
@@ -19,6 +19,9 @@ RESERVED_STEMS = (
 )
 REQUIRED_PARTS = ("creator", "title", "base")
 PART_NAMES = ("creator", "title", "version", "precision", "base")
+# These are often named "model - version (base)", which reads as creator "model" and title
+# "version": their own creator and title count only when the name has all three parts.
+THREE_PART_TYPES = ("checkpoint", "unet")
 
 _BASE_SUFFIX = re.compile(r"^(.*?)\s*\(([^()]*)\)\s*$")
 
@@ -61,6 +64,33 @@ def parse_stem(stem: str) -> NameParts:
     title = pieces[1] if len(pieces) > 1 else ""
     version = " ".join(p for p in pieces[2:] if p)
     return NameParts(creator, title, version, "", base)
+
+
+def own_name(stems: Iterable[str], *, three_parts: bool = False) -> Optional[NameParts]:
+    """The parts of the first stem that has both a creator and a title, else None.
+
+    With ``three_parts`` (see ``THREE_PART_TYPES``) a stem counts only with a version too.
+    """
+    for stem in stems:
+        parts = parse_stem(stem)
+        if parts.creator and parts.title and (parts.version or not three_parts):
+            return parts
+    return None
+
+
+def name_tail(stem: str, *, three_parts: bool = False) -> str:
+    """The version and base of a named stem, e.g. ``xxl (moss)``; the stem itself otherwise.
+
+    With ``three_parts`` a stem of two parts reads ``model - version (base)``: its second
+    part is the version.
+    """
+    parts = parse_stem(stem)
+    if not (parts.creator and parts.title):
+        return stem
+    tail = parts.version or (parts.title if three_parts else "")
+    if parts.base:
+        tail += " (%s)" % parts.base
+    return tail.strip() or stem
 
 
 def _has_forbidden(text: str) -> bool:

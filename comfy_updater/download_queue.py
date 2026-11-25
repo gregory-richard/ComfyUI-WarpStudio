@@ -33,6 +33,9 @@ class DownloadRequest:
     name: str = ""
     reference_path: str = ""
     replace_path: str = ""
+    # A move (Archive or Unarchive): the weights it copies, and where they go.
+    move_from: str = ""
+    move_to: str = ""
     check_item: dict = field(default_factory=dict)
     id: str = field(default_factory=_new_id)
     state: str = "waiting"
@@ -49,6 +52,7 @@ class DownloadRequest:
         return {
             "id": self.id,
             "key": self.key,
+            "kind": "move" if self.move_from else "download",
             "source": self.source,
             "modelId": self.model_id,
             "versionId": self.version_id,
@@ -195,6 +199,23 @@ class DownloadQueue:
                 for request in self._requests
             )
 
+    def moving(self, path: str, *, other_than: str = "") -> bool:
+        """Whether a waiting or running move copies from ``path`` or to it.
+
+        The move whose key is ``other_than`` does not count: a second click on
+        a row finds its own move.
+        """
+        if not path:
+            return False
+        wanted = _norm(path)
+        with self._lock:
+            return any(
+                request.state in _ACTIVE_STATES
+                and request.key != other_than
+                and wanted in {_norm(end) for end in (request.move_from, request.move_to) if end}
+                for request in self._requests
+            )
+
     def waiting(self) -> int:
         with self._lock:
             return sum(1 for request in self._requests if request.state == "waiting")
@@ -214,6 +235,31 @@ class DownloadQueue:
                 r for r in self._requests if r.key != key or r.state in _ACTIVE_STATES
             ]
 
+    def forget_moves_from(self, path: str) -> None:
+        """Drop the finished moves that copied from ``path``: a file moved back there since.
+
+        A move is keyed by its row's path, so the row of a file brought back (Archive,
+        then Unarchive) has its trip out's key, and would show that record as its own.
+        """
+        wanted = _norm(path)
+        with self._lock:
+            self._requests = [
+                r
+                for r in self._requests
+                if r.state in _ACTIVE_STATES or not r.move_from or _norm(r.move_from) != wanted
+            ]
+
+    def forget_finished_moves(self) -> None:
+        """Drop every finished move: a completed check lists the files where they are now.
+
+        A record lives until a restart, and a move's warning would sit over its row's name
+        all that time. Waiting and running moves, and every download, stay.
+        """
+        with self._lock:
+            self._requests = [
+                r for r in self._requests if r.state in _ACTIVE_STATES or not r.move_from
+            ]
+
     def _prune_locked(self) -> None:
         finished = [r for r in self._requests if r.state not in _ACTIVE_STATES]
         drop = len(finished) - KEEP_FINISHED
@@ -225,10 +271,10 @@ class DownloadQueue:
 def run_queue(queue: DownloadQueue, work, *, progress, control) -> tuple[dict, list]:
     """The model-download job's runner: drain the queue one request at a time.
 
-    ``work(request, report, should_stop)`` downloads one request and raises to
-    fail. It never waits on a pause: a paused stream would time out.
+    ``work(request, report, should_stop)`` downloads (or moves) one request and
+    raises to fail. It never waits on a pause: a paused stream would time out.
     """
-    counts = {"downloaded": 0, "failed": 0, "stopped": 0}
+    counts = {"downloaded": 0, "moved": 0, "failed": 0, "stopped": 0}
     try:
         while True:
             request = queue.take_next()
@@ -254,7 +300,7 @@ def run_queue(queue: DownloadQueue, work, *, progress, control) -> tuple[dict, l
                 counts["failed"] += 1
             else:
                 queue.finish(request, "done")
-                counts["downloaded"] += 1
+                counts["moved" if request.move_from else "downloaded"] += 1
 
             if control.is_cancelled():
                 counts["stopped"] += len(queue.stop_all())

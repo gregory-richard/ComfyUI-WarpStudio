@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from comfy_updater import model_files
+from comfy_updater.archive import load_archive_results, save_archive_results
 from comfy_updater.config_store import ConfigStore
 from comfy_updater.download_queue import (
     MODEL_DOWNLOAD_JOB,
@@ -21,11 +22,14 @@ from comfy_updater.download_queue import (
 )
 from comfy_updater.jobs import JobManager, JobRecord
 from comfy_updater.model_actions import EARLY_ACCESS_ERROR
+from comfy_updater.model_moves import MOVE_BUSY_ERROR
 from comfy_updater.naming_ai import SYSTEM_PROMPT
+from comfy_updater.release_names import ReleaseNameStore
 from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
 from comfy_updater.routes import (
     _PAUSE_ERRORS,
     ARCHIVE_READ_ONLY_ERROR,
+    ARCHIVE_UNREACHABLE_ERROR,
     DOWNLOAD_BUSY_ERROR,
     DOWNLOAD_HANDOVER_ERROR,
     DOWNLOAD_PAUSE_ERROR,
@@ -425,7 +429,7 @@ class DownloadHelperTests(_Dirs):
         self.assertEqual(["version:202", "version:203"], ran)
         self.assertEqual(("done", "done"), (first.state, second.state))
         self.assertEqual(
-            {"downloaded": 2, "failed": 0, "stopped": 0}, manager.get(first_id).summary
+            {"downloaded": 2, "moved": 0, "failed": 0, "stopped": 0}, manager.get(first_id).summary
         )
 
     def test_a_click_as_the_last_download_finishes_starts_a_new_job(self) -> None:
@@ -985,14 +989,17 @@ class DownloadRouteTests(_Dirs):
         self.jobs = JobManager()
         self.journal = RenameJournal(data_dir)
         self.routes = _Routes()
+        base_codes = BaseCodeStore(data_dir)
+        self.release_names = ReleaseNameStore(data_dir, base_codes)
         self.queue = _register_model_action_routes(
             self.routes,
             self.config_store,
             self.jobs,
             DecisionStore(data_dir),
-            BaseCodeStore(data_dir),
+            base_codes,
             AnswerCache(data_dir),
             self.journal,
+            release_names=self.release_names,
         )
         self.jobs.restore_job(
             "check-updates", "check-1", startedAt="", finishedAt="", summary={}, items=[self.item()]
@@ -1053,6 +1060,7 @@ class DownloadRouteTests(_Dirs):
                 ("POST", "/warp-studio/updater/downloads/{request_id}/stop"),
                 ("POST", "/warp-studio/updater/delete-model"),
                 ("POST", "/warp-studio/updater/delete-file"),
+                ("POST", "/warp-studio/updater/moves"),
             },
             set(self.routes.handlers),
         )
@@ -1105,8 +1113,14 @@ class DownloadRouteTests(_Dirs):
         self.assertEqual(1, len(self.contexts))  # the stopped one never ran
         self.assertEqual(self.config_store.data_dir, self.contexts[0].data_dir)
         self.assertEqual(
-            {"downloaded": 1, "failed": 0, "stopped": 0}, self.jobs.get(job_id).summary
+            {"downloaded": 1, "moved": 0, "failed": 0, "stopped": 0}, self.jobs.get(job_id).summary
         )
+
+    def test_the_download_context_carries_the_release_names(self) -> None:
+        self.post_download()
+        self.release.set()
+        _join_job_threads()
+        self.assertIs(self.release_names, self.contexts[0].release_names)
 
     def test_delete_problem(self) -> None:
         queue = DownloadQueue()
@@ -1322,17 +1336,99 @@ class DownloadRouteTests(_Dirs):
         self.assertEqual((404, UNLISTED_FILE_ERROR), (status, body["error"]))
         self.assertTrue(other.exists())
 
-    def test_delete_file_never_touches_the_archive(self) -> None:
-        archive = self.root / "archive"
-        archive.mkdir()
-        kept = archive / "glow.safetensors"
-        kept.write_bytes(b"x")
-        self.listed_job(self.item(modelPath=str(kept), filePath=str(kept), archived=True))
+    def archived_files(self, folder: Path) -> tuple:
+        """An archived version's weights, info and preview in ``folder``, and its check row."""
+        folder.mkdir(parents=True, exist_ok=True)
+        weights = folder / "glow.safetensors"
+        weights.write_bytes(b"x")
+        info = folder / "glow.civitai.info"
+        info.write_text("{}", encoding="utf-8")
+        (folder / "glow.preview.png").write_bytes(b"png")
+        row = self.item(
+            modelPath=str(info), filePath=str(weights), metadataOnly=True, archived=True
+        )
+        return weights, info, row
 
-        status, body = self.delete_file(str(kept), job_id="check-2")
+    def test_delete_file_sends_an_archived_rows_weights_to_the_recycle_bin(self) -> None:
+        archive = self.root / "Z" / "models"
+        weights, info, row = self.archived_files(archive / "Lora" / "sdxl")
+        self.config_store.update({"archiveFolder": str(archive)})
+        self.listed_job(row)
+        save_archive_results(self.config_store.data_dir, str(archive), {"total": 1}, [row])
 
-        self.assertEqual((409, ARCHIVE_READ_ONLY_ERROR), (status, body["error"]))
-        self.assertTrue(kept.exists())
+        status, body = self.delete_file(str(info), job_id="check-2")
+
+        self.assertEqual(200, status, body)
+        self.assertEqual(
+            ["glow.safetensors", "glow.civitai.info", "glow.preview.png"], body["removed"]
+        )
+        self.assertEqual([], list((archive / "Lora" / "sdxl").iterdir()))
+        self.assertTrue((self.root / "bin" / "glow.safetensors").is_file())
+        self.assertEqual([True], [item.get("deleted") for item in self.jobs.get("check-2").items])
+        saved, _summary = load_archive_results(self.config_store.data_dir, str(archive))
+        self.assertEqual([True], [item.get("deleted") for item in saved])
+
+    def test_delete_file_refuses_an_archived_row_outside_the_archive_folder(self) -> None:
+        archive = self.root / "Z" / "models"
+        archive.mkdir(parents=True)
+        weights, info, row = self.archived_files(self.root / "elsewhere")
+        self.listed_job(row)
+
+        for folder in ("", str(archive)):
+            with self.subTest(folder=bool(folder)):
+                self.config_store.update({"archiveFolder": folder})
+                for posted in (str(info), str(weights)):
+                    status, body = self.delete_file(posted, job_id="check-2")
+                    self.assertEqual((409, ARCHIVE_READ_ONLY_ERROR), (status, body["error"]))
+        self.assertTrue(weights.exists())
+        self.assertTrue(info.exists())
+
+    def test_delete_file_refuses_an_archived_row_while_the_archive_is_unplugged(self) -> None:
+        archive = self.root / "Z" / "models"
+        weights, info, row = self.archived_files(archive / "Lora")
+        self.listed_job(row)
+        self.config_store.update({"archiveFolder": str(archive)})
+
+        with mock.patch("comfy_updater.routes._reachable", return_value=False):
+            status, body = self.delete_file(str(info), job_id="check-2")
+
+        self.assertEqual((409, ARCHIVE_UNREACHABLE_ERROR), (status, body["error"]))
+        self.assertTrue(weights.exists())
+
+    def test_delete_file_refuses_an_archived_row_without_its_weights(self) -> None:
+        archive = self.root / "Z" / "models"
+        weights, info, row = self.archived_files(archive / "Lora")
+        weights.unlink()
+        self.listed_job(row)
+        self.config_store.update({"archiveFolder": str(archive)})
+
+        status, body = self.delete_file(str(info), job_id="check-2")
+
+        self.assertEqual((404, FILE_GONE_ERROR), (status, body["error"]))
+        self.assertTrue(info.exists())
+
+    def test_a_file_being_moved_cannot_be_deleted(self) -> None:
+        Path(self.v1).write_bytes(b"x")
+        self.queue.submit(
+            DownloadRequest(
+                key="move:1",
+                source="archive",
+                model_id="101",
+                version_id="201",
+                model_type="lora",
+                move_from=self.v1,
+                move_to=str(self.root / "Z" / "glow.safetensors"),
+            )
+        )
+
+        status, body = self.delete_file(self.v1)
+
+        self.assertEqual((409, MOVE_BUSY_ERROR), (status, body["error"]))
+        self.assertTrue(Path(self.v1).exists())
+        self.assertEqual(
+            (409, MOVE_BUSY_ERROR),
+            delete_problem(None, queue=self.queue, weights=Path(self.v1), can_trash=True),
+        )
 
     def test_delete_file_refuses_an_info_only_row(self) -> None:
         weights = Path(self.v1)

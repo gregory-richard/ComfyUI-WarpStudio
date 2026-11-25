@@ -197,39 +197,85 @@ resolved roots.
 
 It identifies each file by its SHA256 hash, reads the `.civitai.info` files you
 already have, and writes only `.civitai.info` and `.preview.png` files next to
-your models. Checking downloads no model; a download starts only when you click **Download**.
+your models. Checking downloads no model; a download starts only when you click
+**Download**, and a file moves only when you click **Archive** or **Unarchive**.
 
 Three more views sit above the list:
 
-- **Updates**: models with a release newer than your newest local version. A card is a ledger of that model's releases, one row per version. Red means one thing: a release exists that you do not have. A **Buzz** badge marks a release that costs Buzz.
-- **Issues**: files Civitai had no release for (a merge, a conversion, a file never uploaded) or could not be asked about (removed, needs an API key). The reason is under each row.
+- **Updates**: models with a release newer than your newest local version. Red means one thing: a release exists that you do not have. A **Buzz** badge marks a release that costs Buzz.
+- **Issues**: files Civitai had no release for (a merge, a conversion, a file never uploaded) or could not be asked about (removed, needs an API key). The card says why.
 - **Rename**: see below.
 
-Each newer release has a **Download** button. When the version you have is on
-this drive, there is also **Replace**: it downloads the new release, checks it,
-and only then sends the old weights and their info and preview to the Recycle
-Bin. If the old weights can't be sent, nothing else of the old version is
-touched. On a drive without a Recycle Bin, or for a file too big for it, Windows
-deletes the file for good. A release that costs Buzz or is in early access shows **Early access**
-instead of the buttons.
+Updates and Issues show cards like the Gallery's: a large picture with the type
+and base, ↗ to Civitai, the creator, the title and Civitai's numbers. The creator
+and title are yours, taken from your newest file named `creator - title - …`;
+without one, they are Civitai's. Under the picture is one row per version, each
+with its own small picture: the new releases, the files on this drive and in the
+archive, and the ones you deleted. Hover, tap or tab to a row and the picture,
+the base and the line over the picture switch to that version: **New · date · not
+downloaded**, **Saved · date · file name**, **Archived · date · on Z:**, or in
+Issues what is wrong with it. A card with more than one new release says **2
+new** on its picture. No text wraps: a long one ends in "…", and its tooltip has
+all of it.
 
-A model you downloaded stays in **Updates** until the next check, even after a
-restart, with the new version marked **Downloaded**, so you can try it and then
-remove the old one. Every version row whose file is on this drive has **Delete**,
-in Updates and Issues: **Delete?** for four seconds, then the weights and their
-info and preview go to the Recycle Bin. Archived rows and info files alone have no
-Delete.
+A row for a file you have shows the version part of its name, such as
+`v3 (krea2)`. A new release shows the name its file will get, such as
+`night v4 (krea2)`. The check ends by naming each new release with the naming
+model (see [Renaming your library](#renaming-your-library)): it keeps your
+creator and title and picks only the version, and a code for a base you have no
+code for yet. The button reads **Naming 3 of 25** meanwhile, and a pause holds
+between two models. **Stop** ends only the naming: the check's results and the
+names made so far stay. Names are kept per release, so a later check names only
+what came out since, and a release you are not interested in is not named. The
+first check names every new release at once, which can take several minutes.
+Without a naming model, a row shows Civitai's version name and base.
 
-Downloads run on the ComfyUI server, one at a time, so they carry on if you close
-the tab. A click while another job runs says **Waiting for the check** (or the dry run,
-the rename, the metadata fetch, the naming model download) and starts by itself
-when that job ends; **Cancel** takes it out. Waiting downloads are kept in the
-server's memory, so restarting ComfyUI drops them and the running one. A running
-one shows its percentage and **Stop**; the job bar shows the
-progress and ends with a line like "Done — 2 downloaded". Each file is checked
-against Civitai's SHA-256 before it is renamed into place, and nothing already
-there is overwritten. A new file gets the name the renamer would give it, in its
-base model's folder; when no naming model is set, it keeps Civitai's file name.
+Each row has two buttons, always in the same place:
+
+| Row | Buttons |
+| --- | --- |
+| A new release | **Download** · **Not interested** (**Show again** on one you hid) |
+| A release that costs Buzz | its **Buzz** badge · **Not interested** |
+| A file on this drive | **Delete** · **Archive** |
+| A file in the archive | **Delete** · **Unarchive** |
+| A deleted file | none |
+
+**Download** fetches the release under the name its row shows, into its base
+model's folder, or beside the version you have. When that name is taken there,
+the file keeps Civitai's name. A release that has no name yet is named by the AI
+as it downloads; with no naming model set, it keeps Civitai's file name.
+
+**Delete** asks once: click again within four seconds and the weights and their
+info and preview go to the Recycle Bin. On a drive without a Recycle Bin, or for
+a file too big for it, Windows deletes the file for good. A file in the archive
+goes to that drive's recycle bin; a network drive without one deletes it for
+good.
+
+**Archive** and **Unarchive**, offered once an archive folder is set, move a
+version between this drive and the archive, into the same folder on the other
+side: `Lora\krea2` here is `Lora\krea2` there, made when it is missing. The
+weights are copied and checked against the SHA-256 in their info file, the info,
+preview and any other file of that name are copied beside them, and only then
+do the originals go to the Recycle Bin. Nothing is overwritten or renamed: a
+name already taken on the other side refuses the move. A failed or stopped move
+leaves the original as it was. When the Recycle Bin refuses the original (ComfyUI
+has the LoRA loaded), both copies stay and the row says so. Only a file with its
+`.civitai.info` can be archived, since the archive check finds files by it. A
+moved row says **Archived** or **Saved** until the next check, even after a
+restart, and a deleted one says **Deleted**. A model you downloaded stays in
+**Updates** until the next check too, with the new version marked
+**Downloaded**, so you can try it and then remove the old one.
+
+Downloads and moves run on the ComfyUI server, one at a time, so they carry on if
+you close the tab. A click while another job runs says **Waiting for the check**
+(or the dry run, the rename, the metadata fetch, the naming model download) and
+starts by itself when that job ends; **Cancel** takes it out. Waiting ones are
+kept in the server's memory, so restarting ComfyUI drops them and the running
+one. The row's button becomes a ring that fills as the file comes in or is
+copied and spins while it is checked, with **Stop** beside it; then the row
+shows the version where it now is. The job bar ends with a line like "Done — 2
+downloaded, 1 moved". Each file is checked by SHA-256 before it gets its name,
+and nothing already there is overwritten.
 
 Most adult models need a Civitai API key to download. Set it under **Warp Studio**
 → **Civitai Network** → **API Key**; it is sent only to Civitai, over https.
@@ -243,22 +289,25 @@ progress ("Checking 491 of 746", filling as it goes), the **⋯** beside it is
 previews for models that lack them, and, once an archive folder is set,
 **Check with archive**. Other jobs can be paused, resumed and stopped in the pill
 at the bottom, and every job survives a page reload. The toolbar has
-**Filter** (types, bases, hidden), **Sort** (grouping, order, page size) and ⓘ,
-which holds when it was last checked, the counts, "Changes detected" and
-**Check again**. **Rename** has **Filter** only. The list stays still while a
-check runs. Any release you don't want can be hidden.
+**Filter** (types, bases, **Show hidden**), **Sort** (grouping, order, page
+size) and ⓘ, which holds when it was last checked, the counts, "Changes
+detected" and **Check again**. **Rename** has **Filter** only. The list stays
+still while a check runs. A release you mark **Not interested** leaves the list
+and is not offered again; with **Show hidden** it comes back with **Show again**.
 
 **Check with archive** is for models you moved to another drive. Set the folder
 under **Warp Studio** → **Civitai Path Sources** → **Archive Folder**. The check
 runs as usual, then looks up every archived model too: about 7 minutes more for
-1,100 of them. It only reads. Archived models whose new version is out show in
-**Updates** marked **Archived**, with **Download** (to this drive) and **Hide**.
-A version you have in the archive is never offered as new. The same version on
-both drives is listed in **Issues** as **Duplicate**, and an info file left on
-this drive for a model in the archive as **Info only**; removing them is up to
-you. The results are kept until the next **Check with archive**, so a plain
-check doesn't drop them, and the ⓘ says when the archive was last checked. The
-archive folder can't be a model folder, or lie inside or hold one.
+1,100 of them. The check only reads the archive. An archived model whose new
+version is out shows in **Updates** with its archived row, and **Download** puts
+the new version on this drive. A version you have in the archive is never
+offered as new. The same version on both drives is listed in **Issues** as
+**Duplicate**, and **Delete** on either row removes that copy. An info file left
+on this drive for a model in the archive is listed as **Info only**; removing it
+is up to you. The results are kept
+until the next **Check with archive**, so a plain check doesn't drop them, and
+the ⓘ says when the archive was last checked. The archive folder can't be a
+model folder, or lie inside or hold one.
 
 The API key, cache time, extra model folders, the archive folder and how mature
 models show are in the settings, under **Warp Studio** in the groups that start
@@ -312,15 +361,19 @@ Warp Studio talks to the internet only for the features below, and only to these
 | Feature | Goes to | What is sent |
 | --- | --- | --- |
 | Updates, metadata, previews | Civitai (`civitai.com`, `civitai.red`) | Your files' SHA-256 hashes and the Civitai ids in their info files. Your Civitai API key, if you set one, goes to Civitai and nowhere else |
-| Download and Replace | Civitai, then the public https download host it redirects to | The file request. The key is dropped when the redirect leaves Civitai, and every file is checked against Civitai's SHA-256 |
+| Downloads | Civitai, then the public https download host it redirects to | The file request. The key is dropped when the redirect leaves Civitai, and every file is checked against Civitai's SHA-256 |
 | Previews from other sources (off until you set them up) | `huggingface.co`, `*.hf.co`, `civarchive.com`, `c.genur.art` | Hashes, and the author or repo names you entered |
 | Prompt Writer | The AI provider in your settings: NanoGPT, a server on this computer, or a provider you saved a key for under ⚙ | Your idea, the chat so far, the LoRAs you picked, the system prompt (a `.txt` from the folder you set) and the pictures you attach. Pictures come only from ComfyUI's input, output and temp folders. A key goes only to the host it was saved for. Plain http only to this computer |
-| Renaming | Nothing: it runs a local model through ComfyUI's own queue | |
+| Renaming, and naming new releases | Nothing: it runs a local model through ComfyUI's own queue | |
 
 On your computer, Warp Studio reads, moves and deletes files only inside
-ComfyUI's model folders and the extra folders you added, and Delete sends them to
-the Recycle Bin. The archive folder is only read, for its `.civitai.info` files:
-nothing there is written, renamed or deleted. **Show in
+ComfyUI's model folders, the extra folders you added and the archive folder, and
+Delete sends them to the Recycle Bin. **Check with archive** only reads the
+archive, for its `.civitai.info` files. The archive is written to only when you
+click **Archive**, **Unarchive** or **Delete** on a row: a version is copied in
+or out and checked by SHA-256 before its original goes to the Recycle Bin, and
+Delete sends a file there to that drive's recycle bin. Nothing there is renamed.
+**Show in
 folder** works only in a browser on the computer ComfyUI runs on. Every route
 but the thumbnail asks for a header that only the ComfyUI page sends, and refuses
 requests from other sites. That holds for ordinary web pages, not for a DNS

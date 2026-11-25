@@ -69,7 +69,7 @@ class DownloadQueueTests(unittest.TestCase):
         summary, items = run_queue(queue, work, progress=_noop_progress, control=_Control())
         self.assertEqual(order, ["a", "b", "c"])
         self.assertEqual([r.state for r in (a, b, c)], ["done"] * 3)
-        self.assertEqual(summary, {"downloaded": 3, "failed": 0, "stopped": 0})
+        self.assertEqual(summary, {"downloaded": 3, "moved": 0, "failed": 0, "stopped": 0})
 
     def test_the_same_release_twice_is_one_request(self):
         queue = DownloadQueue()
@@ -140,7 +140,7 @@ class DownloadQueueTests(unittest.TestCase):
         thread.join(5)
         self.assertEqual(a.state, "stopped")
         self.assertEqual(b.state, "done")
-        self.assertEqual(summary, {"downloaded": 1, "failed": 0, "stopped": 1})
+        self.assertEqual(summary, {"downloaded": 1, "moved": 0, "failed": 0, "stopped": 1})
 
     def test_stopping_the_job_stops_every_waiting_request(self):
         queue = DownloadQueue()
@@ -156,7 +156,7 @@ class DownloadQueueTests(unittest.TestCase):
 
         summary, _ = run_queue(queue, work, progress=_noop_progress, control=control)
         self.assertEqual([r.state for r in (a, b, c)], ["stopped"] * 3)
-        self.assertEqual(summary, {"downloaded": 0, "failed": 0, "stopped": 3})
+        self.assertEqual(summary, {"downloaded": 0, "moved": 0, "failed": 0, "stopped": 3})
         _, needs_job = queue.submit(_request("d"))
         self.assertTrue(needs_job)
 
@@ -173,7 +173,7 @@ class DownloadQueueTests(unittest.TestCase):
         self.assertEqual(a.state, "error")
         self.assertEqual(a.error, "boom")
         self.assertEqual(b.state, "done")
-        self.assertEqual(summary, {"downloaded": 1, "failed": 1, "stopped": 0})
+        self.assertEqual(summary, {"downloaded": 1, "moved": 0, "failed": 1, "stopped": 0})
 
     def test_a_long_error_is_cut(self):
         queue = DownloadQueue()
@@ -238,6 +238,7 @@ class DownloadQueueTests(unittest.TestCase):
             {
                 "id",
                 "key",
+                "kind",
                 "source",
                 "modelId",
                 "versionId",
@@ -254,6 +255,103 @@ class DownloadQueueTests(unittest.TestCase):
         )
         self.assertIs(data["replace"], True)
         self.assertNotIn("secret", repr(data))
+
+    def test_a_move_request_is_held_by_both_of_its_paths(self):
+        queue = DownloadQueue()
+        source = os.path.join("models", "loras", "krea2", "x.safetensors")
+        target = os.path.join("archive", "Lora", "krea2", "x.safetensors")
+        request, _ = queue.submit(_request("move:1", move_from=source, move_to=target))
+        for path in (source, target):
+            with self.subTest(path=path):
+                self.assertTrue(queue.moving(path))
+                self.assertTrue(queue.moving(os.path.join(os.path.dirname(path), ".", "x.safetensors")))
+                if os.name == "nt":
+                    self.assertTrue(queue.moving(path.upper()))
+                # Its own move does not count for the request that asks.
+                self.assertFalse(queue.moving(path, other_than="move:1"))
+                self.assertTrue(queue.moving(path, other_than="move:2"))
+        self.assertFalse(queue.moving(os.path.join("models", "loras", "other.safetensors")))
+        self.assertFalse(queue.moving(""))
+        self.assertFalse(queue.holds(source))  # holds() is a Replace's
+        queue.take_next()
+        self.assertTrue(queue.moving(source))
+        queue.finish(request, "done")
+        self.assertFalse(queue.moving(source))
+        self.assertFalse(queue.moving(target))
+
+    def test_finished_moves_out_of_a_path_are_forgotten(self):
+        queue = DownloadQueue()
+        drive = os.path.join("models", "loras", "krea2", "x.safetensors")
+        archive = os.path.join("archive", "Lora", "krea2", "x.safetensors")
+        there, _ = queue.submit(_request("move:d", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.finish(there, "done")
+        back, _ = queue.submit(_request("move:z", move_from=archive, move_to=drive))
+        queue.take_next()
+        download, _ = queue.submit(_request("version:1"))
+
+        queue.forget_moves_from(os.path.join("models", "loras", ".", "krea2", "x.safetensors"))
+
+        # The finished trip out of the path goes; a running move, a download and others stay.
+        self.assertEqual(["move:z", "version:1"], [r["key"] for r in queue.snapshot()])
+        queue.finish(back, "done")
+        queue.forget_moves_from(archive)
+        self.assertEqual(["version:1"], [r["key"] for r in queue.snapshot()])
+        self.assertIs(download, queue.take_next())
+
+    def test_finished_moves_are_forgotten_and_the_rest_kept(self):
+        queue = DownloadQueue()
+        drive = os.path.join("models", "loras", "x.safetensors")
+        archive = os.path.join("archive", "Lora", "x.safetensors")
+        done, _ = queue.submit(_request("move:done", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.finish(done, "done")
+        failed, _ = queue.submit(_request("move:error", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.finish(failed, "error", "boom")
+        downloaded, _ = queue.submit(_request("version:1"))
+        queue.take_next()
+        queue.finish(downloaded, "done")
+        queue.submit(_request("move:running", move_from=drive, move_to=archive))
+        queue.take_next()
+        queue.submit(_request("move:waiting", move_from=drive, move_to=archive))
+
+        queue.forget_finished_moves()
+
+        self.assertEqual(
+            ["version:1", "move:running", "move:waiting"], [r["key"] for r in queue.snapshot()]
+        )
+
+    def test_a_download_moves_nothing(self):
+        queue = DownloadQueue()
+        queue.submit(_request("a", replace_path=os.path.join("models", "glow.safetensors")))
+        self.assertFalse(queue.moving(os.path.join("models", "glow.safetensors")))
+        self.assertFalse(queue.moving(""))
+
+    def test_a_move_says_it_is_one(self):
+        move = _request(
+            "move:1",
+            move_from="C:/secret/x.safetensors",
+            move_to="Z:/secret/x.safetensors",
+            check_item={"modelPath": "C:/secret/x.safetensors"},
+        )
+        data = move.as_dict()
+        self.assertEqual("move", data["kind"])
+        self.assertNotIn("secret", repr(data))
+        self.assertEqual("download", _request("a").as_dict()["kind"])
+
+    def test_the_queue_counts_moves_apart(self):
+        queue = DownloadQueue()
+        queue.submit(_request("a"))
+        queue.submit(_request("move:1", move_from="x", move_to="y"))
+        ran = []
+
+        def work(request, report, should_stop):
+            ran.append(request.key)
+
+        summary, _ = run_queue(queue, work, progress=_noop_progress, control=_Control())
+        self.assertEqual(["a", "move:1"], ran)
+        self.assertEqual({"downloaded": 1, "moved": 1, "failed": 0, "stopped": 0}, summary)
 
     def test_abandon_marks_the_request_failed_and_the_queue_idle(self):
         queue = DownloadQueue()

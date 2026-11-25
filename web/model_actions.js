@@ -1,4 +1,5 @@
-// Download and Replace on the Updates cards. Pure: nothing here touches ComfyUI or the page.
+// Downloads, moves and deletes on the Updates and Gallery cards. Pure: nothing here touches
+// ComfyUI or the page.
 
 export const MODEL_DOWNLOAD_JOB = "model-download";
 export const CONFIRM_FOR = 4000;
@@ -6,7 +7,6 @@ export const DONE_FOR = 4000;
 
 export const COPY = {
   download: "Download",
-  replace: "Replace",
   cancel: "Cancel",
   stop: "Stop",
   waiting: "Waiting",
@@ -20,12 +20,9 @@ export const COPY = {
   retry: "Retry",
   starting: "Starting…",
   checking: "Checking the file…",
-  hide: "Hide",
-  unhide: "Unhide",
   deleting: "Deleting…",
   deleteTitle: "Send this LoRA and its sidecars to the Recycle Bin",
   deleteTitleFor: (noun) => `Send this ${noun} and its sidecars to the Recycle Bin`,
-  replaceTitle: "Download this release, then send the version you have to the Recycle Bin",
 };
 
 export const versionKey = (versionId) => `version:${versionId}`;
@@ -69,7 +66,7 @@ export const WAITING_FOR = {
   "naming-model-download": "the naming model download",
 };
 
-const waitingText = (record) =>
+export const waitingText = (record) =>
   record.waitingFor ? `Waiting for ${WAITING_FOR[record.waitingFor] ?? "another job"}` : "";
 
 export function recordMessage(record) {
@@ -81,7 +78,7 @@ export function recordMessage(record) {
 }
 
 /* What a version row's bar, failure and warning text need from the download record.
-   A finished download can carry warnings (a Replace whose old file stayed): they show
+   A finished request can carry warnings (a move whose original stayed): they show
    in the row like a failure does, so they are never lost. */
 export function rowDownloadView(record) {
   const state = slotState(record);
@@ -93,27 +90,14 @@ export function rowDownloadView(record) {
   };
 }
 
-const note = (text) => `<span class="cu-dl-note">${text}</span>`;
-
 /* An icon button: a fixed square holding a PrimeIcons glyph. */
-const iconButton = (icon, label, attrs = "", extraClass = "") =>
+export const iconButton = (icon, label, attrs = "", extraClass = "") =>
   `<button type="button" class="cu-icon-btn${extraClass}"${attrs} title="${label}" aria-label="${label}"><i class="pi ${icon}" aria-hidden="true"></i></button>`;
-
-const icon = (name, label, extraClass = "") =>
-  `<span class="cu-dl-icon${extraClass}" title="${label}"><i class="pi ${name}" aria-hidden="true"></i></span>`;
-
-/* Replace's tooltip: which version goes, for which, and the file sent to the Recycle Bin. */
-function replaceTitle(slot) {
-  const old = slot?.replaces;
-  if (!old?.name || !slot?.version) return COPY.replaceTitle;
-  const file = old.file || old.name;
-  return `Replace ${old.name} with ${slot.version}: downloads ${slot.version}, then sends ${file} to the Recycle Bin`;
-}
 
 /* A download in the button's place: a ring that fills, spinning while nothing is
    known yet (the request starts) and once every byte is in (the file is checked). */
 const RING = 2 * Math.PI * 7;
-function downloadRing(pct) {
+export function downloadRing(pct) {
   const spin = pct === null || pct <= 0 || pct >= 100;
   const title = pct === null || pct <= 0 ? COPY.starting : pct >= 100 ? COPY.checking : `${pct}%`;
   const offset = spin ? RING * 0.7 : RING * (1 - pct / 100);
@@ -126,69 +110,25 @@ function downloadRing(pct) {
 }
 
 /* Which of a card's local versions a release row works from. ``reference``: the file whose
-   folder the download goes beside (the server maps an archived one to its drive folder).
-   ``current``: the version Replace sends to the Recycle Bin, only one on this drive. */
+   folder the download goes beside (the server maps an archived one to its drive folder). */
 export function slotVersions(localVersions) {
   const versions = localVersions || [];
-  const current = versions.find((v) => !v.deleted && !v.archived);
-  const reference = current || versions.find((v) => !v.deleted) || versions[0];
-  return { reference, current };
-}
-
-/* Everything sits in one slot element, which the page gives one fixed width: at most two
-   icon buttons, or a percentage and one button, in every state. */
-export function versionActionsHtml(slot, record, escapeHtml) {
-  const wrap = (inner, state) => `<span class="cu-slot" data-state="${state}">${inner}</span>`;
-  if (slot?.paid) return wrap(note(COPY.earlyAccess), "paid");
-  const state = slotState(record);
-  const stop = (label, glyph) =>
-    iconButton(glyph, label, ` data-dl-action="stop" data-request-id="${escapeHtml(record.id)}"`);
-  // The slot says what it waits for, so the row needs no second line.
-  if (state === "waiting") {
-    const reason = escapeHtml(waitingText(record) || COPY.waiting);
-    return wrap(icon("pi-clock", reason) + stop(COPY.cancel, "pi-times"), state);
-  }
-  if (state === "downloading") {
-    return wrap(downloadRing(percent(record)) + stop(COPY.stop, "pi-stop-circle"), state);
-  }
-  if (state === "done") {
-    const warning = (record?.warnings || []).join(" ");
-    return warning
-      ? wrap(icon("pi-exclamation-triangle", escapeHtml(warning), " is-warn"), state)
-      : wrap(icon("pi-check", COPY.downloaded, " is-done"), state);
-  }
-  if (state === "error") {
-    const action = slot?.canReplace && record?.replace ? "replace" : "download";
-    const title = action === "replace" ? escapeHtml(replaceTitle(slot)) : COPY.retry;
-    return wrap(
-      iconButton("pi-refresh", title, ` data-dl-action="${action}"`).replace(
-        `aria-label="${title}"`,
-        `aria-label="${COPY.retry}"`
-      ),
-      state
-    );
-  }
-  let html = iconButton("pi-download", COPY.downloadTitle, ' data-dl-action="download"');
-  if (slot?.canReplace) {
-    html += iconButton("pi-sync", escapeHtml(replaceTitle(slot)), ' data-dl-action="replace"');
-  }
-  return wrap(html, state);
-}
-
-/* Hide or Unhide a new version: an icon button beside the slot. */
-export function rowHideHtml(hidden, modelId, versionId, escapeHtml) {
-  const attrs = (action) =>
-    ` data-archive-action="${action}" data-model-id="${escapeHtml(modelId || "")}" data-version-id="${escapeHtml(versionId || "")}"`;
-  return hidden
-    ? iconButton("pi-eye", COPY.unhide, attrs("restore"))
-    : iconButton("pi-eye-slash", COPY.hide, attrs("archive"));
+  const reference =
+    versions.find((v) => !v.deleted && !v.archived) ||
+    versions.find((v) => !v.deleted) ||
+    versions[0];
+  return { reference };
 }
 
 export function finishedText(summary) {
-  let text = `Done — ${Number(summary?.downloaded) || 0} downloaded`;
-  if (summary?.failed) text += `, ${summary.failed} failed`;
-  if (summary?.stopped) text += `, ${summary.stopped} stopped`;
-  return text;
+  const downloaded = Number(summary?.downloaded) || 0;
+  const moved = Number(summary?.moved) || 0;
+  const parts = [];
+  if (downloaded || !moved) parts.push(`${downloaded} downloaded`);
+  if (moved) parts.push(`${moved} moved`);
+  if (summary?.failed) parts.push(`${summary.failed} failed`);
+  if (summary?.stopped) parts.push(`${summary.stopped} stopped`);
+  return `Done — ${parts.join(", ")}`;
 }
 
 const NOUNS = {
@@ -222,24 +162,6 @@ export function galleryActionHtml(card, record, ui, escapeHtml) {
     return `<button type="button" ${mark} data-g-action="delete" data-confirm${title}>${COPY.deleteAsk}</button>`;
   }
   return `<button type="button" ${mark} data-g-action="delete"${title}>${COPY.delete}</button>`;
-}
-
-/*
- * Delete on a version row of an Updates or Issues card, ui = { canTrash, confirming, deleting }.
- * Only for weights on this drive: never an archived row (the archive is never changed)
- * or an info file alone. The server deletes only a file the check lists.
- */
-export function rowDeleteHtml(v, ui, escapeHtml) {
-  if (!ui?.canTrash || v?.archived || v?.metadataOnly || v?.deleted || !v?.modelPath) return "";
-  const path = ` data-row-action="delete" data-path="${escapeHtml(v.modelPath)}"`;
-  const mark = " cu-ver-del";
-  if (ui.deleting) {
-    return iconButton("pi-spin pi-spinner", COPY.deleting, `${path} data-deleting disabled`, mark);
-  }
-  if (ui.confirming) {
-    return iconButton("pi-trash", COPY.deleteConfirmTitle, `${path} data-confirm`, mark);
-  }
-  return iconButton("pi-trash", COPY.deleteTitleFor("version"), path, mark);
 }
 
 /* The Gallery card's state overlay: Waiting, the percentage, the error; Downloaded only just after. */

@@ -204,3 +204,18 @@ test("a deleted row says Deleted and is no issue", () => {
     label: "Deleted",
   });
 });
+
+test("a naming model that failed is said inline as an error", () => {
+  assert.deepEqual(checkDoneStatus({ withUpdates: 2, namingError: "ComfyUI could not be reached" })[1], [
+    "ComfyUI could not be reached",
+    "error",
+  ]);
+});
+
+test("a naming error follows the archive error", () => {
+  const lines = checkDoneStatus({ withUpdates: 2, archiveError: "drive gone", namingError: "no model" });
+  assert.deepEqual(lines.slice(1), [
+    ["drive gone", "error"],
+    ["no model", "error"],
+  ]);
+});

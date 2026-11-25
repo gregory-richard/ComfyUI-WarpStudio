@@ -1,8 +1,12 @@
 """The archive folder: a drive old models are moved to, laid out like the models folder.
 
 Everything here only reads the archive. Its results are kept in the plugin's own
-data folder, never inside the archive, because nothing in this package may write,
-rename or delete anything there.
+data folder, never inside the archive. The archive is written to only when the
+user clicks for it: Archive copies a version in and Unarchive copies one back
+(``model_moves``), each checked before the original goes to the Recycle Bin, and
+Delete sends an archived file to that drive's recycle bin
+(``model_actions.delete_model``). Nothing renames a file there or deletes one
+for good.
 """
 
 from __future__ import annotations
@@ -212,6 +216,20 @@ def save_archive_results(data_dir: Path, archive_folder: str, summary: dict, ite
             "items": items,
         },
     )
+
+
+def drop_deleted_archive_items(data_dir: Path, archive_folder: str) -> None:
+    """Rewrite the saved archive results without their ``deleted`` items, keeping when they ran."""
+    data = _load_results(data_dir, archive_folder)
+    items = data.get("items") if data else None
+    if not isinstance(items, list):
+        return
+    kept = [item for item in items if not (isinstance(item, dict) and item.get("deleted"))]
+    if len(kept) == len(items):
+        return
+    summary = data.get("summary")
+    summary = {**summary, "total": len(kept)} if isinstance(summary, dict) else {"total": len(kept)}
+    write_json(data_dir / ARCHIVE_RESULTS_FILENAME, {**data, "summary": summary, "items": kept})
 
 
 def _load_results(data_dir: Path, archive_folder: str) -> dict | None:

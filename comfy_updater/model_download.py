@@ -212,7 +212,7 @@ def _move_into_place(part: Path, target: Path) -> None:
             return
         except PermissionError as exc:
             reason = exc
-    raise DownloadError(f"Could not move the finished download into place: {reason}"[:300])
+    raise DownloadError(f"Could not move the finished download into place: {reason}"[:300]) from reason
 
 
 def _content_length(response) -> int:

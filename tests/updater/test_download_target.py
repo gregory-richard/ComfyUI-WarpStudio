@@ -9,6 +9,7 @@ from comfy_updater import download_target
 from comfy_updater.download_target import (
     Target,
     ai_stem,
+    ai_stems,
     base_folder,
     choose_target,
     inside_roots,
@@ -55,6 +56,29 @@ def glow_model() -> dict:
             },
         ],
     }
+
+
+def three_release_model() -> dict:
+    """The glow model with a third release, 203 "v3", on Illustrious."""
+    model = glow_model()
+    model["modelVersions"].insert(
+        0,
+        {
+            "id": 203,
+            "name": "v3",
+            "baseModel": "Illustrious",
+            "files": [
+                {
+                    "id": 2030,
+                    "name": "glowV3.safetensors",
+                    "type": "Model",
+                    "primary": True,
+                    "hashes": {"SHA256": "EF56"},
+                }
+            ],
+        },
+    )
+    return model
 
 
 class FakeClient:
@@ -277,6 +301,72 @@ class DownloadTargetTests(unittest.TestCase):
         generator = FakeGenerator(ANSWER)
         self.assertIsNone(self.name(generator, stop=lambda: True))
         self.assertEqual(generator.calls, [])
+
+
+    # --- ai_stems ------------------------------------------------------------
+
+    def name_many(self, generator, version_ids, *, own=None, reference=None):
+        model = three_release_model()
+        by_id = {str(v["id"]): v for v in model["modelVersions"]}
+        releases = [(by_id[i], by_id[i]["files"][0]) for i in version_ids]
+        return ai_stems(
+            "101",
+            model,
+            releases,
+            model_type="lora",
+            reference=reference or self.reference,
+            own=own,
+            generator=generator,
+            decisions=self.decisions,
+            base_codes=self.base_codes,
+            cache=self.cache,
+            clip_name="qwen3.safetensors",
+            should_stop=lambda: False,
+        )
+
+    def test_ai_stems_names_every_release_of_a_model_in_one_call(self) -> None:
+        self.base_codes.set("Illustrious", "ill")
+        generator = FakeGenerator("title: glow\noriginal:\nversion 1: v3\nversion 2: v2")
+        names = self.name_many(generator, ["203", "202"])
+        self.assertEqual(1, len(generator.calls))
+        self.assertEqual(
+            {"203": "maker - glow - v3 (ill)", "202": "maker - glow - v2 (ill)"},
+            {k: v.stem for k, v in names.items()},
+        )
+        self.assertEqual(("ill", "Illustrious", ""), (names["202"].parts.base, names["202"].base_model, names["202"].new_base))
+
+    def test_ai_stems_marks_a_new_bases_code_as_the_ais(self) -> None:
+        generator = FakeGenerator(ANSWER + "\nbase Illustrious: illx")
+        names = self.name_many(generator, ["202"])
+        self.assertEqual("maker - glow - v2 (illx)", names["202"].stem)
+        self.assertEqual("Illustrious", names["202"].new_base)
+
+    def test_ai_stems_keeps_the_users_creator_and_title(self) -> None:
+        self.base_codes.set("Illustrious", "ill")
+        names = self.name_many(FakeGenerator(ANSWER), ["202"], own=("moss", "glow lite"))
+        self.assertEqual("moss - glow lite - v2 (ill)", names["202"].stem)
+
+    def test_ai_stems_names_no_release_whose_name_another_takes(self) -> None:
+        self.base_codes.set("Illustrious", "ill")
+        generator = FakeGenerator("title: glow\noriginal:\nversion 1: v2\nversion 2: v2")
+        self.assertEqual({}, self.name_many(generator, ["203", "202"]))
+
+    def test_a_release_named_like_the_reference_file_gets_no_name(self) -> None:
+        self.base_codes.set("Illustrious", "ill")
+        reference = touch(self.ill / "maker - glow - v2 (ill).safetensors")
+        self.assertEqual({}, self.name_many(FakeGenerator(ANSWER), ["202"], reference=reference))
+
+    def test_ai_stems_names_nothing_for_a_type_the_renamer_skips(self) -> None:
+        generator = FakeGenerator(ANSWER)
+        model = three_release_model()
+        version = model["modelVersions"][1]
+        names = ai_stems(
+            "101", model, [(version, version["files"][0])], model_type="vae", reference=self.reference,
+            own=None, generator=generator, decisions=self.decisions, base_codes=self.base_codes,
+            cache=self.cache, clip_name="qwen3.safetensors", should_stop=lambda: False,
+        )
+        self.assertEqual({}, names)
+        self.assertEqual([], generator.calls)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from comfy_updater.archived_updates import ArchivedUpdateStore
 from comfy_updater.config_store import ConfigStore
 from comfy_updater.constants import CACHE_SCHEMA_VERSION
 from comfy_updater.download_queue import DownloadQueue
-from comfy_updater.jobs import JobManager, JobRecord, _group_items_by_model
+from comfy_updater.jobs import NAMING_PHASE, JobManager, JobRecord, _group_items_by_model
 from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore, RenameJournal
 from comfy_updater.routes import (
     _drop_refused_archive_folder,
@@ -30,6 +30,14 @@ from comfy_updater.routes import (
     updates_request,
 )
 from comfy_updater.sidecar import read_data_file, write_json
+from comfy_updater.civitai_client import CivitaiRequestError
+from comfy_updater.download_target import NamedRelease
+from comfy_updater.naming_phase import NamingDeps
+from comfy_updater.naming_scheme import NameParts
+from comfy_updater.release_names import ReleaseNameStore
+
+from test_download_target import FakeClient, glow_model
+from test_renamer_naming import FakeGenerator
 
 UNREACHABLE = "The archive folder can't be reached."
 NO_MODEL_FOLDERS = "No model folders found in the archive folder."
@@ -101,6 +109,15 @@ def _remote(version_id: str, date: str) -> dict:
     }
 
 
+class _FakeClient(FakeClient):
+    """Counts get_model calls; a model it doesn't know is gone from Civitai."""
+
+    def get_model(self, model_id, *, raise_on_error=False):
+        if str(model_id) not in self.models:
+            raise CivitaiRequestError("not found", status=404)
+        return super().get_model(model_id, raise_on_error=raise_on_error)
+
+
 class _FakeService:
     """Stands in for UpdaterService: the check and the archive pass hand back set items."""
 
@@ -115,8 +132,19 @@ class _FakeService:
         self.seeds_after_sync = None  # the job's items once the D walk was synced
         self.stop_during = ""
         self.archive_error = ""  # a pass that failed before any lookup
+        self.models: dict = {}  # what the clients made here know, by model id
+        self.made: list = []  # the clients make_client built, with the should_stop given
+        self.clients: list = []  # the client each pass got
 
-    def run_check_updates(self, payload, progress, item_callback=None, control=None, files_callback=None):
+    def make_client(self, should_stop=None):
+        client = _FakeClient(self.models)
+        self.made.append((client, should_stop))
+        return client
+
+    def run_check_updates(
+        self, payload, progress, item_callback=None, control=None, files_callback=None, client=None
+    ):
+        self.clients.append(client)
         if files_callback:
             files_callback(self.files)
         self.seeds_after_sync = [dict(item) for item in self.job_manager.get(control.job_id).items]
@@ -127,7 +155,10 @@ class _FakeService:
         summary = {"mode": "check", "total": len(self.d_items), "modelTypes": payload["modelTypes"]}
         return summary, [dict(item) for item in self.d_items]
 
-    def run_archive_check(self, payload, progress, item_callback=None, control=None, *, archive_root):
+    def run_archive_check(
+        self, payload, progress, item_callback=None, control=None, *, archive_root, client=None
+    ):
+        self.clients.append(client)
         self.archive_roots.append(archive_root)
         if self.archive_error:
             return {"mode": "archive", "archiveError": self.archive_error}, []
@@ -540,6 +571,188 @@ class CheckWithArchiveTests(_ArchiveRoutesCase):
         self.service.archive_items = [self.z_item()]
         self.check(includeArchive="true")
         self.assertEqual([], self.service.archive_roots)
+
+
+class CheckNamingPhaseTests(_ArchiveRoutesCase):
+    """The check ends by naming the new releases with the AI; the AI is a fake here."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.routes = _Routes()
+        self.base_codes = BaseCodeStore(self.data_dir)
+        self.base_codes.set("Illustrious", "ill")
+        self.release_names = ReleaseNameStore(self.data_dir, self.base_codes)
+        self.jobs = JobManager(release_names=self.release_names)
+        self.service = _FakeService(self.jobs)
+        self.service.models = {"101": glow_model()}
+        naming = NamingDeps(
+            decisions=DecisionStore(self.data_dir),
+            base_codes=self.base_codes,
+            answer_cache=AnswerCache(self.data_dir),
+            journal=RenameJournal(self.data_dir),
+            release_names=self.release_names,
+        )
+        _register_check_routes(self.routes, self.config_store, self.service, self.jobs, naming=naming)
+        self.generator = FakeGenerator({"Glow": "title: glow\noriginal:\nversion 1: v2"})
+        self.phases_seen: list = []
+        real_generate = self.generator.generate
+
+        def generate(messages, max_lengths=None):
+            self.phases_seen.append(self.jobs.get_active().phase)
+            return real_generate(messages, max_lengths)
+
+        self.generator.generate = generate
+        patcher = mock.patch.object(routes_module, "naming_generator", return_value=(self.generator, "clip"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.service.d_items = [
+            self.d_item(
+                remoteVersions=[
+                    _remote("202", "2026-02-01T00:00:00.000Z"),
+                    _remote("201", "2026-01-01T00:00:00.000Z"),
+                ],
+                hasUpdate=True,
+            )
+        ]
+
+    def test_the_check_ends_with_the_naming_phase(self) -> None:
+        job = self.check()
+        self.assertEqual(["naming"], self.phases_seen)
+        self.assertEqual("", job.phase)
+        self.assertEqual("completed", job.status)
+        self.assertEqual({"named": 1, "total": 1}, job.summary["naming"])
+        self.assertNotIn("namingError", job.summary)
+        self.assertTrue(self.release_names.has("202"))
+
+    def test_the_results_are_saved_before_the_naming_starts(self) -> None:
+        saved_before_naming: list = []
+        real_generate = self.generator.generate
+
+        def generate(messages, max_lengths=None):
+            saved_before_naming.append((self.data_dir / "last_check.json").exists())
+            return real_generate(messages, max_lengths)
+
+        self.generator.generate = generate
+        self.check()
+        self.assertEqual([True], saved_before_naming)
+
+    def test_one_client_serves_the_check_the_archive_and_the_naming(self) -> None:
+        self.service.archive_items = [self.z_item()]
+        self.check(includeArchive=True)
+        self.assertEqual(2, len(self.service.clients))
+        self.assertEqual(1, len({id(client) for client in self.service.clients}))
+        self.assertEqual(1, len(self.service.made))
+        client, should_stop = self.service.made[0]
+        self.assertIs(client, self.service.clients[0])
+        self.assertIn("101", client.calls)
+        self.assertFalse(should_stop())
+
+    def test_a_stopped_check_names_nothing(self) -> None:
+        self.service.stop_during = "check"
+        job = self.check()
+        self.assertEqual("cancelled", job.status)
+        self.assertEqual([], self.generator.calls)
+        self.assertNotIn("naming", job.summary)
+
+    def test_without_a_naming_model_the_check_skips_naming(self) -> None:
+        routes_module.naming_generator.return_value = (None, "")
+        job = self.check()
+        self.assertEqual([], self.phases_seen)
+        self.assertNotIn("naming", job.summary)
+        self.assertEqual("", job.phase)
+        self.assertEqual("completed", job.status)
+
+    def test_a_stop_while_the_naming_model_is_looked_for_ends_only_the_naming(self) -> None:
+        # Looking for the naming model reads every text encoder's header, which takes a while.
+        looked: list = []
+
+        def stopped_while_looking(config, journal, should_stop):
+            job = self.jobs.get_active()
+            looked.append(job.phase)
+            self.jobs.cancel(job.id)
+            looked.append(should_stop())
+            return self.generator, "clip"
+
+        routes_module.naming_generator.side_effect = stopped_while_looking
+        job = self.check()
+        self.assertEqual([NAMING_PHASE, True], looked)
+        self.assertEqual(("completed", "Completed"), (job.status, job.message))
+        self.assertFalse(job.control.is_cancelled())
+        self.assertEqual([], self.generator.calls)
+        self.assertEqual("", job.phase)
+        self.assertTrue((self.data_dir / "last_check.json").exists())
+
+    def test_a_naming_stopped_during_a_models_call_ends_completed(self) -> None:
+        # Not with the count it had reached: the check is done, as any completed check.
+        other = str(self.d_lora / "other.safetensors")
+        second = self.d_item(
+            modelPath=other,
+            filePath=other,
+            modelId="301",
+            remoteVersions=[
+                _remote("302", "2026-02-01T00:00:00.000Z"),
+                _remote("301", "2026-01-01T00:00:00.000Z"),
+            ],
+            localVersionId="301",
+            hasUpdate=True,
+        )
+        self.service.d_items.append(second)
+        real_generate = self.generator.generate
+        messages: list = []
+
+        def generate(messages_in, max_lengths=None):
+            job = self.jobs.get_active()
+            messages.append(self.jobs.cancel(job.id).message)
+            return real_generate(messages_in, max_lengths)
+
+        self.generator.generate = generate
+        job = self.check()
+        self.assertEqual(["Stopping the naming"], messages)
+        self.assertEqual(("completed", "Completed"), (job.status, job.message))
+        self.assertEqual(1, len(self.generator.calls))
+
+    def test_the_phase_ends_when_no_naming_model_is_found(self) -> None:
+        looked: list = []
+
+        def none_found(config, journal, should_stop):
+            job = self.jobs.get_active()
+            looked.append((job.phase, job.progress, job.total))
+            return None, ""
+
+        routes_module.naming_generator.side_effect = none_found
+        job = self.check()
+        # The button counts the releases to name, not the files checked, while it looks.
+        self.assertEqual([(NAMING_PHASE, 0, 1)], looked)
+        self.assertEqual(("", "completed"), (job.phase, job.status))
+        self.assertNotIn("naming", job.summary)
+
+    def test_a_check_with_nothing_to_name_skips_naming(self) -> None:
+        named = NamedRelease(NameParts("maker", "glow", "v2", "", "ill"), "Illustrious", "")
+        self.release_names.put("101", {"202": named})
+        job = self.check()
+        self.assertEqual([], self.phases_seen)
+        self.assertNotIn("naming", job.summary)
+
+    def test_a_naming_error_is_in_the_summary(self) -> None:
+        self.generator.fail_on_call = 1
+        job = self.check()
+        self.assertEqual("completed", job.status)
+        self.assertEqual({"named": 0, "total": 1}, job.summary["naming"])
+        self.assertIn("out of memory", job.summary["namingError"])
+
+    def test_deleted_archive_rows_last_until_the_next_check(self) -> None:
+        gone = self.z_item(deleted=True)
+        kept = self.z_item(modelPath=str(self.archive / "Lora" / "sdxl" / "kept.civitai.info"), modelId="302")
+        saved = self.save_archive([gone, kept])
+
+        job = self.check()
+
+        self.assertNotIn(self.z_path, self.paths(job.items))
+        now = read_data_file(self.data_dir / ARCHIVE_RESULTS_FILENAME)
+        self.assertEqual([kept["modelPath"]], self.paths(now["items"]))
+        self.assertEqual(saved["checkedAt"], now["checkedAt"])
+        self.assertEqual(1, now["summary"]["total"])
+        self.assertEqual(7, now["summary"]["withUpdates"])
 
 
 class LastCheckAndStatsTests(_ArchiveRoutesCase):

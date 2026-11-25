@@ -18,6 +18,7 @@ from aiohttp import web
 
 from .archive import (
     archive_reference_path,
+    drop_deleted_archive_items,
     folder_key,
     load_archive_items,
     load_archive_results,
@@ -41,7 +42,7 @@ from .constants import (
     USER_AGENT,
 )
 from .download_queue import MODEL_DOWNLOAD_JOB, DownloadQueue, DownloadRequest, run_queue
-from .jobs import MATURE_MODES, RESULT_MODES, _normalize_cached_item_urls
+from .jobs import MATURE_MODES, NAMING_PHASE, RESULT_MODES, _normalize_cached_item_urls, move_key
 from .model_actions import (
     EARLY_ACCESS_ERROR,
     INFO_GONE_ERROR,
@@ -51,14 +52,37 @@ from .model_actions import (
     release_is_paid,
 )
 from .model_download import DownloadError
+from .model_moves import (
+    ARCHIVE_UNREACHABLE_ERROR,
+    FILE_GONE_ERROR,
+    INFO_ONLY_MOVE_ERROR,
+    MOVE_BUSY_ERROR,
+    MOVE_SOURCES,
+    NAME_TAKEN_ERROR,
+    NO_ARCHIVE_FOLDER_ERROR,
+    NO_DRIVE_FOLDER_ERROR,
+    NO_TRASH_MOVE_ERROR,
+    NOT_IN_ARCHIVE_ERROR,
+    NOT_IN_TYPE_FOLDER_ERROR,
+    NOT_ON_DRIVE_ERROR,
+    UNIDENTIFIED_MOVE_ERROR,
+    MoveContext,
+    archive_target,
+    move_one,
+    parts_under,
+    taken_name,
+    unarchive_target,
+)
 from .model_files import (
     MODEL_FOLDER_KEYS,
     folder_roots,
     lora_roots,
     missing_info,
     resolve_name,
+    stem_files,
 )
 from .naming_ai import SYSTEM_PROMPT
+from .naming_phase import NamingDeps, PhaseControl, naming_tasks, run_naming
 from .naming_check import base_named_by, base_vocabulary, name_check_flags, needs_review, users_own_words, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
 from .path_resolver import custom_path_problem, normalize_model_types, resolve_model_roots
@@ -112,6 +136,7 @@ def register_routes(
     answer_cache=None,
     journal=None,
     dry_runs=None,
+    release_names=None,
 ) -> None:
     global _ROUTES_REGISTERED
     if _ROUTES_REGISTERED:
@@ -177,7 +202,16 @@ def register_routes(
             return web.json_response({"error": "A job is already running."}, status=409)
         return web.json_response({"jobId": job.id})
 
-    _register_check_routes(routes, config_store, updater_service, job_manager)
+    naming = None
+    if None not in (decisions, base_codes, answer_cache, journal, release_names):
+        naming = NamingDeps(
+            decisions=decisions,
+            base_codes=base_codes,
+            answer_cache=answer_cache,
+            journal=journal,
+            release_names=release_names,
+        )
+    _register_check_routes(routes, config_store, updater_service, job_manager, naming=naming)
 
     @routes.get("/warp-studio/updater/jobs/active")
     @_guarded
@@ -308,6 +342,7 @@ def register_routes(
             answer_cache,
             journal,
             updater_service=updater_service,
+            release_names=release_names,
         )
     else:
         print(
@@ -570,7 +605,6 @@ def _normalize_archive_payload(payload: dict) -> tuple[str, list[str]]:
 
 # --- the check and its saved results ---------------------------------------------
 
-ARCHIVE_UNREACHABLE_ERROR = "The archive folder can't be reached."
 ARCHIVE_OVERLAP_ERROR = "The archive folder overlaps a model folder."
 _STAT_KEYS = ("downloads", "likes", "comments", "tipped", "versions")
 _STAT_TEXT_KEYS = ("creatorImage", "category")
@@ -635,7 +669,72 @@ def _model_stats(items: list) -> dict:
     return stats
 
 
-def _register_check_routes(routes, config_store, updater_service, job_manager) -> None:
+def naming_generator(config: dict, journal, should_stop) -> tuple[Optional[ComfyTextGenerator], str]:
+    """The AI that names releases, with its model's file name; ``(None, "")`` when none is usable.
+
+    Reads every text encoder's header and blocks on ComfyUI's own server: only for a job thread.
+    """
+    models = list_naming_models()
+    if not rename_status(config, has_text_generation(), models, journal)["available"]:
+        return None, ""
+    clip = _matching_model(config.get("namingModel", ""), models)
+    return ComfyTextGenerator(comfy_base_url(), clip, SYSTEM_PROMPT, should_stop=should_stop), clip
+
+
+def _run_naming_phase(
+    naming, config_store, updater_service, job_manager, client, control, progress, rows, archive_folder, job_summary
+) -> None:
+    """Name the releases the check found new, with the check's own client, and note it in the summary.
+
+    Nothing runs, and no phase is set, when there is nothing to name. The phase starts
+    before the AI is looked for, and ends at once when there is none.
+    """
+
+    def archive_reference(model_path: str, model_type: str) -> Optional[Path]:
+        if not archive_folder:
+            return None
+        type_roots = {
+            name: [Path(path) for path in paths]
+            for name, paths in updater_service.get_effective_roots([model_type]).items()
+        }
+        return archive_reference_path(Path(archive_folder), Path(model_path), model_type, type_roots)
+
+    tasks = naming_tasks(
+        job_manager.naming_cards(rows),
+        named=naming.release_names.has,
+        archive_reference=archive_reference,
+    )
+    if not tasks:
+        return
+    phase = PhaseControl(control)
+    # Looking for the AI reads every text encoder's header: a Stop meanwhile ends only the
+    # naming, not the check. The button counts the releases from here on.
+    job_manager.set_phase(control.job_id, NAMING_PHASE)
+    progress(0, sum(len(task.version_ids) for task in tasks), "")
+    try:
+        generator, clip = naming_generator(config_store.get(), naming.journal, phase.is_cancelled)
+        if generator is None:
+            return
+        result = run_naming(
+            tasks,
+            client=client,
+            generator=generator,
+            decisions=naming.decisions,
+            base_codes=naming.base_codes,
+            cache=naming.answer_cache,
+            clip_name=clip,
+            store=naming.release_names,
+            progress=progress,
+            control=phase,
+        )
+    finally:
+        job_manager.set_phase(control.job_id, "")
+    job_summary["naming"] = {"named": result["named"], "total": result["total"]}
+    if result["error"]:
+        job_summary["namingError"] = result["error"]
+
+
+def _register_check_routes(routes, config_store, updater_service, job_manager, naming=None) -> None:
     @routes.post("/warp-studio/updater/jobs/check-updates")
     @_guarded
     async def start_check_updates_job(request):
@@ -664,11 +763,14 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
         saved_archive_items = [
             _normalize_cached_item_urls(item)
             for item in await asyncio.to_thread(load_archive_items, data_dir, archive_folder)
-            if isinstance(item, dict)
+            if isinstance(item, dict) and not item.get("deleted")
         ]
 
         def runner(progress, item_cb, control):
             nonlocal item_count
+            # One client for the D walk, the archive pass and the naming: what it has fetched
+            # about a model on the drive is not asked for again.
+            client = updater_service.make_client(lambda: control.is_cancelled() or control.phase_stopped())
 
             def sync_seeds(files):
                 # Without a previous check there is nothing stale to correct.
@@ -692,6 +794,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
 
             summary, items = updater_service.run_check_updates(
                 payload, progress, item_cb_with_progress, control, files_callback=sync_seeds,
+                client=client,
             )
             # A check of a subset of types replaces only that subset in the
             # cache; the previous results for the other types are kept, so
@@ -724,7 +827,8 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
                     job_summary["archiveError"] = ARCHIVE_UNREACHABLE_ERROR
                 else:
                     archive_summary, fresh_items = updater_service.run_archive_check(
-                        payload, progress, item_cb_with_progress, control, archive_root=archive_root,
+                        payload, progress, item_cb_with_progress, control,
+                        archive_root=archive_root, client=client,
                     )
                     if archive_summary.get("archiveError"):
                         # Nothing was looked up (no model folders in it): its last results stay.
@@ -737,11 +841,19 @@ def _register_check_routes(routes, config_store, updater_service, job_manager) -
                             saved_archive_items, fresh_items, archive_summary, payload["modelTypes"]
                         )
                         save_archive_results(data_dir, archive_folder, archive_summary, archive_items)
+            if archive_folder and not control.is_cancelled():
+                # A deleted or moved archive row lasts until this check, which has now looked.
+                drop_deleted_archive_items(data_dir, archive_folder)
             archive_info = load_archive_summary(data_dir, archive_folder)
             if archive_info:
                 # Counted as the Updates list shows them: after Hide, and not when on the drive.
                 archive_info["withUpdates"] = job_manager.archived_update_count(items + list(archive_items))
                 job_summary["archive"] = archive_info
+            if naming is not None and not control.is_cancelled():
+                _run_naming_phase(
+                    naming, config_store, updater_service, job_manager, client, control, progress,
+                    items + list(archive_items), archive_folder, job_summary,
+                )
             progress_path.unlink(missing_ok=True)
             return job_summary, items + list(archive_items)
 
@@ -1211,14 +1323,16 @@ def recheck(request: DownloadRequest, *, journal_pending: bool) -> str:
         return JOURNAL_PENDING_ERROR
     if request.replace_path and not Path(request.replace_path).is_file():
         return REPLACE_MOVED_ERROR
+    if request.move_from and not Path(request.move_from).is_file():
+        return FILE_GONE_ERROR
     return ""
 
 
 NO_TRASH_DELETE_ERROR = "Delete needs the send2trash package."
 LORA_GONE_ERROR = "That LoRA is not there any more."
-FILE_GONE_ERROR = "That file is not there any more."
 UNLISTED_FILE_ERROR = "That file is not in the check results."
-ARCHIVE_READ_ONLY_ERROR = "Files in the archive are never changed."
+# An archived row Delete refuses: outside the archive folder set now, or none is set.
+ARCHIVE_READ_ONLY_ERROR = "That file isn't in the archive folder set now, so it is left alone."
 REPLACE_BUSY_ERROR = "That file is being replaced. Try again when it's done."
 
 
@@ -1227,7 +1341,7 @@ def delete_problem(
 ) -> Optional[tuple]:
     """Why a model can't be deleted now, as (HTTP status, message), or None.
 
-    A download may run beside a delete, unless it is about to replace this file.
+    A download may run beside a delete, unless it is about to replace or move this file.
     """
     if not can_trash:
         return 409, NO_TRASH_DELETE_ERROR
@@ -1237,6 +1351,8 @@ def delete_problem(
         return 404, gone_message
     if queue.holds(str(weights)):
         return 409, REPLACE_BUSY_ERROR
+    if queue.moving(str(weights)):
+        return 409, MOVE_BUSY_ERROR
     return None
 
 
@@ -1332,6 +1448,137 @@ def gallery_request(payload: dict, roots: list) -> DownloadRequest | tuple:
     )
 
 
+MOVE_PAYLOAD_ERROR = 'jobId, the path of a listed file and to ("archive" or "drive") are required'
+_MOVE_PLACES = ("archive", "drive")
+
+
+def _normalize_move_payload(payload: dict) -> dict:
+    """Known keys only: the job, the listed path (kept as it is) and the drive it goes to."""
+    path = payload.get("path")
+    place = _clean_id(payload.get("to"))
+    return {
+        "jobId": _clean_id(payload.get("jobId")),
+        "path": path if isinstance(path, str) and path.strip() else "",
+        "to": place if place in _MOVE_PLACES else "",
+    }
+
+
+def _move_weights(item: dict) -> Optional[Path]:
+    """The weights a row lists, when they are on disk: the file a move copies."""
+    if item.get("deleted"):
+        return None  # Moved or deleted since the check.
+    path = item.get("filePath") or item.get("modelPath")
+    if not isinstance(path, str) or not path.lower().endswith(tuple(SUPPORTED_MODEL_EXTENSIONS)):
+        return None
+    weights = Path(path)
+    return weights if weights.is_file() else None
+
+
+def move_request(
+    payload: dict,
+    job,
+    *,
+    queue,
+    archive_folder: str,
+    roots_for: Callable[[str], list],
+    model_roots: dict,
+    can_trash: bool,
+) -> DownloadRequest | tuple:
+    """The request to move a listed file to the other drive, or why not, as (HTTP status, message).
+
+    Archive (``to: "archive"``) copies a file on this drive into the archive's
+    mirror of its folder; Unarchive (``to: "drive"``) brings an archived file
+    back. Reads the drives: call it off the event loop.
+    """
+    if job is None or getattr(job, "type", None) != CHECK_JOB:
+        return 404, "job not found"  # The panel's lost-job recovery reads this text.
+    entry = _job_entry(job, payload.get("path") or "")
+    if entry is None:
+        return 404, UNLISTED_FILE_ERROR
+    _listed, item = entry
+    if not can_trash:
+        return 409, NO_TRASH_MOVE_ERROR
+    if not archive_folder:
+        return 409, NO_ARCHIVE_FOLDER_ERROR
+    if overlaps_model_root(archive_folder, model_roots):
+        return 409, ARCHIVE_OVERLAP_ERROR
+    archive_root = Path(archive_folder)
+    if not _reachable(archive_root):
+        return 409, ARCHIVE_UNREACHABLE_ERROR
+    to_archive = payload.get("to") == "archive"
+    archived = bool(item.get("archived"))
+    if to_archive and archived:
+        return 400, NOT_ON_DRIVE_ERROR
+    if not to_archive and not archived:
+        return 400, NOT_IN_ARCHIVE_ERROR
+    if not archived and item.get("metadataOnly"):
+        return 400, INFO_ONLY_MOVE_ERROR
+    if not str(item.get("modelId") or "") or not str(item.get("localVersionId") or ""):
+        return 400, UNIDENTIFIED_MOVE_ERROR
+    weights = _move_weights(item)
+    if weights is None:
+        return 404, FILE_GONE_ERROR
+    files = stem_files(weights)
+    if to_archive and not any(path.name.lower().endswith(INFO_SIDECAR_SUFFIX) for path in files[1:]):
+        # Without its info the archive check could not list it, so it would drop out of sight.
+        return 400, UNIDENTIFIED_MOVE_ERROR
+    roots = roots_for(str(item.get("modelType") or ""))
+    if to_archive:
+        target = archive_target(weights, archive_root, roots)
+        if target is None:
+            return 400, NOT_IN_TYPE_FOLDER_ERROR
+    else:
+        in_archive = parts_under(weights, archive_root)
+        if not in_archive or len(in_archive) < 2:
+            return 400, NOT_IN_ARCHIVE_ERROR
+        target = unarchive_target(weights, archive_root, roots)
+        if target is None:
+            return 400, NO_DRIVE_FOLDER_ERROR.format(folder=in_archive[0])
+    try:
+        taken = taken_name(files, target.parent)
+    except OSError as exc:  # its words only: str(exc) would carry the path
+        reason = exc.strerror or type(exc).__name__
+        return 409, f"Could not look in the folder {target.parent.name}: {reason}"
+    if taken:
+        return 409, NAME_TAKEN_ERROR.format(name=taken)
+    key = move_key(item["modelPath"])
+    if (
+        queue.moving(str(weights), other_than=key)
+        or queue.moving(str(target), other_than=key)
+        or queue.holds(str(weights))
+    ):
+        return 409, MOVE_BUSY_ERROR
+    return DownloadRequest(
+        key=key,
+        source="archive" if to_archive else "unarchive",
+        model_id=str(item.get("modelId") or ""),
+        version_id=str(item.get("localVersionId") or ""),
+        model_type=str(item.get("modelType") or ""),
+        file_name=weights.name,
+        move_from=str(weights),
+        move_to=str(target),
+        # A copy: the check job's records change as moves land.
+        check_item=copy.deepcopy(item),
+    )
+
+
+def _archived_weights(item: dict, folder: str) -> Path | tuple | None:
+    """The weights of an archived row that Delete may send to the archive drive's recycle bin.
+
+    Only a file inside the archive folder set now; any other archived row stays
+    read-only. None when its weights aren't there (an info-only row).
+    """
+    file_path = item.get("filePath")
+    if not folder or not isinstance(file_path, str) or not parts_under(Path(file_path), Path(folder)):
+        return 409, ARCHIVE_READ_ONLY_ERROR
+    if not _reachable(Path(folder)):
+        return 409, ARCHIVE_UNREACHABLE_ERROR
+    if item.get("deleted") or not file_path.lower().endswith(tuple(SUPPORTED_MODEL_EXTENSIONS)):
+        return None
+    weights = Path(file_path)
+    return weights if weights.is_file() else None
+
+
 async def submit_download(
     queue, job_manager, request, runner, *, attempts: int = 20, delay: float = 0.05
 ) -> tuple:
@@ -1425,7 +1672,7 @@ def _ensure_finish_listener(queue, job_manager, runner) -> None:
 
 
 def download_context(
-    config_store, job_manager, decisions, base_codes, answer_cache, journal
+    config_store, job_manager, decisions, base_codes, answer_cache, journal, release_names=None
 ) -> DownloadContext:
     """What one download needs, built on the job thread: it reads the naming models' headers."""
     config = config_store.get()
@@ -1461,11 +1708,21 @@ def download_context(
             config, [model_type], include_custom_paths=True
         ).get(model_type, []),
         lora_roots=lora_roots,
+        release_names=release_names,
     )
 
 
 def _register_model_action_routes(
-    routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, *, updater_service=None
+    routes,
+    config_store,
+    job_manager,
+    decisions,
+    base_codes,
+    answer_cache,
+    journal,
+    *,
+    updater_service=None,
+    release_names=None,
 ) -> DownloadQueue:
     queue = DownloadQueue()
 
@@ -1473,13 +1730,25 @@ def _register_model_action_routes(
         problem = recheck(request, journal_pending=journal.pending() is not None)
         if problem:
             raise DownloadError(problem)
+        if request.source in MOVE_SOURCES:
+            move_ctx = MoveContext(job_manager, config_store.data_dir, _archive_folder(config_store))
+            move_one(request, report=report, should_stop=should_stop, ctx=move_ctx)
+            # The file's row in its new place may carry the key of its last trip away from it.
+            queue.forget_moves_from(request.move_to)
+            return
         ctx = download_context(
-            config_store, job_manager, decisions, base_codes, answer_cache, journal
+            config_store, job_manager, decisions, base_codes, answer_cache, journal, release_names
         )
         download_one(request, report=report, should_stop=should_stop, ctx=ctx)
 
     def runner(progress, emit, control):  # noqa: ARG001
         return run_queue(queue, work, progress=progress, control=control)
+
+    def forget_moves_after_a_check(record) -> None:
+        if record.type == CHECK_JOB and record.status == "completed":
+            queue.forget_finished_moves()
+
+    job_manager.add_finish_listener(forget_moves_after_a_check)
 
     def refused(problem):
         status, message = problem
@@ -1496,6 +1765,51 @@ def _register_model_action_routes(
             for name, paths in updater_service.get_effective_roots([model_type]).items()
         }
         return archive_reference_path(Path(folder), Path(item["modelPath"]), model_type, type_roots)
+
+    def effective_roots(model_types=None) -> dict:
+        """The model folders by type, as the check walks them."""
+        if updater_service is not None:
+            roots = updater_service.get_effective_roots(model_types)
+        else:
+            roots = resolve_model_roots(
+                config_store.get(), normalize_model_types(model_types), include_custom_paths=True
+            )
+        return {name: [Path(path) for path in paths] for name, paths in roots.items()}
+
+    @routes.post("/warp-studio/updater/moves")
+    @_guarded
+    async def start_move(request):
+        # Archive or Unarchive a version row of an Updates or Issues card: found by the
+        # check job's own row, never by the posted path alone.
+        payload = _normalize_move_payload(await _read_json(request))
+        if not payload["jobId"] or not payload["path"] or not payload["to"]:
+            return web.json_response({"error": MOVE_PAYLOAD_ERROR}, status=400)
+        problem = download_problem(
+            job_manager.get_active(), journal_pending=journal.pending() is not None
+        )
+        if problem:
+            return refused(problem)
+        job = job_manager.get(payload["jobId"])
+
+        def build():
+            # Reads both drives and the model folders: off the event loop.
+            return move_request(
+                payload,
+                job,
+                queue=queue,
+                archive_folder=_archive_folder(config_store),
+                roots_for=lambda model_type: effective_roots([model_type]).get(model_type, []),
+                model_roots=effective_roots(),
+                can_trash=send2trash_available(),
+            )
+
+        made = await asyncio.to_thread(build)
+        if isinstance(made, tuple):
+            return refused(made)
+        held, job_id = await submit_download(queue, job_manager, made, runner)
+        if job_id is None and held.state == "error":
+            return web.json_response({"error": held.error}, status=409)
+        return web.json_response({"request": held.as_dict(), "jobId": job_id})
 
     @routes.post("/warp-studio/updater/downloads")
     @_guarded
@@ -1594,7 +1908,8 @@ def _register_model_action_routes(
     @_guarded
     async def delete_listed_file(request):
         # A version row of an Updates or Issues card: found by the check job's own
-        # row, never by the posted path alone. The archive is never changed.
+        # row, never by the posted path alone. An archived row's file goes to the
+        # archive drive's recycle bin, and only from inside the archive folder.
         payload = await _read_json(request)
         job_id = payload.get("jobId")
         wanted = payload.get("path")
@@ -1607,10 +1922,14 @@ def _register_model_action_routes(
         if entry is None:
             return web.json_response({"error": UNLISTED_FILE_ERROR}, status=404)
         _listed, item = entry
+        archive_folder = ""
         if item.get("archived"):
-            return web.json_response({"error": ARCHIVE_READ_ONLY_ERROR}, status=409)
-
-        weights = await asyncio.to_thread(_listed_weights, item, wanted)
+            archive_folder = _archive_folder(config_store)
+            weights = await asyncio.to_thread(_archived_weights, item, archive_folder)
+            if isinstance(weights, tuple):
+                return refused(weights)
+        else:
+            weights = await asyncio.to_thread(_listed_weights, item, wanted)
         problem = delete_problem(
             job_manager.get_active(),
             queue=queue,
@@ -1627,6 +1946,7 @@ def _register_model_action_routes(
                 trash=send_to_trash,
                 job_manager=job_manager,
                 data_dir=config_store.data_dir,
+                archive_folder=archive_folder,
             )
         except DownloadError as exc:
             return web.json_response({"error": str(exc)}, status=500)

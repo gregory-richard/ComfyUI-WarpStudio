@@ -7,6 +7,8 @@ from comfy_updater.naming_scheme import (
     NameParts,
     assemble,
     format_part,
+    name_tail,
+    own_name,
     parse_stem,
     part_problems,
     stem_problems,
@@ -85,6 +87,31 @@ class NamingSchemeTests(unittest.TestCase):
 
     def test_stem_problems_clean(self) -> None:
         self.assertEqual([], stem_problems("a - b (x)"))
+
+    def test_own_name_is_the_first_stem_with_a_creator_and_a_title(self) -> None:
+        self.assertEqual(
+            NameParts("moss", "glow", "xxl", "", "moss"),
+            own_name(["glowV2", "moss - glow - xxl (moss)"]),
+        )
+        self.assertIsNone(own_name(["glowV2", "glow (ill)"]))
+
+    def test_name_tail_is_the_version_and_base_part(self) -> None:
+        self.assertEqual("xxl (moss)", name_tail("moss - glow - xxl (moss)"))
+        self.assertEqual("(ill)", name_tail("moss - glow (ill)"))
+        self.assertEqual("moss - glow", name_tail("moss - glow"))
+        self.assertEqual("glowV2", name_tail("glowV2"))
+
+    def test_a_checkpoints_two_part_name_is_model_and_version(self) -> None:
+        # Checkpoints and UNets are often named "model - version (base)".
+        self.assertEqual("v10 (sd15)", name_tail("cyberrealistic - v10 (sd15)", three_parts=True))
+        self.assertEqual("v10", name_tail("cyberrealistic - v10", three_parts=True))
+        self.assertEqual("xxl (moss)", name_tail("moss - glow - xxl (moss)", three_parts=True))
+        self.assertEqual("glowV2", name_tail("glowV2", three_parts=True))
+        self.assertIsNone(own_name(["cyberrealistic - v10 (sd15)"], three_parts=True))
+        self.assertEqual(
+            NameParts("moss", "glow", "v1", "", "ill"),
+            own_name(["cyberrealistic - v10 (sd15)", "moss - glow - v1 (ill)"], three_parts=True),
+        )
 
 
 if __name__ == "__main__":

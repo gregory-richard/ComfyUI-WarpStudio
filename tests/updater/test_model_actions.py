@@ -16,7 +16,7 @@ from comfy_updater import model_actions
 from comfy_updater.civitai_client import CivitaiClient, CivitaiRequestError
 from comfy_updater.constants import CACHE_SCHEMA_VERSION, MODEL_VERSION_BY_ID_URL
 from comfy_updater.download_queue import DownloadRequest
-from comfy_updater.download_target import AiName
+from comfy_updater.download_target import AiName, NamedRelease
 from comfy_updater.jobs import JobManager
 from comfy_updater.model_actions import (
     EARLY_ACCESS_ERROR,
@@ -27,6 +27,8 @@ from comfy_updater.model_actions import (
     release_is_paid,
 )
 from comfy_updater.model_download import DownloadError, DownloadStopped
+from comfy_updater.naming_scheme import NameParts
+from comfy_updater.release_names import ReleaseNameStore
 from comfy_updater.rename_store import AnswerCache, BaseCodeStore, DecisionStore
 
 CIVITAI = "https://civitai.red/api/download/models/202"
@@ -458,6 +460,51 @@ class ModelActionsTests(unittest.TestCase):
 
         self.assertFalse((self.root / "illx").exists())
         self.assertIsNone(base_codes.code("Illustrious"))
+
+    def test_a_stored_name_names_the_download_without_the_ai(self) -> None:
+        self.generator = FakeGenerator(ANSWER)
+        names = ReleaseNameStore(self.data, self.base_codes)
+        names.put("101", {"202": NamedRelease(NameParts("moss", "glow lite", "v2", "", "ill"), "Illustrious", "")})
+
+        request = self.run_one(self.updates_request(), release_names=names)
+
+        weights = self.ill / "moss - glow lite - v2 (ill).safetensors"
+        self.assertTrue(weights.is_file())
+        self.assertEqual(request.file_name, weights.name)
+        self.assertEqual([], self.generator.calls)
+
+    def test_a_stored_name_on_a_new_base_learns_its_code_on_download(self) -> None:
+        other = self.tmp / "other-data"
+        other.mkdir()
+        base_codes = BaseCodeStore(other)
+        base_codes.set("Pony", "pony")
+        names = ReleaseNameStore(other, base_codes)
+        names.put("101", {"202": NamedRelease(NameParts("moss", "glow", "v2", "", "illx"), "Illustrious", "Illustrious")})
+
+        request = self.run_one(self.updates_request(), base_codes=base_codes, release_names=names)
+
+        self.assertTrue((self.root / "illx" / "moss - glow - v2 (illx).safetensors").is_file())
+        self.assertEqual("illx", base_codes.code("Illustrious"))
+        self.assertEqual(request.warnings, ["New base model Illustrious: its files get the code illx."])
+
+    def test_a_taken_stored_name_falls_back_to_civitais_name(self) -> None:
+        names = ReleaseNameStore(self.data, self.base_codes)
+        names.put("101", {"202": NamedRelease(NameParts("moss", "glow", "v2", "", "ill"), "Illustrious", "")})
+        (self.ill / "moss - glow - v2 (ill).civitai.info").write_bytes(b"{}")
+
+        request = self.run_one(self.updates_request(), release_names=names)
+
+        self.assertEqual(request.file_name, "glowV2.safetensors")
+        self.assertTrue((self.ill / "glowV2.safetensors").is_file())
+
+    def test_a_release_without_a_stored_name_is_named_by_the_ai(self) -> None:
+        self.generator = FakeGenerator(ANSWER)
+        names = ReleaseNameStore(self.data, self.base_codes)
+
+        self.run_one(self.updates_request(), release_names=names)
+
+        self.assertEqual(1, len(self.generator.calls))
+        self.assertTrue((self.ill / "maker - glow - v2 (ill).safetensors").is_file())
 
     def test_a_naming_failure_keeps_civitais_name(self) -> None:
         self.generator = FakeGenerator(ANSWER)

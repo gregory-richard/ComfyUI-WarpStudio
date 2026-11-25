@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
+from .archive import ARCHIVE_RESULTS_FILENAME, folder_key
 from .constants import CACHE_SCHEMA_VERSION
 from .sidecar import preview_path_for, read_data_file, write_json
 from .updater_service import sidecar_seed_item
@@ -26,13 +27,16 @@ def _norm(path: object) -> str:
     return os.path.normcase(os.path.normpath(text)) if text else ""
 
 
-def edit_check_items(items: list[dict], *, remove: Iterable[str], add: list[dict]) -> bool:
+def edit_check_items(
+    items: list[dict], *, remove: Iterable[str], add: list[dict], moved: bool = False
+) -> bool:
     """Mark the items whose ``modelPath`` or ``filePath`` is in ``remove`` deleted, then add ``add``.
 
     A deleted item keeps its row, so its card says Deleted until the next check,
-    which no longer finds the file. An added item replaces the item with its
-    ``modelPath``, or else is appended. The list changes in place; True when
-    anything changed.
+    which no longer finds the file. With ``moved``, the file went to the other
+    drive: the row is marked ``moved`` too, and its card no longer shows it. An
+    added item replaces the item with its ``modelPath``, or else is appended.
+    The list changes in place; True when anything changed.
     """
     gone = {_norm(path) for path in remove} - {""}
     changed = False
@@ -44,6 +48,8 @@ def edit_check_items(items: list[dict], *, remove: Iterable[str], add: list[dict
                 and (_norm(item.get("modelPath")) in gone or _norm(item.get("filePath")) in gone)
             ):
                 item["deleted"] = True
+                if moved:
+                    item["moved"] = True
                 changed = True
     for new in add:
         key = _norm(new.get("modelPath"))
@@ -64,20 +70,37 @@ def edit_check_items(items: list[dict], *, remove: Iterable[str], add: list[dict
 
 
 def update_check_records(
-    job_manager, data_dir: Path, *, remove: list[str], add: list[dict]
+    job_manager,
+    data_dir: Path,
+    *,
+    remove: list[str],
+    add: list[dict],
+    archive_folder: str = "",
+    moved: bool = False,
 ) -> None:
-    """Edit every held check job and the saved check (when it is of this schema) alike."""
+    """Edit every held check job and the saved check (when it is of this schema) alike.
+
+    The saved check is the drive's: an archived item is never added to it. With
+    ``archive_folder``, the saved archive results are edited too, and they take
+    the archived items. ``moved`` marks the removed items moved as well.
+    """
     remove = [str(path) for path in remove if path]
     if not remove and not add:
         return
     with _WRITE_LOCK:
-        _update_locked(job_manager, Path(data_dir), remove, add)
+        _update_locked(job_manager, Path(data_dir), remove, add, moved)
+        if archive_folder:
+            archived = [item for item in add if item.get("archived")]
+            _update_archive_locked(Path(data_dir), archive_folder, remove, archived, moved)
 
 
-def _update_locked(job_manager, data_dir: Path, remove: list[str], add: list[dict]) -> None:
+def _update_locked(
+    job_manager, data_dir: Path, remove: list[str], add: list[dict], moved: bool
+) -> None:
     # Each record gets its own copies, so an edit of one never shows in another.
     job_manager.edit_items(
-        CHECK_JOB, lambda items: edit_check_items(items, remove=remove, add=copy.deepcopy(add))
+        CHECK_JOB,
+        lambda items: edit_check_items(items, remove=remove, add=copy.deepcopy(add), moved=moved),
     )
     path = data_dir / LAST_CHECK_FILENAME
     if not path.is_file():
@@ -88,7 +111,8 @@ def _update_locked(job_manager, data_dir: Path, remove: list[str], add: list[dic
     items = payload.get("items")
     if not isinstance(items, list):
         return
-    if not edit_check_items(items, remove=remove, add=copy.deepcopy(add)):
+    on_drive = [item for item in add if not item.get("archived")]
+    if not edit_check_items(items, remove=remove, add=copy.deepcopy(on_drive), moved=moved):
         return
     summary = payload.get("summary")
     summary = job_manager.summarize_check_items(
@@ -98,6 +122,56 @@ def _update_locked(job_manager, data_dir: Path, remove: list[str], add: list[dic
     summary["total"] = sum(1 for item in items if isinstance(item, dict) and not item.get("deleted"))
     payload["summary"] = summary
     write_json(path, payload)
+
+
+def _update_archive_locked(
+    data_dir: Path, archive_folder: str, remove: list[str], add: list[dict], moved: bool
+) -> None:
+    """Edit the saved archive results of ``archive_folder``; start them for a first archived row.
+
+    Results that are missing, outdated or of another folder are of no use to
+    the panel, so the first archived row starts new ones, with no check time.
+    Results that can't be read are left as they are: they may be whole.
+    """
+    path = data_dir / ARCHIVE_RESULTS_FILENAME
+    exists = path.is_file()
+    payload = read_data_file(path) if exists else None
+    if exists and payload is None:
+        return
+    usable = (
+        payload is not None
+        and _schema(payload) == CACHE_SCHEMA_VERSION
+        and isinstance(payload.get("archiveFolder"), str)
+        and folder_key(payload["archiveFolder"]) == folder_key(archive_folder)
+        and isinstance(payload.get("items"), list)
+    )
+    if not usable:
+        if not add:
+            return
+        items = copy.deepcopy(add)
+        write_json(
+            path,
+            {
+                "schemaVersion": CACHE_SCHEMA_VERSION,
+                "archiveFolder": archive_folder,
+                "checkedAt": "",
+                "summary": {"mode": "archive", "total": _held(items)},
+                "items": items,
+            },
+        )
+        return
+    items = payload["items"]
+    if not edit_check_items(items, remove=remove, add=copy.deepcopy(add), moved=moved):
+        return
+    summary = payload.get("summary")
+    summary = dict(summary) if isinstance(summary, dict) else {}
+    summary["total"] = _held(items)
+    payload["summary"] = summary
+    write_json(path, payload)
+
+
+def _held(items: list) -> int:
+    return sum(1 for item in items if isinstance(item, dict) and not item.get("deleted"))
 
 
 def _schema(payload: dict) -> int:

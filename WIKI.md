@@ -470,7 +470,7 @@ The tab lists the library the Prompt + LoRAs node already uses, and changes noth
 
 ### Updates, Issues and Rename
 
-The Updates tab checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models. A download starts only when you click **Download** or **Replace** on a card, as described under [Reading a result card](#6-reading-a-result-card).
+The Updates tab checks the models on your disk against their Civitai releases, and tells you which ones have moved on without you. It reads what you already have, model files and their `.civitai.info` sidecars, identifies each by SHA256 hash and lists only the models with a newer release. Checking downloads no model and touches no model file; it only writes `.civitai.info` and `.preview.png` sidecars next to your models. A download starts only when you click **Download** on a card, and a file moves only when you click **Archive** or **Unarchive**, as described under [Reading a result card](#6-reading-a-result-card).
 
 Base models are grouped by family, because Civitai records one per version and the spellings multiply: `Flux.1 D`, `Flux.2 Klein 9B` and `Flux.2 Klein 9B-base` all file under **Flux**, while every row still prints its exact base. A version counts as **new** when its `publishedAt` date (or `createdAt`, when `publishedAt` is missing) is later than the newest local version you have of that model, not by version number.
 
@@ -508,7 +508,7 @@ of checking again, unless Model Scope differs from the last check, files were
 added or removed, `Force rehash` is ticked, or the last check was stopped.
 With fresh saved results, the click asks first: "These results are from … ago. Check every file against Civitai again?" with **Check again** and **Keep these** (Escape or a click beside the box keeps them). **Check again** in the ⓘ, which also holds when it was last checked, the counts and "Changes detected" when files changed, always runs a check without asking.
 
-While a check runs, the button is its progress: it reads "Checking 491 of 746" and fills from the left as files are checked, and the **⋯** square beside it is **Stop**. When the check ends, the button shows its result ("Done — 25 updates found") for a few seconds. The pill at the bottom stays in for a check on Updates and Issues; it shows the check's progress on the Gallery and Rename tabs, where the button is not on screen, and an error on any tab.
+While a check runs, the button is its progress: it reads "Checking 491 of 746" and fills from the left as files are checked, and the **⋯** square beside it is **Stop**. Once the files are checked, the check names the new releases it found and the button reads "Naming 3 of 25" (see [Names for new releases](#names-for-new-releases)). When the check ends, the button shows its result ("Done — 25 updates found") for a few seconds. The pill at the bottom stays in for a check on Updates and Issues; it shows the check's progress on the Gallery and Rename tabs, where the button is not on screen, and an error on any tab.
 
 ### 4. Metadata workflow (Advanced)
 
@@ -534,76 +534,206 @@ Run `Fetch Missing Metadata`.
 
 ### 6. Reading a result card
 
-Each card is a ledger of one model's releases. The dot on the left of every row
-says where that version stands:
+Updates and Issues draw the same card, built like a Gallery card. Over its
+picture lie the type and base (`LoRA | Krea 2`), ↗ to the model on Civitai, the
+creator and their avatar, the title, a line about the selected version and
+Civitai's numbers (downloads, comments, Buzz tipped, likes). A click on the
+picture opens it large. A card with more than one new release says `2 new` on
+its picture.
+
+The creator and title are yours. They come from your newest file of the model
+whose name reads `creator - title - …`; without one, from Civitai's model name
+and uploader. A checkpoint or UNet needs all three parts,
+`creator - title - version`: those are often named `model - version (base)`, and
+their rows then show the `version (base)` part. The **Name** sorts follow the
+title the card shows.
+
+Below the picture is one row per version, newest first: the new releases, the
+files on this drive and in the archive, and the files deleted since the check.
+Each row has its own small picture, a dot, a name and two buttons. Hovering a
+row, tapping it or moving to it with Tab selects it: the big picture, the base
+in the pill and the line over the picture switch to that version, and nothing
+else moves. A card starts on its newest new release in Updates, on its first
+row with a problem in Issues, and otherwise on its first row. When the selected
+row is gone after a refresh (downloaded, deleted, moved, or no longer shown),
+the card goes back to that start.
+
+The line over the picture says where the selected version is:
+
+- `New · 2026-11-20 · not downloaded`; a release that costs Buzz says `Buzz · 5d left` or `Buzz · always` in place of `not downloaded`.
+- `Saved · 2026-10-01 · <file name>` for a file on this drive.
+- `Archived · 2025-04-04 · on Z:` for a file in the archive.
+- `Downloaded`, `Deleted` or `Not interested`, with the same parts, for those rows.
+- In Issues, the row's problem.
+
+No text on a card wraps. A long one ends in `…`, and its tooltip holds all of it.
+
+A row for a file you have shows the `version (base)` part of its name, such as
+`v3 (krea2)`, or the whole name when the name doesn't follow the scheme. Its
+tooltip has the file name; a click copies the file's path, and a second click
+shows it in its folder. A new release shows the name its file will get, such as
+`night v4 (krea2)` (see [Names for new releases](#names-for-new-releases)).
+
+The dot says where that version stands:
 
 | Dot | Row | Meaning |
 | --- | --- | --- |
-| hollow | `Saved` | A version present on disk. Click the name to copy its file path. |
+| hollow | `Saved` | A version present on this drive. |
 | hollow, dim | `Metadata` | Tracked from a `.civitai.info` sidecar with no weight file next to it. |
-| red | `New` | Released after your newest local version. Click the name to open it on Civitai. |
-| grey | `Hidden` | A new release you hid. Visible only with `Show hidden` enabled. |
-| amber | `Error` | The lookup failed or Civitai refused it (a removed model, one that needs an API key). The reason is printed under the row. |
+| red | `New` | Released after your newest local version. |
+| grey | `Not interested` | A new release you are not interested in. Visible only with `Show hidden`. |
+| green | `Downloaded` | Downloaded since the check. |
+| dashed | `Archived` | In the archive folder. |
+| dashed, dim | `Deleted` | Deleted since the check. The row has no buttons. |
+| amber | `Error` | The lookup failed or Civitai refused it (a removed model, one that needs an API key). The line over the picture gives the reason. |
+| amber | `Duplicate` | The same version is in the archive too. |
+| dashed amber | `Info only` | Only the `.civitai.info` is on this drive; the model is in the archive. |
 | dashed | `No match` | Civitai has no release with this file's hash. |
 
 Red is used for one meaning only: a release exists that you do not have.
-`New` rows are sorted by release date, newest first.
 
-A `Buzz` badge on a `New` or `Hidden` row means downloading it costs Buzz:
+A `Buzz` badge (a bolt) in place of **Download** means downloading the release
+costs Buzz; the line over the picture says which kind:
 
-- `Buzz · 5d left` (dashed) is early access. It is free after the date in its
-  tooltip, and the badge disappears once that date passes.
-- `Buzz · always` (solid) has no free date.
+- `Buzz · 5d left` (a dashed badge) is early access. It is free after the date in
+  the badge's tooltip, and the badge disappears once that date passes.
+- `Buzz · always` (a solid badge) has no free date.
 
-Civitai's public API does not give the price.
+Civitai's public API does not give the price. The server refuses such a download
+too, with `This release is in early access.`
 
-A paid or early-access release shows `Early access` in place of the buttons below.
-The server refuses such a download too, with `This release is in early access.`
+#### The buttons of a row
 
-#### Download and Replace
+Every row has two buttons, always in the same place, so a row never changes
+size:
 
-A `New` or `Hidden` row has **Download**. A card whose current version has its weights on
-this drive also gives the row **Replace**. Both start a download of that release
-on the server.
+| Row | Buttons |
+| --- | --- |
+| A new release | **Download** · **Not interested** (**Show again** on one you hid) |
+| A release that costs Buzz | its `Buzz` badge · **Not interested** |
+| A file on this drive | **Delete** · **Archive** |
+| A file in the archive | **Delete** · **Unarchive** |
+| A deleted file, or an info file alone | none |
 
-- Downloads run one at a time, in a queue. A click while one runs shows `Waiting`
-  with **Cancel**. A click while another job runs (a check, a dry run, a rename,
-  a metadata fetch, the naming model download) shows `Waiting for the check`
-  (or the dry run, and so on) in the same slot, and starts by itself when that job
-  ends; the download takes the job slot before any job started later.
-  Cancel removes it. It is checked again when it starts: if a rename that was cut off still needs
-  recovering, or a Replace's old file is no longer where it was, the card shows an
-  error saying so.
-  Only a rename that was cut off and still needs recovering refuses a download. The running one shows its percentage (`Downloading` while the
-  size is unknown) with **Stop**; Stop deletes its partial file. A finished one
-  shows `Downloaded`. A stopped one shows no note, and **Download** comes back. The job bar follows the run, and ends with
-  `Done — 2 downloaded`, plus `, 1 failed` and `, 1 stopped` when they are not
-  zero. A reloaded panel finds the running job and paints every row again.
+**Archive** and **Unarchive** show only once an archive folder is set. A file
+whose version is in the archive too (a **Duplicate**) has no **Archive**. Delete,
+Archive and Unarchive need the `send2trash` package. There is no **Replace** any
+more: download the new version, try it, then delete the old one.
+
+**Delete** asks once: the first click turns it into a question for four seconds,
+and a second click sends the weights to the Recycle Bin, then their info,
+preview and other files of that name. If the weights can't go (ComfyUI has the
+file open), nothing else is touched and the row says why. On a drive without a
+Recycle Bin, or for a file too big for it, Windows deletes the file for good. A
+file in the archive goes to that drive's recycle bin: a network share sends it to
+its own recycle folder when it has one (such as `#recycle`), and otherwise
+deletes it for good. The row then says `Deleted` until the next check, even
+after a restart.
+
+#### Download
+
+**Download** starts a download of that release on the server.
+
+- Downloads run one at a time, in a queue, with moves. A click while one runs shows
+  a clock with **Cancel**. A click while another job runs (a check, a dry run, a
+  rename, a metadata fetch, the naming model download) waits in the same slot, its
+  tooltip says `Waiting for the check` (or the dry run, and so on), and it starts
+  by itself when that job ends; the download takes the job slot before any job
+  started later. Cancel removes it. It is checked again when it starts: if a
+  rename that was cut off still needs recovering, the row shows an error saying
+  so. Only such a rename refuses a download.
+- The running one shows a ring that fills as the file comes in (it spins while the
+  size is unknown and while the file is checked), with **Stop**; Stop deletes its
+  partial file. A stopped one shows no note, and **Download** comes back. The job
+  bar follows the run, and ends with `Done — 2 downloaded`, plus `, 1 moved`,
+  `, 1 failed` and `, 1 stopped` when they are not zero. A reloaded panel finds
+  the running job and paints every row again.
 - The file is written as `<name>.part`, checked against the SHA-256 Civitai lists
   for it, and only then renamed into place. A wrong hash or an early stop deletes
   the `.part` and the row says so. An existing file is never overwritten.
-- The new file is named as a rename dry run would name it, with the AI naming
-  model, and goes into its base model's folder when that base has one; otherwise it
-  stays beside the old version. With no naming model, a name that fails the checks,
-  or a name already taken, it keeps Civitai's file name, and the next dry run offers
-  a proper one. The download is refused only when Civitai's name is taken too. Its `.civitai.info` and preview
-  are written the way a scan writes them.
-- **Replace** adds one step: once the new file is checked and in place, the old
-  version's weights go to the Recycle Bin (on a drive without one, or for a file too big
-  for it, Windows deletes the file for good), then its sidecars. If the weights can't
-  go, nothing else of the old version is touched, and the row says so. If the new
-  version's info file can't be written, the old version is kept and the row says so. The new
-  version is never the one sent away. Tags in prompts that name the old file go red,
-  as after a rename. Replace needs the `send2trash` package, and a file can have one
-  Replace queued at a time.
-- A download or a delete is refused with `Another job is running. Try again when it's done.`
-  while any other job runs, and the other way round, Check, Fetch Missing Metadata,
-  dry runs and applies are refused while a download runs.
+- The file gets the name its row shows: the name the check gave the release. It
+  goes into its base model's folder when that base has one there; otherwise it
+  stays beside the version you have. A release with no name yet is named by the
+  AI as it downloads, as a rename dry run would name it. With no naming model, a
+  name that fails the checks, or a name already taken, it keeps Civitai's file
+  name, and the next dry run offers a proper one. The download is refused only when
+  Civitai's name is taken too. Its `.civitai.info` and preview are written the way
+  a scan writes them.
+- A finished download turns its row into the new file's row, marked
+  `Downloaded`. The card stays in **Updates** until the next check, even after a
+  restart, so you can try the new version and then delete the old one.
+- A delete is refused with `Another job is running. Try again when it's done.`
+  while any job but a download runs, and Check, Fetch Missing Metadata, dry runs
+  and applies are refused while a download runs.
 - Most adult models need a Civitai API key. Without one the row shows `Civitai needs an API key for this download: Settings → Warp Studio → Civitai Network → API Key`.
   The key goes to Civitai hosts over https only. A redirect to the storage host is
   followed, without the key.
 - Waiting and running downloads are kept in the server's memory. After a restart of ComfyUI the queue is gone. A `.part` left behind is not
   listed as a model, and the next try replaces it.
+
+#### Archive and Unarchive
+
+**Archive** moves a version from this drive into the archive folder, and
+**Unarchive** moves an archived one back. They run in the same queue as the
+downloads, one at a time, with the same ring: it fills while the weights are
+copied and spins while the copy is checked. The job bar reads `Moving…`, then
+`Copying <file>: 2 of 6 MB` and `Checking <file>`, and ends with
+`Done — 1 moved`.
+
+- The version goes to the same folder on the other side: the model folder is
+  matched by name, as for **Check with archive**, and the folders below it are
+  kept. A file in `Lora\krea2` goes to `Lora\krea2` in the archive and comes back
+  to `Lora\krea2`. A folder missing on the other side is made, except the model
+  folder itself on this drive. A file in no model folder is refused.
+- The weights are copied through `<name>.part`, flushed to the drive and read
+  back. The copy must match the SHA-256 in the version's `.civitai.info` (without
+  one, the hash of the original). Only then is the `.part` renamed, and the info,
+  the preview and every other file of that name are copied beside it.
+- Only once every copy is in place do the originals go to the Recycle Bin (from
+  the archive, to that drive's recycle bin), the weights first.
+- Nothing is overwritten, renamed or deleted for good. A name already taken on the
+  other side, a `.part` left there included, refuses the move.
+- A failed or stopped move leaves the original as it was, and removes its `.part`
+  and the folders it made. A failed one shows the reason in place of the name,
+  with **Retry**; a stopped one gets its buttons back.
+- When the Recycle Bin refuses the original (ComfyUI has the LoRA loaded), both
+  copies stay, the original's sidecars are not touched, both are listed, and the
+  row says `Both copies are kept: …`. After the next check, **Issues** lists them
+  as **Duplicate**.
+- Only a file with its `.civitai.info` can be archived: the archive check finds
+  files by it. A file the queue is moving can't be deleted meanwhile.
+- The row then says `Archived` or `Saved` in its new place until the next check,
+  even after a restart. The check records are updated as for Delete.
+
+#### Names for new releases
+
+The check ends with a naming phase: the naming model (see
+[The naming model](#the-naming-model)) names each new release, and the row shows
+that name, as `version (base code)`, before you download it. The download then
+uses it, so the name you see is the name the file gets.
+
+- A new release keeps the creator and title of your newest file of that model,
+  when that file's name reads `creator - title - …`. The AI decides only the
+  version, and the code of a base the code table doesn't know yet. Without such a
+  file, the AI names it whole, as a download used to.
+- One AI call per model names all its new releases. Releases you are not
+  interested in are not named.
+- The names are kept per release in `release_names.json` in the data folder, and
+  survive reloads, restarts and later checks. A later check names only the
+  releases that have no name yet. When a base gets its code later (another
+  download, or **Base codes** in the Rename view), the row and the download both
+  take that code.
+- The button reads `Naming 3 of 25`. A pause holds between two models.
+  **Stop** ends only the naming: the check still completes, its results stand,
+  and the names made so far are kept. A naming model that fails ends the naming,
+  and its error shows when the check ends.
+- The naming reuses what the check fetched from Civitai. A model you have only in
+  the archive, after a check that didn't look at the archive, is fetched once,
+  when it has a release with no name.
+- The first check names every new release at once, which can take several
+  minutes. A download clicked meanwhile waits, as it waits for any job.
+- A release the AI can't name, or every release when no naming model is set,
+  shows Civitai's version name and base, and its download behaves as before.
 
 `Version` means a specific Civitai release.
 `New` uses Civitai release dates: `publishedAt` first, then `createdAt` when `publishedAt` is missing.
@@ -640,9 +770,12 @@ applied inside them.
 
 ### 9. Hidden updates
 
-- Use `Hide` on a remote version row if you do not want to download that version.
-- Hidden versions stay hidden across future checks.
-- Enable `Show hidden` to review them later; **Unhide** brings one back.
+- Use **Not interested** on a new release's row if you do not want to download
+  that version. The row leaves the card, and the card leaves **Updates** when it
+  has no other new release.
+- Those releases stay hidden across future checks, and the check doesn't name them.
+- Enable `Show hidden` in **Filter** to review them later: they show as
+  `Not interested`, and **Show again** brings one back.
 
 ### 10. Check with archive
 
@@ -659,24 +792,29 @@ looks up each archived model on Civitai, at the same pace (one lookup per model,
 Stop work as for any job. A plain **Check for Updates** does not look at the
 archive.
 
-- It only reads. The `.civitai.info` files in the archive give each model and
-  version id; nothing there is hashed, written, renamed or deleted. A model file
-  with no info file is skipped and counted.
+- The check only reads. The `.civitai.info` files in the archive give each model
+  and version id; nothing there is hashed, written, renamed or deleted. A model
+  file with no info file is skipped and counted. The archive is written to only
+  by **Archive**, **Unarchive** and **Delete**, on your click (see
+  [The buttons of a row](#the-buttons-of-a-row)).
 - A version you have in the archive is never offered as new: with v2 archived
   and v1 on this drive, v2 is not an update. A model on this drive is checked as
   usual, never as archived.
-- A new version of an archived model shows in **Updates** marked **Archived**,
-  with **Download** and **Hide**, and no **Replace**. **Download** puts the file on
-  this drive, in the folder for that model type and the same subfolder as in the
-  archive when there is one, else the type's folder.
+- A new version of an archived model shows in **Updates**, beside its archived
+  row (`Archived · date · on Z:`, with **Delete** and **Unarchive**), with
+  **Download** and **Not interested**. **Download** puts the file on this drive,
+  in the folder for that model type and the same subfolder as in the archive
+  when there is one, else the type's folder.
 - The same Civitai version on both drives is listed in **Issues** as
-  **Duplicate**, with the archive file's name. An info file on this drive whose
-  model is in the archive is listed as **Info only**. Removing them is up to you.
+  **Duplicate**, with the archive file's name; **Delete** on either row removes
+  that copy. An info file on this drive whose model is in the archive is listed
+  as **Info only**. Removing it is up to you.
 - Archived models Civitai removed or doesn't know never appear in **Issues**.
 - The results are kept apart, in `archive_check.json` in the data folder, so a
   plain check keeps the archived rows. A row goes when its version is downloaded
-  to this drive or hidden. The ⓘ says when the archive was last checked and how
-  many archived models have a new version in **Updates**.
+  to this drive or hidden. A row you deleted says `Deleted` until the next
+  check, of either kind, which drops it. The ⓘ says when the archive was last
+  checked and how many archived models have a new version in **Updates**.
 - The archive folder can't be a model folder, lie inside one or hold one: such
   a folder is not saved.
 - If the archive folder can't be reached (an unplugged drive), holds no folder
@@ -747,6 +885,10 @@ set, the Rename view offers **Download naming model (9.75 GB)**, which fetches
 Comfy-Org's `qwen3.5_9b_int8_convrot.safetensors` into your first
 `text_encoders` folder. If that file is already in one of those folders, it is
 chosen instead of downloaded again.
+
+The same model names the new releases at the end of a check (see
+[Names for new releases](#names-for-new-releases)) and a release downloaded
+without a name.
 
 The renamer's work goes through ComfyUI's queue like any other prompt, so it
 takes turns with your own jobs and shows up in the queue history. A ComfyUI
@@ -850,8 +992,10 @@ Under **Settings → Warp Studio** (the groups that start with "Civitai"):
 - **Path sources** — ComfyUI's own folders, `extra_model_paths.yaml`, and
   custom roots per model type (checkpoint, LoRA, VAE, UNet, embedding).
 - **Archive Folder** — one absolute folder of models you moved elsewhere, for
-  **Check with archive** (see [Check with archive](#10-check-with-archive)). It
-  must exist and not be a whole drive. Empty by default. Only read.
+  **Check with archive** (see [Check with archive](#10-check-with-archive)) and
+  for **Archive** and **Unarchive** on the cards. It must exist and not be a
+  whole drive. Empty by default. The check only reads it; it is written to only
+  when you click **Archive**, **Unarchive** or **Delete** on one of its rows.
 - **Naming model** — the text encoder the renamer runs. See
   [The naming model](#the-naming-model).
 
@@ -1555,7 +1699,7 @@ The archive pass only reads the archive's `.civitai.info` files. Its items are
 saved in `archive_check.json` in the data folder, never in `last_check.json`, and
 a check without `includeArchive` keeps them. The job's `summary` then carries
 `archive` (when the archive was last checked, with its counts; `withUpdates` is
-the archived-only models with a new version Updates shows, after Hide). When the
+the archived-only models with a new version Updates shows, after **Not interested**). When the
 folder can't be reached, holds no folder named like a model folder, or overlaps a
 model folder, it also carries `archiveError` and the saved results stay. A
 stopped archive pass saves nothing.
@@ -1568,6 +1712,13 @@ seeds for deleted files are dropped, and new files with a usable
 last check is not offered as new. When the job finishes, the items of the checked model types are replaced and the items of
 any other type are carried over, then the whole set is saved as the new cache.
 
+After the results are saved, a check that was not stopped names the new
+releases that have no name yet, when a naming model can run: the job's `phase`
+is `naming` meanwhile, and `progress` and `total` count releases. Stop then ends
+only this phase, and the job still ends `completed`. The summary carries
+`naming` (`{named, total}`) and, when the naming model failed, `namingError`. The
+names are kept in `release_names.json` in the data folder.
+
 #### `GET /warp-studio/updater/jobs/active`
 
 Returns `job` (the job record without items) for the running, queued, or
@@ -1578,6 +1729,7 @@ paused job, or `null`.
 Returns job state:
 
 - `status`: `queued|running|paused|completed|failed|cancelled`
+- `phase`: `naming` while a check names new releases, else empty
 - `progress`, `total`, `message`
 - `summary`
 - `itemCount`
@@ -1626,6 +1778,18 @@ Each item is one model and carries `groupPrimary`, `groupSecondary`,
 - `isProvisional`: the card still comes from the previous check's results
   while a check runs
 - `issueCount`: how many of its local versions are `error` or `not_found`
+- `title`, `creator`: what the card shows, from `ownName` (the `creator`,
+  `title` and `version` of the user's newest file whose name follows the scheme)
+  or else Civitai's; the name sorts use `title`
+- `modelStats`: Civitai's numbers for the model
+- `versionOrder`: the rows in the card's order, as `[list, index]` pairs
+
+Each new or hidden version carries `rowName` (the stored AI name as `version
+(base)`) and `fileStem` (the whole name its file will get), both empty when the
+release has no name yet. Each
+local version carries `rowName` (its file name's `version (base)` part, else
+its stem), `fileName` and `moveKey`, the key its Archive or Unarchive is queued
+under.
 
 Each new or hidden version carries `paid`: `permanent` (downloading costs Buzz,
 with no free date), `early` (early access, free from `paidUntil`, which is empty
@@ -1719,21 +1883,23 @@ POST /warp-studio/updater/jobs/download-naming-model
 - `rename/reveal` and `reveal` show a file in its folder; `local-preview` returns a local preview image to the panel.
 - `jobs/download-naming-model` downloads the default naming model into the first `text_encoders` folder, unless it is already in one.
 
-#### Downloads and Delete
+#### Downloads, moves and Delete
 
 ```
 GET  /warp-studio/updater/downloads
 POST /warp-studio/updater/downloads
+POST /warp-studio/updater/moves
 POST /warp-studio/updater/downloads/{request_id}/stop
 POST /warp-studio/updater/delete-model
 POST /warp-studio/updater/delete-file
 ```
 
-- `GET downloads` returns `{jobId, requests, canTrash}`: the running download job's id (or `null`) and every request with its state (`waiting`, `downloading`, `done`, `stopped` or `error`), progress and message. A reloaded panel reads it to paint its cards.
-- `POST downloads` takes `{source: "updates", jobId, modelId, versionId, modelPath, replace}` for a release in a check job's results, or `{source: "gallery", name}` for a LoRA that is not on this drive. It answers `{request, jobId}`. A release in early access, a file not in the results, or a second Replace of the same file is refused. A request made while another kind of job runs is not refused: it waits (its record in `GET downloads` carries `waitingFor`, the job's type) and starts when that job ends. Only a rename that was cut off and still needs recovering answers HTTP 409.
+- `GET downloads` returns `{jobId, requests, canTrash}`: the running download job's id (or `null`) and every request with its state (`waiting`, `downloading`, `done`, `stopped` or `error`), progress and message, and its `kind` (`download` or `move`). A reloaded panel reads it to paint its cards.
+- `POST downloads` takes `{source: "updates", jobId, modelId, versionId, modelPath, replace}` for a release in a check job's results, or `{source: "gallery", name}` for a LoRA that is not on this drive. It answers `{request, jobId}`. A download from Updates takes the name the check stored for the release, when there is one. A release in early access, a file not in the results, or a second Replace of the same file is refused. The panel no longer sends `replace`; the server still honours it. A request made while another kind of job runs is not refused: it waits (its record in `GET downloads` carries `waitingFor`, the job's type) and starts when that job ends. Only a rename that was cut off and still needs recovering answers HTTP 409.
+- `POST moves` takes `{jobId, path, to}`: the `modelPath` of a version row in that check job's results, and `to` is `archive` (Archive, from this drive) or `drive` (Unarchive). The move is queued with the downloads, under the row's `moveKey`, and answers `{request, jobId}` as `POST downloads` does. It is refused, with the reason, for a path the job doesn't list or a file that is gone (404), without `send2trash`, or without an archive folder that is set, reachable and clear of the model folders (409), for a row on the wrong side, an info file alone, a file Civitai did not identify or one in no model folder (400), when a file of that name is already on the other side or the file is being moved (409), and while a rename that was cut off needs recovering (409). A missing `jobId`, `path` or `to` answers 400.
 - `POST downloads/{request_id}/stop` cancels a waiting request or stops the running one. `404` for an unknown id.
 - `POST delete-model` takes `{name, kind}`: `name` is a model's `id` from the index, and `kind` is one of `loras` (the default), `embeddings`, `checkpoints` or `diffusion_models`; any other `kind` answers 400. It sends the weights and sidecars to the Recycle Bin and answers `{removed, warnings}`. It is refused (409) without `send2trash`, while another kind of job runs, or while that file is waiting to be replaced, and answers 404 when the LoRA is gone.
-- `POST delete-file` takes `{jobId, path}`: the `modelPath` of a version row in that check job's results (an Updates or Issues card). It deletes only a file the job lists, the same way as `delete-model`, and answers `{removed, warnings}`. A path the job doesn't list, or a row with only an info file, answers 404. An archived row answers 409 (the archive is never changed), as do the `delete-model` refusals. A missing `jobId` or `path` answers 400.
+- `POST delete-file` takes `{jobId, path}`: the `modelPath` of a version row in that check job's results (an Updates or Issues card). It deletes only a file the job lists, the same way as `delete-model`, and answers `{removed, warnings}`. A path the job doesn't list, or a row with only an info file, answers 404. An archived row's file goes to the archive drive's recycle bin, and only from inside the archive folder set now: a row outside it, or any archived row while no archive folder is set, answers 409 (`That file isn't in the archive folder set now, so it is left alone.`), as does an archive folder that can't be reached, a file being moved, and the `delete-model` refusals. A missing `jobId` or `path` answers 400.
 
 ---
 
@@ -1955,6 +2121,9 @@ The panel has two layers: a backend service (`comfy_updater/`) and a frontend si
 - `sidecar.py`: sidecar file read/write helpers and corrupt-file quarantine
 - `config_store.py`: persistent settings in `user/warp-studio/updater/config.json`
 - `archived_updates.py`: persistent list of hidden releases in `user/warp-studio/updater/archived_updates.json`
+- `naming_phase.py`: the check's last phase, which names new releases with the naming model, one call per model
+- `release_names.py`: the names given to releases, per version id, in `user/warp-studio/updater/release_names.json`
+- `model_moves.py`: Archive and Unarchive, a version's files copied, checked and only then sent to the Recycle Bin
 - `base_models.py`: rolls Civitai base-model strings up into families for grouping
 - `constants.py`: API URLs, supported types and extensions, sidecar suffixes, plugin version
 - `node_info.py`: the status node. ComfyUI registers it from the legacy mappings; the V3 `comfy_entrypoint` is only a fallback that ComfyUI does not reach while those mappings exist
@@ -1970,6 +2139,10 @@ The panel has two layers: a backend service (`comfy_updater/`) and a frontend si
 - reconnects to a running job after a page reload, and falls back to the
   on-disk cache when the server forgets a job (for example after a restart)
 
+The Updates and Issues card itself (its rows, its line and its buttons) is built
+by `web/updates_card.js`, which has no side effects; `civitai_updater.js` wires
+in the selection, the pictures and the clicks.
+
 #### Data flow
 
 1. UI starts scan/check job via backend route.
@@ -1980,6 +2153,8 @@ The panel has two layers: a backend service (`comfy_updater/`) and a frontend si
 6. Job output is polled by UI and rendered as result cards.
 7. A finished check is written to `user/warp-studio/updater/last_check.json`; a check
    limited to some model types replaces only those types in the file.
+8. The check then names its new releases that have no name yet and stores the
+   names, which the cards show and the downloads use.
 
 #### Design constraints
 

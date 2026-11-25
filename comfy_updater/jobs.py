@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
@@ -8,8 +10,15 @@ import time
 import uuid
 
 from .base_models import UNKNOWN_FAMILY, base_family, family_sort_key
-from .constants import INFO_SIDECAR_SUFFIX, MODEL_PAGE_BASE_URL, SUPPORTED_MODEL_TYPES
+from .constants import (
+    INFO_SIDECAR_SUFFIX,
+    MODEL_PAGE_BASE_URL,
+    SUPPORTED_MODEL_EXTENSIONS,
+    SUPPORTED_MODEL_TYPES,
+)
+from .naming_scheme import THREE_PART_TYPES, name_tail, own_name
 
+NAMING_PHASE = "naming"
 _MAX_FINISHED_JOBS = 5
 # The panel stays bound to the newest job of these types, so pruning never drops it.
 _KEEP_NEWEST_TYPES = ("check-updates", "rename-dry-run")
@@ -43,6 +52,8 @@ class JobRecord:
     seededPaths: set = field(default_factory=set)
     # finishedAt of a job brought back from disk after a restart, else None.
     restoredFrom: str | None = None
+    # What a running check is doing besides its main pass: "naming" while the AI names new releases.
+    phase: str = ""
 
     def as_dict(self, include_items: bool = True) -> dict:
         payload = {
@@ -54,6 +65,7 @@ class JobRecord:
             "progress": self.progress,
             "total": self.total,
             "message": self.message,
+            "phase": self.phase,
             "summary": self.summary,
             "itemCount": len(self.items),
             "errors": self.errors,
@@ -64,11 +76,12 @@ class JobRecord:
 
 
 class JobManager:
-    def __init__(self, archive_store=None, config_store=None) -> None:
+    def __init__(self, archive_store=None, config_store=None, release_names=None) -> None:
         self._jobs: dict[str, JobRecord] = {}
         self._lock = threading.Lock()
         self.archive_store = archive_store
         self.config_store = config_store
+        self.release_names = release_names
         self._finish_listeners: list = []
         self._reserved: str | None = None
 
@@ -219,6 +232,7 @@ class JobManager:
             archived_versions=self._archived_snapshot(),
             provisional=provisional,
             downloaded_after=_parse_iso(finished_at or ""),
+            names=self.release_names.labels() if self.release_names else None,
         )
 
         grouped = all_groups
@@ -407,10 +421,27 @@ class JobManager:
             job.message = "Resumed"
             return job
 
+    def set_phase(self, job_id: str, phase: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.phase = phase
+
+    def naming_cards(self, items: list[dict]) -> list[dict]:
+        """The check's cards as the panel groups them: hidden releases are not in ``newVersions``."""
+        return _group_items_by_model(items, archived_versions=self._archived_snapshot())
+
     def cancel(self, job_id: str) -> JobRecord | None:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.status in ("completed", "failed", "cancelled"):
+                return job
+            if job.phase == NAMING_PHASE and job.control:
+                # Stop ends only the naming: the check's results are done and stay.
+                job.control.stop_phase()
+                if job.status == "paused":
+                    job.status = "running"
+                job.message = "Stopping the naming"
                 return job
             if job.control:
                 job.control.cancel()
@@ -512,7 +543,7 @@ class JobManager:
     @staticmethod
     def _publish_completed_locked(job: JobRecord) -> None:
         job.status = "completed"
-        if not job.message or job.message == "Stopping":
+        if not job.message or job.message.startswith("Stopping"):
             # A stop that came after the runner returned changes nothing: it completed.
             job.message = "Completed"
 
@@ -708,6 +739,7 @@ def _group_items_by_model(
     archived_versions: dict[str, set[str]] | None = None,
     provisional: bool = False,
     downloaded_after: datetime | None = None,
+    names: dict | None = None,
 ) -> list[dict]:
     groups: dict[str, list[dict]] = {}
     ungrouped: list[dict] = []
@@ -730,7 +762,7 @@ def _group_items_by_model(
     for model_id, members in groups.items():
         result.append(
             _build_group(
-                model_id, members, archived_versions.get(model_id, set()), provisional, downloaded_after
+                model_id, members, archived_versions.get(model_id, set()), provisional, downloaded_after, names
             )
         )
 
@@ -759,7 +791,9 @@ def _build_group(
     archived_ids: set[str],
     provisional: bool,
     downloaded_after: datetime | None = None,
+    names: dict | None = None,
 ) -> dict:
+    names = names or {}
     representative = members[0]
     creator_name = ""
     model_url = ""
@@ -798,8 +832,14 @@ def _build_group(
                     "error": member.get("error", ""),
                     "creatorName": member.get("creatorName", ""),
                     "creatorStatus": member.get("creatorStatus", ""),
-                    "downloaded": not member.get("deleted") and _added_after(member, downloaded_after),
+                    "downloaded": (
+                        not member.get("deleted")
+                        and not member.get("movedAt")
+                        and _added_after(member, downloaded_after)
+                    ),
                     "deleted": bool(member.get("deleted")),
+                    "moved": bool(member.get("moved")),
+                    **_row_names(member),
                 }
             )
         # A deleted file is not held any more: its release can be new again.
@@ -831,17 +871,28 @@ def _build_group(
     archived_names: dict[str, str] = {}
     for local_version in local_versions:
         version_id = local_version.get("versionId", "")
-        if local_version.get("archived") and version_id and version_id not in archived_names:
+        if (
+            local_version.get("archived")
+            and not local_version.get("deleted")
+            and version_id
+            and version_id not in archived_names
+        ):
             archived_names[version_id] = _filename(
                 local_version.get("filePath") or local_version.get("modelPath") or ""
             )
     for local_version in local_versions:
         version_id = local_version.get("versionId", "")
+        # A row moved to the archive is that archived file, not a second copy of it.
+        if local_version.get("moved"):
+            continue
         if not local_version.get("archived") and version_id in archived_names:
             local_version["alsoArchived"] = archived_names[version_id]
             if local_version.get("metadataOnly"):
                 local_version["infoOnly"] = True
     _mark_deleted_issues(local_versions)
+    # A moved row is gone from its card, but an Issues card it made stays listed.
+    deleted_issues = sum(1 for version in local_versions if version.get("issueWas"))
+    local_versions = [version for version in local_versions if not version.get("moved")]
     archived_only = bool(local_versions) and all(version.get("archived") for version in local_versions)
 
     # A local version without a date cannot be compared, and an empty newest
@@ -879,6 +930,10 @@ def _build_group(
 
     new_versions = [version for version in candidates if version.get("versionId", "") not in archived_ids]
     hidden_versions = [version for version in candidates if version.get("versionId", "") in archived_ids]
+    for version in new_versions + hidden_versions:
+        label = names.get(version.get("versionId", "")) or {}
+        version["fileStem"] = label.get("stem", "")
+        version["rowName"] = label.get("label", "")
     primary_visible = new_versions[0] if new_versions else {}
     primary_any = primary_visible or (hidden_versions[0] if hidden_versions else {})
     local_preview = next((version for version in local_versions if version.get("previewUrl")), {})
@@ -915,12 +970,16 @@ def _build_group(
         "modelType": model_type,
         "modelName": model_name,
         "creatorName": creator_name,
+        **_name_fields(local_versions, model_name, creator_name, model_type),
+        "modelStats": next(
+            (member["modelStats"] for member in members if isinstance(member.get("modelStats"), dict)), {}
+        ),
         "modelUrl": model_url,
         # Only a card still built from the previous check's results is
         # provisional; one whose files were re-checked already is final.
         "isProvisional": provisional and any(member.get("_seeded") for member in members),
         "issueCount": issue_count,
-        "deletedIssues": sum(1 for version in local_versions if version.get("issueWas")),
+        "deletedIssues": deleted_issues,
         "archived": archived_only,
         "hasUpdate": bool(new_versions),
         "hasHiddenUpdates": bool(hidden_versions),
@@ -981,18 +1040,25 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
             "creatorName": item.get("creatorName", ""),
             "creatorStatus": item.get("creatorStatus", ""),
             "deleted": bool(item.get("deleted")),
+            "moved": bool(item.get("moved")),
+            **_row_names(item),
         }
     ]
     _mark_deleted_issues(local_versions)
+    deleted_issues = sum(1 for version in local_versions if version.get("issueWas"))
+    local_versions = [version for version in local_versions if not version.get("moved")]
+    model_name = item.get("modelName", "") or _filename(item.get("modelPath", ""))
     return {
         "modelId": "",
         "modelType": item.get("modelType", ""),
-        "modelName": item.get("modelName", "") or _filename(item.get("modelPath", "")),
+        "modelName": model_name,
         "creatorName": item.get("creatorName", ""),
+        **_name_fields(local_versions, model_name, item.get("creatorName", ""), item.get("modelType", "")),
+        "modelStats": item["modelStats"] if isinstance(item.get("modelStats"), dict) else {},
         "modelUrl": item.get("modelUrl", ""),
         "isProvisional": provisional and bool(item.get("_seeded")),
-        "issueCount": 1 if _is_issue(local_versions[0]) else 0,
-        "deletedIssues": 1 if local_versions[0].get("issueWas") else 0,
+        "issueCount": sum(1 for version in local_versions if _is_issue(version)),
+        "deletedIssues": deleted_issues,
         "archived": False,
         "hasUpdate": False,
         "hasHiddenUpdates": False,
@@ -1001,7 +1067,7 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
         "localVersions": local_versions,
         "newVersions": [],
         "hiddenNewVersions": [],
-        "versionOrder": [["saved", 0]],
+        "versionOrder": card_version_order(local_versions, [], []),
         "latestVersionId": "",
         "latestVersionName": "",
         "latestBaseModel": "",
@@ -1026,11 +1092,11 @@ def _sort_grouped(items: list[dict], sort: str | None) -> list[dict]:
     if not sort or sort not in _VALID_SORTS:
         sort = "name"
     if sort == "name":
-        return sorted(items, key=lambda group: (group.get("modelName") or "").lower())
+        return sorted(items, key=_title_key)
     if sort == "name-desc":
-        return sorted(items, key=lambda group: (group.get("modelName") or "").lower(), reverse=True)
+        return sorted(items, key=_title_key, reverse=True)
     if sort == "type":
-        return sorted(items, key=lambda group: ((group.get("modelType") or ""), (group.get("modelName") or "").lower()))
+        return sorted(items, key=lambda group: ((group.get("modelType") or ""), _title_key(group)))
     if sort == "latest-date":
         return sorted(items, key=lambda group: group.get("sortVersionDate") or "")
     if sort == "latest-date-desc":
@@ -1039,9 +1105,61 @@ def _sort_grouped(items: list[dict], sort: str | None) -> list[dict]:
         # Furthest behind first: the models that drifted the most.
         return sorted(
             items,
-            key=lambda group: (-int(group.get("daysBehind") or 0), (group.get("modelName") or "").lower()),
+            key=lambda group: (-int(group.get("daysBehind") or 0), _title_key(group)),
         )
     return items
+
+
+def _title_key(group: dict) -> str:
+    return (group.get("title") or group.get("modelName") or "").lower()
+
+
+def move_key(path: str) -> str:
+    """A stable key for a file's move, so the panel never sends or shows its path."""
+    digest = hashlib.sha256(os.path.normcase(os.path.normpath(path)).encode("utf-8")).hexdigest()
+    return "move:" + digest[:16]
+
+
+def _stem_of(path: str) -> str:
+    """A file's name without a supported model extension or the info sidecar's."""
+    name = _filename(path)
+    lowered = name.lower()
+    for suffix in (INFO_SIDECAR_SUFFIX, *SUPPORTED_MODEL_EXTENSIONS):
+        if lowered.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _three_parts(model_type: str) -> bool:
+    return str(model_type or "").lower() in THREE_PART_TYPES
+
+
+def _row_names(member: dict) -> dict:
+    """The file name, the row's name and the move key of one local row."""
+    weights = _file_path(member)
+    return {
+        "fileName": _filename(weights),
+        "rowName": name_tail(_stem_of(weights), three_parts=_three_parts(member.get("modelType", ""))),
+        "moveKey": move_key(member.get("modelPath", "")),
+    }
+
+
+def _name_fields(local_versions: list[dict], model_name: str, creator_name: str, model_type: str) -> dict:
+    """The card's title and creator: your own file's names when they parse, else Civitai's.
+
+    A checkpoint's or a UNet's file name counts only with all three parts (``THREE_PART_TYPES``).
+    """
+    stems = [
+        _stem_of(version.get("filePath") or version.get("modelPath") or "")
+        for version in local_versions
+        if not version.get("deleted")
+    ]
+    own = own_name(stems, three_parts=_three_parts(model_type))
+    return {
+        "title": own.title if own else model_name,
+        "creator": own.creator if own else creator_name,
+        "ownName": {"creator": own.creator, "title": own.title, "version": own.version} if own else None,
+    }
 
 
 def _is_issue(version: dict) -> bool:
@@ -1146,6 +1264,15 @@ class JobControl:
         self.job_id = job_id
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
+        self._phase_stop_event = threading.Event()
+
+    def stop_phase(self) -> None:
+        """End the current phase (the naming) only; the job itself goes on to complete."""
+        self._phase_stop_event.set()
+        self._pause_event.clear()
+
+    def phase_stopped(self) -> bool:
+        return self._phase_stop_event.is_set()
 
     def cancel(self) -> None:
         self._cancel_event.set()
