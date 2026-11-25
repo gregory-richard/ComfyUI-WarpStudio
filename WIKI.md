@@ -543,7 +543,10 @@ its picture.
 
 The creator and title are yours. They come from your newest file of the model
 whose name reads `creator - title - …`; without one, from Civitai's model name
-and uploader. The **Name** sorts follow the title the card shows.
+and uploader. A checkpoint or UNet needs all three parts,
+`creator - title - version`: those are often named `model - version (base)`, and
+their rows then show the `version (base)` part. The **Name** sorts follow the
+title the card shows.
 
 Below the picture is one row per version, newest first: the new releases, the
 files on this drive and in the archive, and the files deleted since the check.

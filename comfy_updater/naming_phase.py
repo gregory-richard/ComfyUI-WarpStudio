@@ -16,12 +16,11 @@ from .civitai_client import CivitaiRequestError
 from .comfy_queue import NamingModelError
 from .download_target import ai_stems
 from .model_download import pick_file
+from .naming_scheme import THREE_PART_TYPES
 from .renamer import RENAME_TYPES, _find_version
 
 # A naming model's rejection lists every file ComfyUI has; the summary keeps the start.
 _ERROR_LIMIT = 300
-# These often read "model - version (base)" as creator "model" and title "version".
-_THREE_PART_TYPES = ("checkpoint", "unet")
 
 
 @dataclass
@@ -91,7 +90,7 @@ def _own(card: dict, model_type: str) -> tuple[str, str] | None:
     own = card.get("ownName")
     if not isinstance(own, dict) or not own.get("creator") or not own.get("title"):
         return None
-    if model_type in _THREE_PART_TYPES and not own.get("version"):
+    if model_type in THREE_PART_TYPES and not own.get("version"):
         return None
     return str(own["creator"]), str(own["title"])
 

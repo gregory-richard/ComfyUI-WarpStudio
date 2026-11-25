@@ -16,7 +16,7 @@ from .constants import (
     SUPPORTED_MODEL_EXTENSIONS,
     SUPPORTED_MODEL_TYPES,
 )
-from .naming_scheme import name_tail, own_name
+from .naming_scheme import THREE_PART_TYPES, name_tail, own_name
 
 NAMING_PHASE = "naming"
 _MAX_FINISHED_JOBS = 5
@@ -970,7 +970,7 @@ def _build_group(
         "modelType": model_type,
         "modelName": model_name,
         "creatorName": creator_name,
-        **_name_fields(local_versions, model_name, creator_name),
+        **_name_fields(local_versions, model_name, creator_name, model_type),
         "modelStats": next(
             (member["modelStats"] for member in members if isinstance(member.get("modelStats"), dict)), {}
         ),
@@ -1053,7 +1053,7 @@ def _build_ungrouped_item(item: dict, provisional: bool) -> dict:
         "modelType": item.get("modelType", ""),
         "modelName": model_name,
         "creatorName": item.get("creatorName", ""),
-        **_name_fields(local_versions, model_name, item.get("creatorName", "")),
+        **_name_fields(local_versions, model_name, item.get("creatorName", ""), item.get("modelType", "")),
         "modelStats": item["modelStats"] if isinstance(item.get("modelStats"), dict) else {},
         "modelUrl": item.get("modelUrl", ""),
         "isProvisional": provisional and bool(item.get("_seeded")),
@@ -1130,24 +1130,31 @@ def _stem_of(path: str) -> str:
     return name
 
 
+def _three_parts(model_type: str) -> bool:
+    return str(model_type or "").lower() in THREE_PART_TYPES
+
+
 def _row_names(member: dict) -> dict:
     """The file name, the row's name and the move key of one local row."""
     weights = _file_path(member)
     return {
         "fileName": _filename(weights),
-        "rowName": name_tail(_stem_of(weights)),
+        "rowName": name_tail(_stem_of(weights), three_parts=_three_parts(member.get("modelType", ""))),
         "moveKey": move_key(member.get("modelPath", "")),
     }
 
 
-def _name_fields(local_versions: list[dict], model_name: str, creator_name: str) -> dict:
-    """The card's title and creator: your own file's names when they parse, else Civitai's."""
+def _name_fields(local_versions: list[dict], model_name: str, creator_name: str, model_type: str) -> dict:
+    """The card's title and creator: your own file's names when they parse, else Civitai's.
+
+    A checkpoint's or a UNet's file name counts only with all three parts (``THREE_PART_TYPES``).
+    """
     stems = [
         _stem_of(version.get("filePath") or version.get("modelPath") or "")
         for version in local_versions
         if not version.get("deleted")
     ]
-    own = own_name(stems)
+    own = own_name(stems, three_parts=_three_parts(model_type))
     return {
         "title": own.title if own else model_name,
         "creator": own.creator if own else creator_name,

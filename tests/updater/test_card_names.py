@@ -69,6 +69,34 @@ class CardNameTests(unittest.TestCase):
         card = cards[0]
         self.assertEqual(("maker", "Glow", None), (card["creator"], card["title"], card["ownName"]))
 
+    def test_a_checkpoint_named_model_version_base_keeps_civitais_names(self) -> None:
+        # "model - version (base)" would read as creator "cyberrealistic" and title "v10".
+        for model_type in ("checkpoint", "unet"):
+            with self.subTest(model_type):
+                row = file_item("m1", "cyberrealistic - v10 (sd15)", "2025-01-01T00:00:00Z", modelType=model_type)
+                _, cards = build([row])
+                card = cards[0]
+                self.assertEqual(("maker", "Glow", None), (card["creator"], card["title"], card["ownName"]))
+                self.assertEqual("v10 (sd15)", card["localVersions"][0]["rowName"])
+
+    def test_a_checkpoint_with_all_three_parts_keeps_its_names(self) -> None:
+        items = [
+            file_item("m1", "cyberrealistic - v11 (sd15)", "2025-06-01T00:00:00Z", modelType="checkpoint"),
+            file_item("m1", "moss - glow - v10 (sd15)", "2025-01-01T00:00:00Z", modelType="checkpoint"),
+        ]
+        _, cards = build(items)
+        card = cards[0]
+        self.assertEqual(("moss", "glow"), (card["creator"], card["title"]))
+        self.assertEqual(["v11 (sd15)", "v10 (sd15)"], [v["rowName"] for v in card["localVersions"]])
+
+    def test_the_name_sort_of_checkpoints_follows_civitais_title(self) -> None:
+        first = file_item("m1", "zulu - v1 (sd15)", "2025-01-01T00:00:00Z", modelType="checkpoint")
+        first["modelName"] = "Alpha"
+        second = file_item("m2", "alpha - v1 (sd15)", "2025-01-01T00:00:00Z", modelType="checkpoint")
+        second["modelName"] = "Zeta"
+        page, _ = build([second, first], sort="name")
+        self.assertEqual(["Alpha", "Zeta"], [c["title"] for c in page["items"]])
+
     def test_a_row_shows_its_files_version_and_base(self) -> None:
         items = [
             file_item("m1", "moss - glow - xxl (moss)", "2025-06-01T00:00:00Z"),

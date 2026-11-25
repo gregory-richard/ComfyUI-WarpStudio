@@ -101,6 +101,18 @@ class NamingSchemeTests(unittest.TestCase):
         self.assertEqual("moss - glow", name_tail("moss - glow"))
         self.assertEqual("glowV2", name_tail("glowV2"))
 
+    def test_a_checkpoints_two_part_name_is_model_and_version(self) -> None:
+        # Checkpoints and UNets are often named "model - version (base)".
+        self.assertEqual("v10 (sd15)", name_tail("cyberrealistic - v10 (sd15)", three_parts=True))
+        self.assertEqual("v10", name_tail("cyberrealistic - v10", three_parts=True))
+        self.assertEqual("xxl (moss)", name_tail("moss - glow - xxl (moss)", three_parts=True))
+        self.assertEqual("glowV2", name_tail("glowV2", three_parts=True))
+        self.assertIsNone(own_name(["cyberrealistic - v10 (sd15)"], three_parts=True))
+        self.assertEqual(
+            NameParts("moss", "glow", "v1", "", "ill"),
+            own_name(["cyberrealistic - v10 (sd15)", "moss - glow - v1 (ill)"], three_parts=True),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
