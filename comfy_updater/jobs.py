@@ -18,6 +18,7 @@ from .constants import (
 )
 from .naming_scheme import name_tail, own_name
 
+NAMING_PHASE = "naming"
 _MAX_FINISHED_JOBS = 5
 # The panel stays bound to the newest job of these types, so pruning never drops it.
 _KEEP_NEWEST_TYPES = ("check-updates", "rename-dry-run")
@@ -51,6 +52,8 @@ class JobRecord:
     seededPaths: set = field(default_factory=set)
     # finishedAt of a job brought back from disk after a restart, else None.
     restoredFrom: str | None = None
+    # What a running check is doing besides its main pass: "naming" while the AI names new releases.
+    phase: str = ""
 
     def as_dict(self, include_items: bool = True) -> dict:
         payload = {
@@ -62,6 +65,7 @@ class JobRecord:
             "progress": self.progress,
             "total": self.total,
             "message": self.message,
+            "phase": self.phase,
             "summary": self.summary,
             "itemCount": len(self.items),
             "errors": self.errors,
@@ -417,10 +421,27 @@ class JobManager:
             job.message = "Resumed"
             return job
 
+    def set_phase(self, job_id: str, phase: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.phase = phase
+
+    def naming_cards(self, items: list[dict]) -> list[dict]:
+        """The check's cards as the panel groups them: hidden releases are not in ``newVersions``."""
+        return _group_items_by_model(items, archived_versions=self._archived_snapshot())
+
     def cancel(self, job_id: str) -> JobRecord | None:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.status in ("completed", "failed", "cancelled"):
+                return job
+            if job.phase == NAMING_PHASE and job.control:
+                # Stop ends only the naming: the check's results are done and stay.
+                job.control.stop_phase()
+                if job.status == "paused":
+                    job.status = "running"
+                job.message = "Stopping the naming"
                 return job
             if job.control:
                 job.control.cancel()
@@ -522,7 +543,7 @@ class JobManager:
     @staticmethod
     def _publish_completed_locked(job: JobRecord) -> None:
         job.status = "completed"
-        if not job.message or job.message == "Stopping":
+        if not job.message or job.message.startswith("Stopping"):
             # A stop that came after the runner returned changes nothing: it completed.
             job.message = "Completed"
 
@@ -1233,6 +1254,15 @@ class JobControl:
         self.job_id = job_id
         self._cancel_event = threading.Event()
         self._pause_event = threading.Event()
+        self._phase_stop_event = threading.Event()
+
+    def stop_phase(self) -> None:
+        """End the current phase (the naming) only; the job itself goes on to complete."""
+        self._phase_stop_event.set()
+        self._pause_event.clear()
+
+    def phase_stopped(self) -> bool:
+        return self._phase_stop_event.is_set()
 
     def cancel(self) -> None:
         self._cancel_event.set()
