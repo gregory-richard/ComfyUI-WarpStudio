@@ -692,6 +692,20 @@ test("updatesCardHtml: falls back to the old fields and keeps the stats row with
   assert.match(out, /class="cu-g-likes"><\/span>/);
 });
 
+test("updatesCardHtml: a model without Civitai's numbers shows no stats", () => {
+  // The server sends {} for a card none of whose files has them (most Issues cards).
+  const avatarOnly = { creatorImage: "https://image.civitai.com/a/b/width=96/me.jpeg" };
+  for (const modelStats of [{}, avatarOnly, { downloads: null }]) {
+    const out = card(makeItem({ modelStats }));
+    assert.doesNotMatch(out, /undefined|class="cu-g-stat"/, JSON.stringify(modelStats));
+    assert.match(out, /class="cu-g-likes"><\/span>/);
+  }
+  const some = card(makeItem({ modelStats: { downloads: 5 } }));
+  assert.match(some, /title="5 downloads"/);
+  assert.match(some, /title="0 likes"/);
+  assert.doesNotMatch(some, /undefined/);
+});
+
 test("updatesCardHtml: every text carries its full text in its title", () => {
   const out = card();
   for (const cls of [

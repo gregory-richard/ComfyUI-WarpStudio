@@ -423,7 +423,19 @@ function thumbHtml(row, esc) {
   return `<span class="cu-u-tn"><img src="${esc(sizedImage(url, THUMB_WIDTH))}" alt="" loading="lazy" decoding="async"></span>`;
 }
 
-function statsHtml(stats, esc) {
+const STAT_KEYS = ["downloads", "comments", "tipped", "likes"];
+
+/* Civitai's numbers of a model, or null: the server sends {} for a model it has none for. */
+function cardStats(stats) {
+  const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
+  if (!stats || typeof stats !== "object" || !STAT_KEYS.some((key) => isNumber(stats[key]))) {
+    return null;
+  }
+  return Object.fromEntries(STAT_KEYS.map((key) => [key, isNumber(stats[key]) ? stats[key] : 0]));
+}
+
+function statsHtml(raw, esc) {
+  const stats = cardStats(raw);
   if (!stats) return { numbers: "", likes: `<span class="cu-g-likes"></span>` };
   const stat = (icon, noun, value) =>
     `<span class="cu-g-stat" title="${esc(`${value} ${noun}`)}"><i class="pi pi-${icon}" aria-hidden="true"></i>${esc(formatCount(value))}</span>`;
