@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, Optional
 
 SEPARATOR = " - "
 FORBIDDEN_CHARS = set('<>:"/\\|?*')
@@ -61,6 +61,26 @@ def parse_stem(stem: str) -> NameParts:
     title = pieces[1] if len(pieces) > 1 else ""
     version = " ".join(p for p in pieces[2:] if p)
     return NameParts(creator, title, version, "", base)
+
+
+def own_name(stems: Iterable[str]) -> Optional[NameParts]:
+    """The parts of the first stem that has both a creator and a title, else None."""
+    for stem in stems:
+        parts = parse_stem(stem)
+        if parts.creator and parts.title:
+            return parts
+    return None
+
+
+def name_tail(stem: str) -> str:
+    """The version and base of a named stem, e.g. ``xxl (moss)``; the stem itself otherwise."""
+    parts = parse_stem(stem)
+    if not (parts.creator and parts.title):
+        return stem
+    tail = parts.version
+    if parts.base:
+        tail += " (%s)" % parts.base
+    return tail.strip() or stem
 
 
 def _has_forbidden(text: str) -> bool:
