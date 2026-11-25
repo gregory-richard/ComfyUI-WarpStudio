@@ -302,8 +302,9 @@ runs as usual, then looks up every archived model too: about 7 minutes more for
 version is out shows in **Updates** with its archived row, and **Download** puts
 the new version on this drive. A version you have in the archive is never
 offered as new. The same version on both drives is listed in **Issues** as
-**Duplicate**, and an info file left on this drive for a model in the archive as
-**Info only**; **Delete** on either row removes that copy. The results are kept
+**Duplicate**, and **Delete** on either row removes that copy. An info file left
+on this drive for a model in the archive is listed as **Info only**; removing it
+is up to you. The results are kept
 until the next **Check with archive**, so a plain check doesn't drop them, and
 the ⓘ says when the archive was last checked. The archive folder can't be a
 model folder, or lie inside or hold one.

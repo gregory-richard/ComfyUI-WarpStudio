@@ -806,9 +806,9 @@ archive.
   in the folder for that model type and the same subfolder as in the archive
   when there is one, else the type's folder.
 - The same Civitai version on both drives is listed in **Issues** as
-  **Duplicate**, with the archive file's name. An info file on this drive whose
-  model is in the archive is listed as **Info only**. **Delete** on a row removes
-  that copy.
+  **Duplicate**, with the archive file's name; **Delete** on either row removes
+  that copy. An info file on this drive whose model is in the archive is listed
+  as **Info only**. Removing it is up to you.
 - Archived models Civitai removed or doesn't know never appear in **Issues**.
 - The results are kept apart, in `archive_check.json` in the data folder, so a
   plain check keeps the archived rows. A row goes when its version is downloaded
