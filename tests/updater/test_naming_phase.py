@@ -211,6 +211,23 @@ class RunNamingTests(unittest.TestCase):
         self.assertEqual(1, len(generator.calls))
         self.assertEqual("", result["error"])
 
+    def test_a_stopped_phase_reports_no_count_after_the_stop(self) -> None:
+        # The job's "Stopping the naming" then stays, and the job ends "Completed".
+        generator = FakeGenerator({"Glow": GLOW_ANSWER, "Fern": FERN_ANSWER})
+        real_generate = generator.generate
+        reported_at_stop: list = []
+
+        def generate(messages, max_lengths=None):
+            answers = real_generate(messages, max_lengths)
+            self.control.stopped = True
+            reported_at_stop.append(len(self.progress))
+            return answers
+
+        generator.generate = generate
+        self.run_naming(generator)
+        self.assertEqual([1], reported_at_stop)
+        self.assertEqual([(0, 3, "Naming 0 of 3")], self.progress)
+
     def test_a_pause_holds_the_naming_before_each_model(self) -> None:
         generator = FakeGenerator({"Glow": GLOW_ANSWER, "Fern": FERN_ANSWER})
         held_after: list = []

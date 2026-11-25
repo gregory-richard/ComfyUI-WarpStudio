@@ -676,11 +676,40 @@ class CheckNamingPhaseTests(_ArchiveRoutesCase):
         routes_module.naming_generator.side_effect = stopped_while_looking
         job = self.check()
         self.assertEqual([NAMING_PHASE, True], looked)
-        self.assertEqual("completed", job.status)
+        self.assertEqual(("completed", "Completed"), (job.status, job.message))
         self.assertFalse(job.control.is_cancelled())
         self.assertEqual([], self.generator.calls)
         self.assertEqual("", job.phase)
         self.assertTrue((self.data_dir / "last_check.json").exists())
+
+    def test_a_naming_stopped_during_a_models_call_ends_completed(self) -> None:
+        # Not with the count it had reached: the check is done, as any completed check.
+        other = str(self.d_lora / "other.safetensors")
+        second = self.d_item(
+            modelPath=other,
+            filePath=other,
+            modelId="301",
+            remoteVersions=[
+                _remote("302", "2026-02-01T00:00:00.000Z"),
+                _remote("301", "2026-01-01T00:00:00.000Z"),
+            ],
+            localVersionId="301",
+            hasUpdate=True,
+        )
+        self.service.d_items.append(second)
+        real_generate = self.generator.generate
+        messages: list = []
+
+        def generate(messages_in, max_lengths=None):
+            job = self.jobs.get_active()
+            messages.append(self.jobs.cancel(job.id).message)
+            return real_generate(messages_in, max_lengths)
+
+        self.generator.generate = generate
+        job = self.check()
+        self.assertEqual(["Stopping the naming"], messages)
+        self.assertEqual(("completed", "Completed"), (job.status, job.message))
+        self.assertEqual(1, len(self.generator.calls))
 
     def test_the_phase_ends_when_no_naming_model_is_found(self) -> None:
         looked: list = []

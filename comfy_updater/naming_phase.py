@@ -150,6 +150,9 @@ def run_naming(
     named = 0
     error = ""
     for task in tasks:
+        # A stopped phase reports no count: the job says it is stopping until it ends.
+        if control.is_cancelled():
+            break
         progress(done, total, f"Naming {done} of {total}")
         # A pause holds between models, as the check's own pause holds between files.
         control.wait_if_paused()
@@ -175,7 +178,8 @@ def run_naming(
                     codes.learn(release.new_base, release.parts.base)
             named += len(names)
         done += len(task.version_ids)
-    progress(done, total, f"Naming {done} of {total}")
+    if not control.is_cancelled():
+        progress(done, total, f"Naming {done} of {total}")
     return {"named": named, "total": total, "error": error}
 
 
