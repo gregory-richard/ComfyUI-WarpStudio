@@ -60,7 +60,7 @@ SOURCE_HASH_MISMATCH_ERROR = "{name} doesn't match the SHA-256 in its info file,
 BOTH_COPIES_WARNING = "Both copies are kept: {name} could not go to the Recycle Bin ({reason})."
 SIDECAR_COPY_WARNING = "Both copies are kept: {name} could not be copied ({reason})."
 ARCHIVE_CHANGED_ERROR = "The archive folder changed since this move was asked for. Try it again."
-# The routes say these in the same words (routes.py keeps its own copies for its other actions).
+# The routes say these for their other actions too, and import them from here.
 FILE_GONE_ERROR = "That file is not there any more."
 ARCHIVE_UNREACHABLE_ERROR = "The archive folder can't be reached."
 

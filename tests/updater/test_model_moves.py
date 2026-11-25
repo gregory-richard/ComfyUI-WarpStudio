@@ -343,8 +343,9 @@ class TargetTests(_MoveCase):
 
     def test_the_moves_speak_the_routes_words(self) -> None:
         self.assertEqual(("archive", "unarchive"), MOVE_SOURCES)
-        self.assertEqual(routes_module.FILE_GONE_ERROR, model_moves.FILE_GONE_ERROR)
-        self.assertEqual(
+        # One definition, so the two can't drift apart.
+        self.assertIs(routes_module.FILE_GONE_ERROR, model_moves.FILE_GONE_ERROR)
+        self.assertIs(
             routes_module.ARCHIVE_UNREACHABLE_ERROR, model_moves.ARCHIVE_UNREACHABLE_ERROR
         )
 

@@ -42,7 +42,7 @@ from .constants import (
     USER_AGENT,
 )
 from .download_queue import MODEL_DOWNLOAD_JOB, DownloadQueue, DownloadRequest, run_queue
-from .jobs import MATURE_MODES, NAMING_PHASE, RESULT_MODES, _normalize_cached_item_urls
+from .jobs import MATURE_MODES, NAMING_PHASE, RESULT_MODES, _normalize_cached_item_urls, move_key
 from .model_actions import (
     EARLY_ACCESS_ERROR,
     INFO_GONE_ERROR,
@@ -52,9 +52,9 @@ from .model_actions import (
     release_is_paid,
 )
 from .model_download import DownloadError
-from .jobs import move_key
-from .model_files import stem_files
 from .model_moves import (
+    ARCHIVE_UNREACHABLE_ERROR,
+    FILE_GONE_ERROR,
     INFO_ONLY_MOVE_ERROR,
     MOVE_BUSY_ERROR,
     MOVE_SOURCES,
@@ -79,6 +79,7 @@ from .model_files import (
     lora_roots,
     missing_info,
     resolve_name,
+    stem_files,
 )
 from .naming_ai import SYSTEM_PROMPT
 from .naming_phase import NamingDeps, PhaseControl, naming_tasks, run_naming
@@ -604,7 +605,6 @@ def _normalize_archive_payload(payload: dict) -> tuple[str, list[str]]:
 
 # --- the check and its saved results ---------------------------------------------
 
-ARCHIVE_UNREACHABLE_ERROR = "The archive folder can't be reached."
 ARCHIVE_OVERLAP_ERROR = "The archive folder overlaps a model folder."
 _STAT_KEYS = ("downloads", "likes", "comments", "tipped", "versions")
 _STAT_TEXT_KEYS = ("creatorImage", "category")
@@ -1330,9 +1330,9 @@ def recheck(request: DownloadRequest, *, journal_pending: bool) -> str:
 
 NO_TRASH_DELETE_ERROR = "Delete needs the send2trash package."
 LORA_GONE_ERROR = "That LoRA is not there any more."
-FILE_GONE_ERROR = "That file is not there any more."
 UNLISTED_FILE_ERROR = "That file is not in the check results."
-ARCHIVE_READ_ONLY_ERROR = "Files in the archive are never changed."
+# An archived row Delete refuses: outside the archive folder set now, or none is set.
+ARCHIVE_READ_ONLY_ERROR = "That file isn't in the archive folder set now, so it is left alone."
 REPLACE_BUSY_ERROR = "That file is being replaced. Try again when it's done."
 
 
