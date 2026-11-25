@@ -6135,11 +6135,6 @@ function injectStyles() {
     /* ---- Updates and Issues cards (updates_card.js) ---- */
     ${UPDATES_CARD_CSS}
 
-    /* A sidebar narrower than one 300px card holds one card at its own width. */
-    .cu-results {
-      grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-    }
-
     /* A second-level band head spans the grid like the first-level one. */
     .cu-results > .cu-subgroup-head-wrap {
       grid-column: 1 / -1;
