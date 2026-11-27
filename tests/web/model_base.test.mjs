@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { forget, loras } from "../../web/library.js";
+import { resolveUrl, useApi } from "../../web/api_base.js";
 import {
+  connectedBase,
+  forgetBases,
   describeBase,
   fitsBase,
   fittingFamilies,
@@ -108,4 +112,93 @@ test("normaliseBase folds a Turbo into the base it was distilled from", () => {
   // Only as the last word: anything else is a different name, not a variant.
   assert.equal(normaliseBase("Turbo Diffusion XL"), "Turbo Diffusion XL");
   assert.equal(normaliseBase("Turbo"), null);
+});
+
+test("a failed base lookup falls back to the folder without being remembered", async () => {
+  const realFetch = globalThis.fetch;
+  const node = { id: 1, widgets: [{ name: "ckpt_name", value: "moss/kromoss.safetensors" }] };
+  const reply = (ok, body) => async () => ({ ok, status: ok ? 200 : 503, json: async () => body });
+  try {
+    forgetBases();
+    globalThis.fetch = reply(false, { error: "restarting" });
+    assert.deepEqual(await connectedBase(node), { name: "moss", fromFolder: true });
+
+    // The server is back: the folder guess was not kept, so it is asked again.
+    globalThis.fetch = reply(true, { base_model: "MOSS Image" });
+    assert.deepEqual(await connectedBase(node), { name: "MOSS Image", fromFolder: false });
+
+    // A good answer is kept.
+    globalThis.fetch = reply(false, {});
+    assert.deepEqual(await connectedBase(node), { name: "MOSS Image", fromFolder: false });
+  } finally {
+    globalThis.fetch = realFetch;
+    forgetBases();
+  }
+});
+
+// ComfyUI under a URL prefix: a fake api that adds one, as the real one does.
+const prefixed = (calls) => ({
+  fetchApi: async (path, init) => {
+    calls.push(["fetchApi", path, init]);
+    return {
+      ok: true,
+      json: async () => ({
+        base_model: "SDXL",
+        loras: [{ id: "a", thumbnail: "/warp-studio/lora/thumbnail?name=a" }, { id: "b" }],
+      }),
+    };
+  },
+  fileURL: (path) => `/comfy${path}`,
+});
+
+test("resolveUrl prefixes only root-absolute paths", () => {
+  const fileURL = (path) => `/comfy${path}`;
+  assert.equal(
+    resolveUrl("/warp-studio/lora/thumbnail?name=a", fileURL),
+    "/comfy/warp-studio/lora/thumbnail?name=a"
+  );
+  assert.equal(
+    resolveUrl("https://image.civitai.com/x.jpg", fileURL),
+    "https://image.civitai.com/x.jpg"
+  );
+  assert.equal(resolveUrl("//cdn.example/x.png", fileURL), "//cdn.example/x.png");
+  assert.equal(resolveUrl("data:image/png;base64,AA", fileURL), "data:image/png;base64,AA");
+  assert.equal(resolveUrl("blob:http://h/1", fileURL), "blob:http://h/1");
+  assert.equal(resolveUrl("", fileURL), "");
+  assert.equal(resolveUrl(undefined, fileURL), "");
+  // With no prefix fileURL is the identity, so nothing changes.
+  assert.equal(
+    resolveUrl("/warp-studio/x?y=1", (path) => path),
+    "/warp-studio/x?y=1"
+  );
+});
+
+test("the base lookup goes through the api, so a URL prefix applies", async () => {
+  const calls = [];
+  const node = { id: 1, widgets: [{ name: "ckpt_name", value: "sdxl/a.safetensors" }] };
+  try {
+    forgetBases();
+    useApi(prefixed(calls));
+    assert.deepEqual(await connectedBase(node), { name: "SDXL", fromFolder: false });
+    assert.equal(calls[0][1], "/warp-studio/model/base?name=sdxl%2Fa.safetensors");
+    assert.equal(calls[0][2].headers["X-Civitai-Updater"], "1");
+  } finally {
+    useApi(null);
+    forgetBases();
+  }
+});
+
+test("library thumbnails are given the URL prefix, other entries are untouched", async () => {
+  const calls = [];
+  try {
+    forget();
+    useApi(prefixed(calls));
+    const list = await loras();
+    assert.equal(list[0].thumbnail, "/comfy/warp-studio/lora/thumbnail?name=a");
+    assert.equal("thumbnail" in list[1], false);
+    assert.equal(calls[0][1], "/warp-studio/loras");
+  } finally {
+    useApi(null);
+    forget();
+  }
 });

@@ -132,6 +132,7 @@ const state = {
   roots: {},
   rootsExpanded: false,
   currentJobId: null,
+  startingJob: false,
   currentJobType: null,
   currentJobStatus: null,
   currentSummary: null,
@@ -574,7 +575,9 @@ async function loadCachedResults() {
       return;
     }
 
-    if (resp.data.inProgress) {
+    // A job already attached that is not a check (a download) is not this record's check.
+    const otherJobAttached = Boolean(state.currentJobId && state.currentJobType !== "check-updates");
+    if (resp.data.inProgress && !otherJobAttached) {
       // The active-job request failed but a check is still running: attach
       // to it through the id the last-check endpoint reports.
       attachToRunningJob({
@@ -1210,7 +1213,18 @@ function onToolbarAction(button) {
   startJob("/warp-studio/updater/jobs/check-updates", "check-updates");
 }
 
-async function startJob(endpoint, type, { includeArchive = false } = {}) {
+/* One start at a time: a second click while the first is still posting would only get a 409. */
+async function startJob(endpoint, type, options) {
+  if (state.startingJob) return;
+  state.startingJob = true;
+  try {
+    await startJobNow(endpoint, type, options);
+  } finally {
+    state.startingJob = false;
+  }
+}
+
+async function startJobNow(endpoint, type, { includeArchive = false } = {}) {
   if (state.currentJobId) {
     setStatus("A job is already running.", "error");
     return;
@@ -2546,10 +2560,11 @@ function onMatureModeChanged() {
 }
 
 /* A thin moving bar under the tabs while results load (Updates, Issues or Rename). */
-const loadingNow = new Set();
+const loadingNow = new Map();
 
 function setLoading(kind, on) {
-  if (on) loadingNow.add(kind);
+  const count = (loadingNow.get(kind) || 0) + (on ? 1 : -1);
+  if (count > 0) loadingNow.set(kind, count);
   else loadingNow.delete(kind);
   state.loadingBarEl?.classList.toggle("is-on", loadingNow.size > 0);
 }
@@ -2605,8 +2620,11 @@ async function onFiltersChanged() {
 }
 
 /* The Updates and Issues counts under the filters, while Rename is shown. */
+let modeCountsSeq = 0;
+
 async function loadModeCounts() {
   if (!state.checkJobId) return;
+  const seq = ++modeCountsSeq;
   const query = new URLSearchParams({
     offset: "0", limit: "1", mode: "updates",
     showHidden: state.showHidden ? "1" : "0", mature: state.matureMode || "show",
@@ -2614,6 +2632,7 @@ async function loadModeCounts() {
   for (const [key, value] of filterParams()) query.append(key, value);
   try {
     const data = await getJson(`/warp-studio/updater/jobs/${state.checkJobId}/items?${query.toString()}`);
+    if (seq !== modeCountsSeq) return;
     if (data.modeCounts) state.modeCounts = data.modeCounts;
     if (data.facets) {
       state.checkFacets = data.facets;
@@ -2971,7 +2990,29 @@ function scheduleSettingsSync(immediate = false) {
   state.settingsSyncTimer = setTimeout(() => syncSettingsToBackend(), immediate ? 0 : 300);
 }
 
+/* One save at a time: a request that arrives mid-save runs once more when it settles,
+   so the older save cannot finish last and overwrite the newer settings. */
+let settingsSyncRunning = false;
+let settingsSyncPending = false;
+
 async function syncSettingsToBackend() {
+  if (settingsSyncRunning) {
+    settingsSyncPending = true;
+    return;
+  }
+  settingsSyncRunning = true;
+  try {
+    await syncSettingsOnce();
+  } finally {
+    settingsSyncRunning = false;
+    if (settingsSyncPending) {
+      settingsSyncPending = false;
+      if (!state.suspendSettingsSync) syncSettingsToBackend();
+    }
+  }
+}
+
+async function syncSettingsOnce() {
   const apiKeyVal = String(getSetting(SETTINGS.apiKey, "") || "");
   const treatSidecarsAsInstalled = Boolean(getSetting(SETTINGS.treatSidecarsAsInstalled, true));
   const sidecarSettingChanged = state.treatSidecarsAsInstalled !== null
@@ -3176,17 +3217,19 @@ function openLightbox(item) {
   // `localFills[i]` is the file whose local preview the element marked `i` falls back to.
   const localFills = [];
   for (const v of localVersions) {
-    if (!v.previewUrl && !v.hasLocalPreview) continue;
+    // Only an https address is loaded; a sidecar's other schemes would make the browser call that address.
+    const remote = /^https:\/\//i.test(v.previewUrl || "") ? v.previewUrl : "";
+    if (!remote && !v.hasLocalPreview) continue;
     const base = v.baseModel ? ` <span class="cu-lb-base">${escapeHtml(v.baseModel)}</span>` : "";
     const local = v.hasLocalPreview ? ` data-local-index="${localFills.length}"` : "";
     if (v.hasLocalPreview) localFills.push(v.modelPath);
     let media;
-    if (!v.previewUrl) media = `<img${local} alt="">`;
-    else if (v.previewType === "video") media = `<video src="${escapeHtml(v.previewUrl)}"${local} preload="auto" muted playsinline controls></video>`;
-    else media = `<img src="${escapeHtml(v.previewUrl)}"${local} alt="">`;
+    if (!remote) media = `<img${local} alt="">`;
+    else if (v.previewType === "video") media = `<video src="${escapeHtml(remote)}"${local} preload="auto" muted playsinline controls></video>`;
+    else media = `<img src="${escapeHtml(remote)}"${local} alt="">`;
     sections += `<div class="cu-lb-card"><div class="cu-lb-label">Local</div><div class="cu-lb-vname">${escapeHtml(v.versionName || "?")}${base}</div>${media}</div>`;
   }
-  if (primaryNewVersion?.previewUrl) {
+  if (/^https:\/\//i.test(primaryNewVersion?.previewUrl || "")) {
     const latestBase = primaryNewVersion.baseModel ? ` <span class="cu-lb-base">${escapeHtml(primaryNewVersion.baseModel)}</span>` : "";
     const media = primaryNewVersion.previewType === "video"
       ? `<video src="${escapeHtml(primaryNewVersion.previewUrl)}" preload="auto" muted playsinline controls></video>`

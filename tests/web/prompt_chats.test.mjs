@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import * as chatStore from "../../web/prompt_chats.js";
 import {
   CHATS_FILE,
   CURRENT_PROMPT,
@@ -78,7 +79,7 @@ const ids = (chats) => chats.map((c) => c.id);
 
 test("CHATS_FILE and emptyStore", () => {
   assert.equal(CHATS_FILE, "warp_studio_prompt_chats.json");
-  assert.deepEqual(emptyStore(), { version: 1, chats: [] });
+  assert.deepEqual(emptyStore(), { version: 1, chats: [], deleted: {} });
   assert.notEqual(emptyStore().chats, emptyStore().chats);
 });
 
@@ -87,6 +88,8 @@ test("createChat adds a fresh chat to the store", () => {
   const chat = createChat(store, { id: "a", now: 5 });
   assert.deepEqual(chat, {
     id: "a",
+    // Not saved yet: the save stamps it.
+    rev: 0,
     title: "New chat",
     titleEdited: false,
     created: 5,
@@ -1571,4 +1574,236 @@ test("untitledVersions: written versions with a request and no title, newest cha
     ]
   );
   assert.deepEqual(untitledVersions(emptyStore()), []);
+});
+
+// --- Two tabs saving the one chat file ---------------------------------------
+
+const DAY = 24 * 3600 * 1000;
+const NOW = 1_800_000_000_000;
+
+const roundTrip = (value) => normalizeStore(JSON.parse(JSON.stringify(value)));
+
+/** A tab: its store and what it believes the file holds, as the page keeps them. */
+function tab(file) {
+  const store = roundTrip(file);
+  return { store, known: chatStore.printsOf(store) };
+}
+
+/** What the page does to save: stamp, send, merge on the server, take the answer in. */
+function saveTab(t, file, now) {
+  chatStore.stampChanges(t.store, t.known, now);
+  const sent = chatStore.sentOf(t.store);
+  const merged = chatStore.mergeStores(roundTrip(file.value), roundTrip(t.store), now);
+  file.value = JSON.parse(JSON.stringify(merged));
+  const { known, changed } = chatStore.adoptStore(t.store, roundTrip(merged), sent);
+  t.known = known;
+  return changed;
+}
+
+test("an old file loads: chats get rev 0 and the store an empty set of tombstones", () => {
+  const out = normalizeStore({ version: 1, chats: [{ id: "a", versions: [] }] });
+  assert.equal(out.chats[0].rev, 0);
+  assert.deepEqual(out.deleted, {});
+  assert.deepEqual(emptyStore().deleted, {});
+  // Junk revisions and tombstones are repaired, not trusted.
+  const junk = normalizeStore({
+    version: 1,
+    chats: [{ id: "a", versions: [], rev: "9" }],
+    deleted: { b: "x", c: 5, "": 3 },
+  });
+  assert.equal(junk.chats[0].rev, 0);
+  assert.deepEqual(junk.deleted, { c: 5 });
+});
+
+test("a file the new code writes is still a store an older page reads", () => {
+  const t = tab(emptyStore());
+  createChat(t.store, { id: "a", now: 1 });
+  chatStore.stampChanges(t.store, t.known, NOW);
+  const written = JSON.parse(JSON.stringify(t.store));
+  // The older page's test: version 1 and a chats array; extra fields are ignored.
+  assert.equal(written.version, 1);
+  assert.ok(Array.isArray(written.chats));
+  assert.equal(isStore(written), true);
+});
+
+test("stampChanges stamps only the chats that changed since the file was read", () => {
+  const store = emptyStore();
+  const a = createChat(store, { id: "a", now: 1 });
+  const b = createChat(store, { id: "b", now: 1 });
+  const known = chatStore.printsOf(store);
+  renameChat(b, "Renamed");
+  chatStore.stampChanges(store, known, NOW);
+  assert.equal(a.rev, 0);
+  assert.equal(b.rev, NOW);
+  // Changed again within the same millisecond: still newer than before.
+  renameChat(b, "Again");
+  chatStore.stampChanges(store, chatStore.printsOf(emptyStore()), NOW);
+  assert.equal(b.rev, NOW + 1);
+});
+
+test("deleteChat leaves a tombstone newer than the chat's last change", () => {
+  const store = emptyStore();
+  createChat(store, { id: "a", now: 1 }).rev = NOW + 5;
+  deleteChat(store, "a", NOW);
+  assert.deepEqual(store.deleted, { a: NOW + 6 });
+  createChat(store, { id: "b", now: 1 });
+  deleteChat(store, "b", NOW);
+  assert.equal(store.deleted.b, NOW);
+});
+
+test("two tabs that save in either order lose no chat and no version", () => {
+  for (const order of [
+    ["one", "two"],
+    ["two", "one"],
+  ]) {
+    const start = emptyStore();
+    createChat(start, { id: "shared", now: 1 });
+    const file = { value: JSON.parse(JSON.stringify(start)) };
+    const tabs = { one: tab(file.value), two: tab(file.value) };
+    createChat(tabs.one.store, { id: "fromOne", now: 2 });
+    addVersion(tabs.two.store.chats[0], version("v", 3));
+    createChat(tabs.two.store, { id: "fromTwo", now: 3 });
+    saveTab(tabs[order[0]], file, NOW);
+    saveTab(tabs[order[1]], file, NOW + 10);
+    const saved = normalizeStore(file.value);
+    assert.deepEqual(ids(saved.chats).sort(), ["fromOne", "fromTwo", "shared"], order.join());
+    assert.deepEqual(ids(saved.chats.find((c) => c.id === "shared").versions), ["v"]);
+  }
+});
+
+test("the tab that saves second takes in what the first saved", () => {
+  const file = { value: emptyStore() };
+  const one = tab(file.value);
+  const two = tab(file.value);
+  createChat(one.store, { id: "a", now: 1 });
+  saveTab(one, file, NOW);
+  createChat(two.store, { id: "b", now: 2 });
+  const changed = saveTab(two, file, NOW + 1);
+  assert.deepEqual([...changed], ["a"]);
+  assert.deepEqual(ids(two.store.chats), ["b", "a"]);
+});
+
+test("a chat deleted in one tab is not brought back by the other tab's save", () => {
+  const start = emptyStore();
+  createChat(start, { id: "a", now: 1 });
+  createChat(start, { id: "b", now: 1 });
+  const file = { value: JSON.parse(JSON.stringify(start)) };
+  const one = tab(file.value);
+  const two = tab(file.value);
+  deleteChat(one.store, "a", NOW);
+  saveTab(one, file, NOW);
+  // The other tab still holds "a", unchanged, and changes something else.
+  renameChat(two.store.chats[1], "Renamed");
+  const changed = saveTab(two, file, NOW + 1);
+  assert.deepEqual(ids(normalizeStore(file.value).chats), ["b"]);
+  assert.deepEqual(ids(two.store.chats), ["b"]);
+  assert.ok(changed.has("a"));
+});
+
+test("a chat changed after it was deleted elsewhere stays, with the change", () => {
+  const start = emptyStore();
+  createChat(start, { id: "a", now: 1 });
+  const file = { value: JSON.parse(JSON.stringify(start)) };
+  const one = tab(file.value);
+  const two = tab(file.value);
+  deleteChat(one.store, "a", NOW);
+  saveTab(one, file, NOW);
+  addVersion(two.store.chats[0], version("v", 2));
+  saveTab(two, file, NOW + 1);
+  const saved = normalizeStore(file.value);
+  assert.deepEqual(ids(saved.chats), ["a"]);
+  assert.deepEqual(saved.deleted, {});
+});
+
+test("the same chat changed in two tabs: the later whole chat wins", () => {
+  const start = emptyStore();
+  createChat(start, { id: "a", now: 1 });
+  const file = { value: JSON.parse(JSON.stringify(start)) };
+  const one = tab(file.value);
+  const two = tab(file.value);
+  renameChat(one.store.chats[0], "From one");
+  renameChat(two.store.chats[0], "From two");
+  saveTab(one, file, NOW);
+  saveTab(two, file, NOW + 1);
+  assert.equal(normalizeStore(file.value).chats[0].title, "From two");
+  // The first tab takes in the newer copy the next time it saves.
+  saveTab(one, file, NOW + 2);
+  assert.equal(one.store.chats[0].title, "From two");
+  assert.equal(normalizeStore(file.value).chats[0].title, "From two");
+});
+
+test("adoptStore keeps each chat object, so a write in progress still finds its chat", () => {
+  const start = emptyStore();
+  createChat(start, { id: "a", now: 1 });
+  const file = { value: JSON.parse(JSON.stringify(start)) };
+  const one = tab(file.value);
+  const two = tab(file.value);
+  const held = one.store.chats[0];
+  addVersion(two.store.chats[0], version("v", 2));
+  saveTab(two, file, NOW);
+  saveTab(one, file, NOW + 1);
+  assert.equal(one.store.chats[0], held);
+  assert.deepEqual(ids(held.versions), ["v"]);
+});
+
+test("a change made while a save is on its way is not lost to the answer", () => {
+  const start = emptyStore();
+  createChat(start, { id: "a", now: 1 });
+  const file = { value: JSON.parse(JSON.stringify(start)) };
+  const one = tab(file.value);
+  const two = tab(file.value);
+  renameChat(two.store.chats[0], "From two");
+  saveTab(two, file, NOW);
+  // One sends its copy, then changes things before the answer comes.
+  chatStore.stampChanges(one.store, one.known, NOW + 1);
+  const sent = chatStore.sentOf(one.store);
+  const merged = chatStore.mergeStores(roundTrip(file.value), roundTrip(one.store), NOW + 1);
+  file.value = JSON.parse(JSON.stringify(merged));
+  const late = createChat(one.store, { id: "late", now: 5 });
+  addVersion(late, version("v", 5));
+  deleteChat(one.store, "a", NOW + 2);
+  const { known } = chatStore.adoptStore(one.store, roundTrip(merged), sent);
+  one.known = known;
+  // The newer "a" from the other tab is not taken back in: it was deleted here meanwhile.
+  assert.deepEqual(ids(one.store.chats), ["late"]);
+  assert.equal(one.store.deleted.a, NOW + 2);
+  // The next save sends them.
+  saveTab(one, file, NOW + 3);
+  assert.deepEqual(ids(normalizeStore(file.value).chats), ["late"]);
+  assert.deepEqual(ids(normalizeStore(file.value).chats[0].versions), ["v"]);
+});
+
+test("a chat changed here while the save was on its way keeps the change", () => {
+  const start = emptyStore();
+  createChat(start, { id: "a", now: 1 });
+  const file = { value: JSON.parse(JSON.stringify(start)) };
+  const one = tab(file.value);
+  const two = tab(file.value);
+  renameChat(two.store.chats[0], "From two");
+  saveTab(two, file, NOW);
+  chatStore.stampChanges(one.store, one.known, NOW + 1);
+  const sent = chatStore.sentOf(one.store);
+  const merged = chatStore.mergeStores(roundTrip(file.value), roundTrip(one.store), NOW + 1);
+  file.value = JSON.parse(JSON.stringify(merged));
+  renameChat(one.store.chats[0], "From one, later");
+  one.known = chatStore.adoptStore(one.store, roundTrip(merged), sent).known;
+  assert.equal(one.store.chats[0].title, "From one, later");
+  saveTab(one, file, NOW + 2);
+  assert.equal(normalizeStore(file.value).chats[0].title, "From one, later");
+});
+
+test("mergeStores drops tombstones older than sixty days", () => {
+  const base = { ...emptyStore(), deleted: { old: NOW - 61 * DAY, recent: NOW - 59 * DAY } };
+  assert.deepEqual(chatStore.mergeStores(base, emptyStore(), NOW).deleted, {
+    recent: NOW - 59 * DAY,
+  });
+});
+
+test("mergeStores: the newer copy wins, a tie keeps the file's", () => {
+  const disk = roundTrip({ version: 1, chats: [{ id: "a", versions: [], rev: 5, title: "disk" }] });
+  const tie = roundTrip({ version: 1, chats: [{ id: "a", versions: [], rev: 5, title: "page" }] });
+  const newer = roundTrip({ version: 1, chats: [{ id: "a", versions: [], rev: 6, title: "new" }] });
+  assert.equal(chatStore.mergeStores(disk, tie, NOW).chats[0].title, "disk");
+  assert.equal(chatStore.mergeStores(disk, newer, NOW).chats[0].title, "new");
+  assert.equal(chatStore.mergeStores(newer, disk, NOW).chats[0].title, "new");
 });

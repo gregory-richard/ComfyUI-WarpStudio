@@ -17,6 +17,7 @@ from typing import Dict, Iterable, List, Set, Tuple
 
 from .naming_check import needs_review
 from .naming_scheme import parse_stem
+from .path_identity import path_key
 
 NAMED = ("change", "unchanged")
 FOLDER_FLAGS = {"exists", "collision"}
@@ -106,23 +107,23 @@ def target_folder(row: dict) -> str:
 def recheck_folder_flags(rows: List[dict], folders: Set[str], listing: Dict[str, Set[str]]) -> None:
     """Recompute "exists" and "collision" for the named rows that come from or go to these folders.
 
-    ``folders`` and ``listing`` use lowercased paths; ``listing`` holds the
-    lowercased stems on disk per folder. A stem on disk counts as free when a
-    named row of this dry run takes its file away (renamed or moved).
+    ``folders`` and ``listing`` key folders by ``path_key``; ``listing`` holds the
+    stems on disk per folder, by ``path_key`` too. A stem on disk counts as free
+    when a named row of this dry run takes its file away (renamed or moved).
     """
     named = [row for row in rows if row.get("status") in NAMED]
     leaving: Dict[str, Set[str]] = {}
     by_new: Dict[Tuple[str, str], List[dict]] = {}
     for row in named:
-        source = str(row.get("folder") or "").lower()
+        source = path_key(str(row.get("folder") or ""))
         if row.get("status") == "change":
-            leaving.setdefault(source, set()).add(str(row.get("oldStem") or "").lower())
-        by_new.setdefault((target_folder(row).lower(), str(row.get("newStem") or "").lower()), []).append(row)
+            leaving.setdefault(source, set()).add(path_key(str(row.get("oldStem") or "")))
+        by_new.setdefault((path_key(target_folder(row)), path_key(str(row.get("newStem") or ""))), []).append(row)
     for row in named:
-        target = target_folder(row).lower()
-        if target not in folders and str(row.get("folder") or "").lower() not in folders:
+        target = path_key(target_folder(row))
+        if target not in folders and path_key(str(row.get("folder") or "")) not in folders:
             continue
-        new = str(row.get("newStem") or "").lower()
+        new = path_key(str(row.get("newStem") or ""))
         flags = [flag for flag in row.get("flags") or [] if flag not in FOLDER_FLAGS]
         if row.get("status") == "change":
             on_disk = set(listing.get(target) or ()) - leaving.get(target, set())
@@ -135,6 +136,7 @@ def recheck_folder_flags(rows: List[dict], folders: Set[str], listing: Dict[str,
 
 
 def move_target_folders(rows: Iterable[dict]) -> Set[str]:
-    """The lowercased folders the rows' files move into."""
-    return {str(row["newFolder"]).lower() for row in rows if row.get("newFolder")}
+    """The folders the rows' files move into, by ``path_key``."""
+    return {path_key(str(row["newFolder"])) for row in rows if row.get("newFolder")}
+
 

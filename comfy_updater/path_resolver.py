@@ -9,6 +9,7 @@ from .constants import (
     SUPPORTED_MODEL_EXTENSIONS,
     SUPPORTED_MODEL_TYPES,
 )
+from .path_identity import path_key
 from .sidecar import (
     SIDECAR_ERROR_INVALID_ENCODING,
     SIDECAR_ERROR_INVALID_JSON,
@@ -155,11 +156,11 @@ def _listing_order(path: Path) -> tuple:
 
 
 def _weight_stem_key(model_path: Path) -> str:
-    return str(model_path.with_suffix("")).lower()
+    return path_key(str(model_path.with_suffix("")))
 
 
 def _info_stem_key(info_path: Path) -> str:
-    return str(info_path.with_name(info_path.name[: -len(INFO_SIDECAR_SUFFIX)])).lower()
+    return path_key(str(info_path.with_name(info_path.name[: -len(INFO_SIDECAR_SUFFIX)])))
 
 
 def _preview_path_for_info(info_path: Path) -> Path:
@@ -179,7 +180,8 @@ def _read_identifying_sidecar(info_path: Path, sidecar_warnings: list[dict] | No
 
 def _append_sidecar_warning(warnings: list[dict], info_path: Path, error: str) -> None:
     path = str(info_path)
-    if any(str(warning.get("path", "")).lower() == path.lower() for warning in warnings):
+    if any(path_key(str(warning.get("path", ""))) == path_key(path) for warning in warnings):
+
         return
 
     messages = {
@@ -207,11 +209,14 @@ def _has_identifier(value) -> bool:
 
 
 def normalize_model_types(raw_types: list[str] | None) -> list[str]:
-    if not raw_types:
+    # A body like {"modelTypes": 5} is not a list: it means all types, as when it is missing.
+    if not raw_types or not isinstance(raw_types, (list, tuple)):
         return list(SUPPORTED_MODEL_TYPES)
     normalized = []
     for entry in raw_types:
-        value = (entry or "").strip().lower()
+        if not isinstance(entry, str):
+            continue
+        value = entry.strip().lower()
         if value in SUPPORTED_MODEL_TYPES and value not in normalized:
             normalized.append(value)
     return normalized or list(SUPPORTED_MODEL_TYPES)

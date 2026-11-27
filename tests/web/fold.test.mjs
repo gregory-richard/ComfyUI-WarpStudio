@@ -149,6 +149,10 @@ test("countLoras counts every tag and those not behind a //", () => {
   assert.deepEqual(countLoras("plain words\n// a note"), { total: 0, active: 0 });
 });
 
+test("countLoras counts what the backend loads: a bare name, not a word for a weight", () => {
+  assert.deepEqual(countLoras("<lora:a>\n// <lora:b>\n<lora:c:strong>"), { total: 2, active: 1 });
+});
+
 function lorasText(total, active) {
   const lines = [];
   for (let i = 0; i < total; i += 1) lines.push(`${i < active ? "" : "// "}<lora:x${i}:1.00>`);

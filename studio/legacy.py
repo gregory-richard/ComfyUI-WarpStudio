@@ -89,7 +89,9 @@ def find_active_old_packages(custom_node_dirs: list[Path], own_root: Path) -> li
                 elif (child / "comfy_updater" / "plugin.py").is_file():
                     found.append(OldPackage("civitai-updater", "unknown", child))
                 continue
-            name = PROJECT_ALIASES.get(values["name"], values["name"])
+            # Lowercased like migration._project_name: "WarpPipe" is still warppipe.
+            name = values["name"].strip().lower()
+            name = PROJECT_ALIASES.get(name, name)
             goodbye = GOODBYE_VERSIONS.get(name)
             version = values.get("version", "")
             if goodbye and version_tuple(version) < goodbye:

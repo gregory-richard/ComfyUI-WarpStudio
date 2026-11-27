@@ -14,9 +14,11 @@ import { loras as loraLibrary } from "./library.js";
 import { connectedBase, connectedModelName } from "./model_base.js";
 import { guardHeaders } from "./request_guard.js";
 import {
+  addPiece,
   addTriggerLine,
   appendLoraTag,
   buildLoraLists,
+  cannotSeeImages,
   isLoraListed,
   listTargets,
   disableLoraTag,
@@ -45,6 +47,7 @@ import {
   KIND_WRITTEN,
   NEW_PROMPT,
   addVersion,
+  adoptStore,
   adoptText,
   branchOf,
   canFold,
@@ -64,18 +67,22 @@ import {
   latestChatFor,
   markSent,
   mergedDraft,
+  mergeStores,
   nextVersionNumber,
   normalizeStore,
   openQuestion,
   originLabel,
   pathTo,
+  printsOf,
   recordFailure,
   renameChat,
   replaceVersion,
   rowText,
+  sentOf,
   setAutoTitle,
   setVersionTitle,
   sortedChats,
+  stampChanges,
   startOptions,
   startValue,
   systemPromptOf,
@@ -654,6 +661,10 @@ let store = null;
 let storeLoad = null;
 let saving = false;
 let saveAgain = false;
+// Each chat as the file was last known to hold it (printsOf): what tells a save which chats changed here.
+let known = new Map();
+// False once the server turned out to have no chats route (started before it had one).
+let chatsRoute = true;
 let ticker = null;
 let listsRun = 0;
 let loraRun = 0;
@@ -890,12 +901,90 @@ async function readStore() {
   const response = await api.getUserData(CHATS_FILE);
   if (response.status === 404) {
     store = emptyStore();
+    known = new Map();
     return;
   }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const raw = await response.json();
   if (!isStore(raw)) throw new Error("not a chat file this version can read");
   store = normalizeStore(raw);
+  known = printsOf(store);
+}
+
+/**
+ * Sends the chats to be merged with the file (see prompt_chats.js) and answers
+ * with what the file then holds. The server merges under a lock, so two tabs
+ * cannot lose each other's chats.
+ */
+async function pushStore(body) {
+  if (chatsRoute) {
+    const response = await api.fetchApi("/warp-studio/llm/chats", {
+      method: "POST",
+      headers: guardHeaders({ "Content-Type": "application/json" }),
+      body,
+    });
+    // 405: ComfyUI's static files answer a POST to a path no route has.
+    if (response.status !== 404 && response.status !== 405) {
+      const out = await readJson(response);
+      if (out.error) throw new Error(String(out.error));
+      if (!isStore(out.store)) throw new Error("the server sent no chats back");
+      return out.store;
+    }
+    chatsRoute = false;
+  }
+  // A server started before the route: merged here just before writing. That
+  // narrows the window in which another tab's save is lost; it cannot close it.
+  const response = await api.getUserData(CHATS_FILE);
+  let file = emptyStore();
+  if (response.status !== 404) {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const raw = await response.json();
+    if (!isStore(raw)) throw new Error("not a chat file this version can read");
+    file = normalizeStore(raw);
+  }
+  const merged = mergeStores(file, normalizeStore(JSON.parse(body)), Date.now());
+  await api.storeUserData(CHATS_FILE, merged, {
+    stringify: true,
+    overwrite: true,
+    throwOnError: true,
+  });
+  return merged;
+}
+
+/** Shows what another tab saved: a new or newer chat, or the open one gone. */
+function showAdopted(changed) {
+  if (!view) return;
+  if (!changed.has(view.chatId)) {
+    renderRail();
+    return;
+  }
+  if (currentChat()) {
+    refresh(view.chatId);
+    return;
+  }
+  // Deleted in another tab.
+  view.editors = [];
+  const next = sortedChats(store)[0];
+  if (next) selectChat(next.id);
+  else newChat();
+}
+
+/** Takes in what other tabs saved, when the Prompt Writer opens again. Writes nothing. */
+async function pullStore() {
+  if (!store || saving) return;
+  try {
+    const response = await api.getUserData(CHATS_FILE);
+    if (!response.ok) return;
+    const raw = await response.json();
+    // A save that started meanwhile takes it all in anyway.
+    if (!isStore(raw) || saving) return;
+    // Every tombstone here is kept: one a failed save never wrote must not be lost.
+    const out = adoptStore(store, normalizeStore(raw), { prints: known, deleted: new Set() });
+    known = out.known;
+    if (out.changed.size) showAdopted(out.changed);
+  } catch (error) {
+    console.warn("[WarpPipe] reading chats saved elsewhere", error);
+  }
 }
 
 /** A failed read is left unloaded, so a later save cannot overwrite the file. */
@@ -908,6 +997,7 @@ function ensureStore() {
 }
 
 async function save() {
+  if (!store) return;
   if (saving) {
     saveAgain = true;
     return;
@@ -916,11 +1006,12 @@ async function save() {
   try {
     do {
       saveAgain = false;
-      await api.storeUserData(CHATS_FILE, store, {
-        stringify: true,
-        overwrite: true,
-        throwOnError: true,
-      });
+      stampChanges(store, known, Date.now());
+      const sent = sentOf(store);
+      const merged = await pushStore(JSON.stringify(store));
+      const out = adoptStore(store, normalizeStore(merged), sent);
+      known = out.known;
+      if (out.changed.size) showAdopted(out.changed);
     } while (saveAgain);
   } catch (error) {
     console.error("[WarpPipe] saving chats", error);
@@ -1135,10 +1226,11 @@ function writeSpec(chat, step, images) {
   };
 }
 
-/** The images a request sends: none when the model chosen now cannot see them. */
+/** The images a request sends: none when the model chosen now is known to be blind. */
 function imagesFor(images) {
   const names = (images ?? []).filter((name) => typeof name === "string");
-  if (!names.length || findModel(String(getSetting(SETTING_MODEL, "")))?.vision) {
+  // An unloaded or cleared model list says nothing: keep the images then.
+  if (!names.length || !cannotSeeImages(findModel(String(getSetting(SETTING_MODEL, ""))))) {
     return { images: names, note: null };
   }
   return {
@@ -1272,9 +1364,7 @@ async function launch(chat, spec) {
   try {
     await attachLoras(spec);
     out = await streamJson("/warp-studio/llm/write", spec.payload, controller.signal, (piece) => {
-      job.thinking += piece.thinking ?? "";
-      job.text += piece.text ?? "";
-      job.tokens = piece.tokens ?? job.tokens;
+      addPiece(job, piece);
       paintLiveSoon();
     });
     if (out?.error) message = String(out.error);
@@ -1989,10 +2079,9 @@ function paintLive() {
     live.thinking.body.textContent = job.thinking;
     live.thinking.body.scrollTop = live.thinking.body.scrollHeight;
   }
-  if (job.text) {
-    live.text.hidden = false;
-    live.text.textContent = job.text;
-  }
+  // Set even when empty: a retract takes back text already shown.
+  live.text.hidden = !job.text;
+  live.text.textContent = job.text;
   if (following) convo.scrollTop = convo.scrollHeight;
 }
 
@@ -3416,7 +3505,7 @@ function removeChat(chat) {
   unseen.delete(chat.id);
   drafts.delete(chat.id);
   syncButton(node);
-  deleteChat(store, chat.id);
+  deleteChat(store, chat.id, Date.now());
   save();
   view.confirmDelete = null;
   if (view.chatId !== chat.id) {
@@ -3503,6 +3592,8 @@ function useVersion(pressed) {
 function textareaOf(node, widget) {
   const own = widget.inputEl ?? widget.element;
   if (own?.tagName === "TEXTAREA" && own.isConnected) return own;
+  // Ids repeat across subgraphs: a node that is not on screen must not get another's boxes.
+  if (node.graph !== app.canvas?.graph) return null;
   const root = document.querySelector(`[data-node-id="${node.id}"]`);
   const shown = (node.widgets ?? []).filter((w) => BOX_WIDGETS.includes(w.name) && !w._wpeHidden);
   return root?.querySelectorAll("textarea")[shown.indexOf(widget)] ?? null;
@@ -4210,6 +4301,8 @@ export async function openPromptWriter(promptNode) {
     return;
   }
   buildView(promptNode);
+  // Read once per page; on every later opening, what other tabs saved since is taken in.
+  const loaded = Boolean(store);
   try {
     await ensureStore();
   } catch (error) {
@@ -4219,6 +4312,7 @@ export async function openPromptWriter(promptNode) {
   }
   if (!view) return;
   showChatOf(view.promptNode);
+  if (loaded) pullStore();
   growInput();
   loadLists(false);
   // The versions from before titles get theirs, once.

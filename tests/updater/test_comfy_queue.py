@@ -3,10 +3,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import ssl
 import struct
 import tempfile
 import unittest
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 from comfy_updater.comfy_queue import (
@@ -209,6 +211,55 @@ class ComfyQueueTests(unittest.TestCase):
         self.assertEqual(comfy_base_url("0.0.0.0,::", 8188, False), "http://127.0.0.1:8188")
         self.assertEqual(comfy_base_url("192.168.1.5", 8000, True), "https://192.168.1.5:8000")
         self.assertEqual(comfy_base_url("::1", 8188, False), "http://[::1]:8188")
+
+    def test_comfy_base_url_uses_ipv6_loopback_for_an_ipv6_only_wildcard(self):
+        self.assertEqual(comfy_base_url("::", 8188, False), "http://[::1]:8188")
+        self.assertEqual(comfy_base_url("192.168.1.5,::", 8188, True), "https://[::1]:8188")
+        self.assertEqual(comfy_base_url("::,0.0.0.0", 8188, False), "http://127.0.0.1:8188")
+
+    def test_https_to_this_comfyui_skips_certificate_checks(self):
+        for base in ("https://127.0.0.1:8188", "https://[::1]:8188", "https://localhost:8188"):
+            opener = ComfyTextGenerator(base, "q.safetensors", "SYS").opener
+            handlers = [h for h in getattr(getattr(opener, "__self__", None), "handlers", [])
+                        if isinstance(h, urllib.request.HTTPSHandler)]
+            self.assertEqual(1, len(handlers), base)
+            context = handlers[0]._context
+            self.assertEqual((False, ssl.CERT_NONE), (context.check_hostname, context.verify_mode), base)
+
+    def test_other_hosts_keep_normal_verification(self):
+        for base in (BASE, "https://192.168.1.5:8188", "https://comfy.example:8188"):
+            self.assertIs(ComfyTextGenerator(base, "q.safetensors", "SYS").opener, urllib.request.urlopen, base)
+
+    def test_job_removed_from_the_queue_fails_at_once(self):
+        empty = {"queue_running": [], "queue_pending": []}
+        opener = FakeOpener([{}], queues=[PENDING, RUNNING, empty])
+        gen = ComfyTextGenerator(BASE, "q.safetensors", "SYS", opener=opener, poll_seconds=0)
+        with self.assertRaises(NamingModelError) as ctx:
+            gen.generate(["a"])
+        self.assertIn("removed from ComfyUI's queue", str(ctx.exception))
+        # Seen running, then missing from queue and history twice in a row.
+        self.assertEqual(4, opener.urls().count(BASE + "/history/pid-1"))
+
+    def test_job_between_queue_and_history_is_not_removed(self):
+        empty = {"queue_running": [], "queue_pending": []}
+        opener = FakeOpener([{}, {}, finished({"5000": {"text": ["title: x"]}})], queues=[RUNNING, empty])
+        gen = ComfyTextGenerator(BASE, "q.safetensors", "SYS", opener=opener, poll_seconds=0)
+        self.assertEqual(gen.generate(["a"]), ["title: x"])
+
+    def test_unreadable_queue_does_not_count_as_removed(self):
+        class FlakyQueue(FakeOpener):
+            def __call__(self, request, timeout=None):
+                url = request.full_url if hasattr(request, "full_url") else request
+                if url == BASE + "/queue" and getattr(request, "data", None) is None and self.queue_reads:
+                    self.queue_reads -= 1
+                    if self.queue_reads < 3:
+                        raise urllib.error.URLError("busy")
+                return super().__call__(request, timeout)
+
+        opener = FlakyQueue([{}, {}, {}, {}, finished({"5000": {"text": ["title: x"]}})], queues=[RUNNING])
+        opener.queue_reads = 4  # running once, then unreadable three times
+        gen = ComfyTextGenerator(BASE, "q.safetensors", "SYS", opener=opener, poll_seconds=0)
+        self.assertEqual(gen.generate(["a"]), ["title: x"])
 
     def test_comfy_base_url_falls_back_outside_comfyui(self):
         self.assertEqual(comfy_base_url(), "http://127.0.0.1:8188")

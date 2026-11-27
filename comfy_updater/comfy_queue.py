@@ -13,14 +13,17 @@ import json
 import os
 from pathlib import Path
 import re
+import ssl
 import struct
 import time
 from typing import Callable, Optional
 import urllib.error
+from urllib.parse import urlsplit
 import urllib.request
 
 CLIENT_ID = "civitai-updater-renamer"
 _WILDCARD_HOSTS = {"0.0.0.0", "::"}
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 _HEADER_LIMIT = 100 * 1024 * 1024
 _REQUEST_TIMEOUT = 30
 
@@ -52,11 +55,28 @@ def comfy_base_url(listen: Optional[str] = None, port: Optional[int] = None, tls
     hosts = [h.strip() for h in (listen or "127.0.0.1").split(",") if h.strip()]
     host = hosts[0] if hosts else "127.0.0.1"
     if host in _WILDCARD_HOSTS or any(h in _WILDCARD_HOSTS for h in hosts):
-        host = "127.0.0.1"
+        # "::" alone listens on IPv6 only, where 127.0.0.1 is refused.
+        host = "127.0.0.1" if "0.0.0.0" in hosts else "::1"
     if ":" in host:
         host = f"[{host}]"
     scheme = "https" if tls else "http"
     return f"{scheme}://{host}:{port or 8188}"
+
+
+def _default_opener(base_url: str):
+    """urlopen, or for https on a loopback address one that skips certificate checks.
+
+    The loopback server is this ComfyUI process itself, whose --tls-certfile is
+    usually self-signed or names another host; any other https host keeps
+    normal verification.
+    """
+    parts = urlsplit(base_url)
+    if parts.scheme == "https" and (parts.hostname or "").lower() in _LOOPBACK_HOSTS:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context)).open
+    return urllib.request.urlopen
 
 
 def build_graph(
@@ -97,7 +117,7 @@ class ComfyTextGenerator:
         clip_name: str,
         system_prompt: str,
         *,
-        opener=urllib.request.urlopen,
+        opener=None,
         poll_seconds: float = 1.0,
         timeout_seconds: float = 900,
         should_stop: Optional[Callable[[], bool]] = None,
@@ -105,7 +125,7 @@ class ComfyTextGenerator:
         self.base_url = base_url.rstrip("/")
         self.clip_name = clip_name
         self.system_prompt = system_prompt
-        self.opener = opener
+        self.opener = opener if opener is not None else _default_opener(self.base_url)
         self.poll_seconds = poll_seconds
         self.timeout_seconds = timeout_seconds
         self.should_stop = should_stop
@@ -147,8 +167,12 @@ class ComfyTextGenerator:
         The timeout counts from when the job leaves ComfyUI's pending queue, so a
         long job of the user's ahead of it does not fail the dry run. A stop
         takes the job back out of the queue (or interrupts it, if it is running).
+        A job seen in the queue that then is neither queued nor in the history
+        was removed in ComfyUI (queue cleared, prompt deleted) and fails at once.
         """
         deadline: Optional[float] = None
+        seen_queued = False
+        missing_polls = 0
         url = f"{self.base_url}/history/{prompt_id}"
         while True:
             if self.should_stop is not None and self.should_stop():
@@ -165,7 +189,19 @@ class ComfyTextGenerator:
                 if status.get("status_str") == "error":
                     raise NamingModelError(_execution_message(status))
                 return entry
-            if deadline is None and self._queue_state(prompt_id) != "pending":
+            state = self._read_queue_state(prompt_id)
+            if state:
+                seen_queued = True
+                missing_polls = 0
+            elif state == "" and seen_queued and entry is None:
+                # Two polls in a row: a job that just finished leaves the
+                # queue a moment before it shows in the history.
+                missing_polls += 1
+                if missing_polls >= 2:
+                    raise NamingModelError("The naming job was removed from ComfyUI's queue.")
+            else:
+                missing_polls = 0  # an unreadable queue says nothing about the job
+            if deadline is None and state != "pending":
                 deadline = time.monotonic() + self.timeout_seconds
             if deadline is not None and time.monotonic() >= deadline:
                 raise NamingModelError(f"ComfyUI did not finish the naming job within {self.timeout_seconds:g} s.")
@@ -173,13 +209,17 @@ class ComfyTextGenerator:
 
     def _queue_state(self, prompt_id: str) -> str:
         """"pending", "running" or "" (not queued, or the queue could not be read)."""
+        return self._read_queue_state(prompt_id) or ""
+
+    def _read_queue_state(self, prompt_id: str) -> Optional[str]:
+        """"pending", "running", "" (not queued) or None (the queue could not be read)."""
         try:
             with self.opener(self.base_url + "/queue", timeout=_REQUEST_TIMEOUT) as response:
                 queue = json.loads(response.read())
         except (urllib.error.URLError, OSError, ValueError):
-            return ""
+            return None
         if not isinstance(queue, dict):
-            return ""
+            return None
         for state, key in (("running", "queue_running"), ("pending", "queue_pending")):
             for item in queue.get(key) or []:
                 if isinstance(item, (list, tuple)) and len(item) > 1 and str(item[1]) == prompt_id:

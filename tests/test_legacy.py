@@ -135,3 +135,13 @@ def test_message_without_version(tmp_path):
         "Warp Studio is installed but switched off, because WarpPipe is still "
         "installed. Update it in the Manager, or disable it there, then restart."
     )
+
+
+def test_project_names_are_compared_without_case(dirs):
+    # migration._project_name lowercases; a "WarpPipe" spelled with capitals is
+    # still the old package and must still switch Warp Studio off.
+    custom, own = dirs
+    make(custom, "a", "WarpPipe", "5.0.0")
+    make(custom, "b", " ComfyUI-WarpPipe ", "2.2.0")
+    found = find_active_old_packages([custom], own)
+    assert [(p.name, p.version) for p in found] == [("warppipe", "5.0.0"), ("warppipe", "2.2.0")]

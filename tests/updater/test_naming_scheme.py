@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 
@@ -57,6 +58,17 @@ class NamingSchemeTests(unittest.TestCase):
             "black forest labs - flux.1 dev - fp8 (flux1d).civitai.info",
             target_path(Path("x"), stem, ".civitai.info").name,
         )
+
+    def test_target_path_refuses_a_name_outside_the_folder(self) -> None:
+        folder = Path("models") / "loras"
+        for stem in ("..\\..\\x", "../x", "sub/x", "sub\\x", "..", "."):
+            with self.subTest(stem=stem):
+                with self.assertRaises(ValueError):
+                    target_path(folder, stem, "" if stem in ("..", ".") else ".safetensors")
+        if os.name == "nt":
+            with self.assertRaises(ValueError):
+                target_path(folder, "d:x", ".safetensors")  # a drive-relative name, not one in the folder
+        self.assertEqual(folder / "a - b (c) v1.5.safetensors", target_path(folder, "a - b (c) v1.5", ".safetensors"))
 
     def test_parse_stem_with_version(self) -> None:
         self.assertEqual(

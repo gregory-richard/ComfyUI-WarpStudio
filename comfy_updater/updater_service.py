@@ -13,6 +13,7 @@ from .archive import (
 )
 from .civitai_client import CivitaiClient, CivitaiRequestError
 from .fallback_http import FallbackHttp
+from .path_identity import path_key
 from .path_resolver import list_model_files, normalize_model_types, resolve_model_roots
 from .preview_fallback import FallbackOutcome, PreviewFallback
 from .rename_store import BASE_CODES_FILENAME
@@ -92,7 +93,7 @@ class UpdaterService:
             include_sidecar_only=bool(config.get("treatSidecarsAsInstalled", True)),
             sidecar_warnings=sidecar_warnings,
         )
-        return {str(f["path"]).lower() for f in files}, sidecar_warnings
+        return {path_key(str(f["path"])) for f in files}, sidecar_warnings
 
     def _run(
         self,
@@ -357,7 +358,9 @@ class UpdaterService:
                 file_hash = stored_hash
             else:
                 file_hash = sha256_file(model_path, should_stop=should_stop)
-            return file_hash, client.get_version_by_hash(file_hash)
+            # Only Civitai saying it has no such hash is "not found"; a refused
+            # key, rate limit or outage raises and is reported as an error.
+            return file_hash, _unless_missing(client.get_version_by_hash, file_hash)
 
         if can_use_sidecar:
             model_id = existing_info.get("modelId")
@@ -376,11 +379,12 @@ class UpdaterService:
                 _download_preview_if_needed(client, preview_path, version_data, force=False)
         elif can_refetch_by_sidecar_id:
             model_id = existing_info.get("modelId")
-            version_data = client.get_version(existing_info.get("id"))
+            # A transient failure raises: re-hashing gigabytes cannot help then.
+            version_data = _unless_missing(client.get_version, existing_info.get("id"))
             if version_data:
                 model_id = version_data.get("modelId") or model_id
             else:
-                # Fallback when the sidecar version id is stale or unavailable.
+                # Fallback when Civitai no longer has the sidecar's version id.
                 if not metadata_only:
                     local_hash, version_data = identify_by_hash()
                     if version_data:
@@ -731,7 +735,7 @@ def _dedupe_model_files(files: list[dict]) -> list[dict]:
     seen = set()
     deduped = []
     for entry in files:
-        path = str(entry["path"]).lower()
+        path = path_key(str(entry["path"]))
         if path in seen:
             continue
         seen.add(path)
@@ -883,6 +887,20 @@ _stored_sha256 = stored_sha256
 
 def _text(value) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _unless_missing(lookup, value) -> dict | None:
+    """``lookup(value)`` strictly: None only when Civitai has no such item (400/404).
+
+    Any other failure raises ``CivitaiRequestError``, which the job loop turns
+    into an error item for the file.
+    """
+    try:
+        return lookup(value, raise_on_error=True)
+    except CivitaiRequestError as exc:
+        if exc.status in (400, 404):
+            return None
+        raise
 
 
 def _replaced(stored_hash: str, local_hash: str | None) -> bool:

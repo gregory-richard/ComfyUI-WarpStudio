@@ -2,7 +2,7 @@
 
 Everything here copies, never moves; never overwrites an existing target and
 never deletes. A failed copy is recorded in the report and the marker is not
-written, so the next start tries again.
+written, so the next start tries again, for the failed items only.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ logger = logging.getLogger("WarpStudio")
 
 SETTING_PREFIXES = (("WarpPipe.", "WarpStudio."), ("CivitaiUpdater.", "WarpStudio.Updater."))
 MARKER = Path("warp-studio") / "migrated.json"
+# Items finished so far; removed once the marker is written.
+PROGRESS = Path("warp-studio") / "migrating.json"
 
 _STUDIO_DIR = "warp-studio"
 _USER_FILES = (
@@ -235,21 +237,86 @@ def _migrate_settings(settings_file: Path, report: MigrationReport) -> None:
     logger.info("Added %d Warp Studio setting ids to %s", len(additions), settings_file)
 
 
+def _load_progress(path: Path) -> set[str] | None:
+    """Items finished by an earlier start; None when the file cannot be read."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        return None
+    try:
+        data = json.loads(text)
+        done = data["done"]
+        if not isinstance(done, list):
+            return None
+        return {item for item in done if isinstance(item, str)}
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _write_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        temp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def migrate(user_dir: Path, custom_node_dirs: list[Path], own_root: Path) -> MigrationReport | None:
-    """Copy old data to the new names once. Returns None when already done."""
+    """Copy old data to the new names once. Returns None when already done.
+
+    Progress is kept per item, so a start after a failure retries only the items
+    that failed. Redoing a finished one would bring back a file the user has
+    deleted since.
+    """
     user_dir = Path(user_dir)
     marker = user_dir / MARKER
     if marker.exists():
+        # Never parsed: every marker, old or new, means everything is done.
         return None
+    progress_file = marker.with_name(PROGRESS.name)
+    done = _load_progress(progress_file)
     report = MigrationReport()
+    if done is None:
+        # Guessing which items finished could copy deleted files back, while
+        # skipping them costs nothing: the old data is never touched and nothing
+        # is overwritten. So an unreadable record counts as finished.
+        logger.warning("Could not read %s; treating the migration as done.", progress_file)
+        _write_marker(marker, report)
+        return report
+
+    def run(item: str, step) -> None:
+        if item in done:
+            return
+        before = len(report.errors)
+        step()
+        if len(report.errors) != before:
+            return
+        done.add(item)
+        try:
+            _write_atomic(progress_file, {"done": sorted(done)})
+        except Exception as exc:
+            # Not fatal: the item is simply redone next start.
+            logger.warning("Could not write %s: %s", progress_file, exc)
+
     studio = user_dir / _STUDIO_DIR
 
     for old_name, new_name in _USER_FILES:
-        _copy_one(user_dir / old_name, studio / new_name, report)
+        run(
+            f"file:{new_name}",
+            lambda o=old_name, n=new_name: _copy_one(user_dir / o, studio / n, report),
+        )
 
     old_updater = find_old_updater_data(list(custom_node_dirs), Path(own_root))
     if old_updater is not None:
-        _copy_updater_data(old_updater, studio / "updater", report)
+        run("updater", lambda: _copy_updater_data(old_updater, studio / "updater", report))
 
     try:
         users = sorted(
@@ -261,19 +328,22 @@ def migrate(user_dir: Path, custom_node_dirs: list[Path], own_root: Path) -> Mig
         users = []
         report.errors.append(f"{user_dir}: {exc}")
     for user in users:
-        _copy_one(user / _OLD_CHATS, user / _NEW_CHATS, report)
-        _migrate_settings(user / _SETTINGS, report)
+        run(f"chats:{user.name}", lambda u=user: _copy_one(u / _OLD_CHATS, u / _NEW_CHATS, report))
+        run(f"settings:{user.name}", lambda u=user: _migrate_settings(u / _SETTINGS, report))
 
     if not report.errors:
-        try:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            temp = marker.with_name(marker.name + ".tmp")
-            temp.write_text(
-                json.dumps({"migrated_at": time.time(), "report": asdict(report)}, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(temp, marker)
-        except Exception as exc:
-            report.errors.append(f"{marker}: {exc}")
-            logger.warning("Could not write %s: %s", marker, exc)
+        _write_marker(marker, report)
     return report
+
+
+def _write_marker(marker: Path, report: MigrationReport) -> None:
+    try:
+        _write_atomic(marker, {"migrated_at": time.time(), "report": asdict(report)})
+    except Exception as exc:
+        report.errors.append(f"{marker}: {exc}")
+        logger.warning("Could not write %s: %s", marker, exc)
+        return
+    try:
+        marker.with_name(PROGRESS.name).unlink()
+    except OSError:
+        pass

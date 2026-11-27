@@ -739,8 +739,10 @@ export function renderRenameView(container, deps) {
   async function loadRows() {
     if (!store.jobId) return;
     deps.setLoading?.("rename", true);
+    const jobId = store.jobId;
     try {
-      const data = await deps.getJson(`${ROUTE}/rename/rows?jobId=${encodeURIComponent(store.jobId)}`);
+      const data = await deps.getJson(`${ROUTE}/rename/rows?jobId=${encodeURIComponent(jobId)}`);
+      if (store.jobId !== jobId) return; // a newer dry run started meanwhile
       setRows(store, data.rows);
       store.removeDup = defaultRemoveDup(store);
       store.deleteKeys = new Set();
@@ -766,6 +768,7 @@ export function renderRenameView(container, deps) {
         store.editing = null;
       }
     } catch (error) {
+      if (store.jobId !== jobId) return;
       if (/job not found/i.test(String(error?.message || ""))) {
         // ComfyUI was restarted: that dry run is gone.
         forgetDryRun();
@@ -1322,7 +1325,7 @@ export function renderRenameView(container, deps) {
   function cardHtml(card) {
     const info = cardInfo(card);
     const mature = info.nsfw ? String(deps.matureMode?.() || "show") : "show";
-    const url = mature === "hide" ? "" : info.previewUrl;
+    const url = mature === "hide" || !/^https:\/\//i.test(info.previewUrl || "") ? "" : info.previewUrl;
     let thumb = `<div class="cu-thumb-empty">No preview</div>`;
     if (url && info.previewType === "video") thumb = `<video src="${esc(url)}#t=0.5" preload="metadata" muted playsinline></video>`;
     else if (url) thumb = `<img src="${esc(url)}" alt="" loading="lazy" decoding="async">`;
@@ -1448,7 +1451,7 @@ export function renderRenameView(container, deps) {
     let action = "";
     if (info.action === "use-maker" && row.parts?.creator) {
       action = ` <button class="cu-inline-btn" data-rn-action="use-maker"${disabledIf(isLocked)}>Use ${esc(row.parts.creator)}</button>`;
-      if (row.uploader && row.uploader.toLowerCase() !== row.parts.creator) {
+      if (row.uploader && row.uploader.toLowerCase() !== String(row.parts?.creator || "").toLowerCase()) {
         action += ` <button class="cu-inline-btn" data-rn-action="use-uploader"${disabledIf(isLocked)}>Use ${esc(row.uploader)}</button>`;
       }
     } else if (info.action === "base-link") {

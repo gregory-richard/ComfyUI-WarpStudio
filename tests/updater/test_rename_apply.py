@@ -56,6 +56,16 @@ class _NoTrash:
         raise AssertionError(f"unexpected trash of {path}")
 
 
+def _bin(trashed: list):
+    """A Recycle Bin stand-in: records the path and takes the file away."""
+
+    def trash(path):
+        trashed.append(path)
+        os.remove(path)
+
+    return trash
+
+
 class ApplyTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -464,7 +474,7 @@ class ApplyTests(unittest.TestCase):
         _same_weights(self.folder, "x", "y")
         survivor, dup = self._dup_pair("y", "y2", "x")
         trashed = []
-        self._run([survivor, dup], selected={survivor["key"]}, remove={dup["key"]}, trash=trashed.append)
+        self._run([survivor, dup], selected={survivor["key"]}, remove={dup["key"]}, trash=_bin(trashed))
         self.assertEqual([str(self.folder / "x.safetensors")], trashed)
 
     def test_missing_send2trash_fails_only_the_removal(self) -> None:
@@ -596,7 +606,7 @@ class ApplyTests(unittest.TestCase):
             survivorKey=survivor["key"],
         )
         trashed = []
-        result = self._run([survivor, dup], selected={survivor["key"]}, remove={dup["key"]}, trash=trashed.append)
+        result = self._run([survivor, dup], selected={survivor["key"]}, remove={dup["key"]}, trash=_bin(trashed))
         self.assertEqual(
             sorted(str(self.folder / ("fotomax - nikra hyperreal" + s)) for s in SIDECARS), sorted(trashed)
         )
@@ -614,7 +624,7 @@ class ApplyTests(unittest.TestCase):
         dup = _row(self.folder, "copy", "copy", status="duplicate", survivorKey=survivor["key"],
                    key=str(info).lower(), modelPath=str(info))
         trashed = []
-        result = self._run([survivor, dup], selected=set(), remove={dup["key"]}, trash=trashed.append)
+        result = self._run([survivor, dup], selected=set(), remove={dup["key"]}, trash=_bin(trashed))
         self.assertEqual(sorted([str(info), str(preview)]), sorted(trashed))
         self.assertIn(dup["key"], result["done"])
         for path in others:
@@ -654,7 +664,7 @@ class ApplyTests(unittest.TestCase):
     def test_identical_copy_is_removed(self) -> None:
         survivor, dup = self._copy_and_survivor(b"same weights", b"same weights")
         trashed = []
-        result = self._run([survivor, dup], selected=set(), remove={dup["key"]}, trash=trashed.append)
+        result = self._run([survivor, dup], selected=set(), remove={dup["key"]}, trash=_bin(trashed))
         self.assertEqual([dup["key"]], result["done"])
         self.assertEqual(sorted(str(self.folder / ("copy" + s)) for s in SIDECARS), sorted(trashed))
 
@@ -695,7 +705,7 @@ class ApplyTests(unittest.TestCase):
         dup["key"] = str(self.folder / "copy.civitai.info").lower()
         trashed = []
         with mock.patch.object(rename_apply, "sha256_file", side_effect=AssertionError("hashed")):
-            result = self._run([survivor, dup], selected=set(), remove={dup["key"]}, trash=trashed.append)
+            result = self._run([survivor, dup], selected=set(), remove={dup["key"]}, trash=_bin(trashed))
         self.assertEqual([dup["key"]], result["done"])
         self.assertEqual(2, len(trashed))
 
@@ -814,6 +824,227 @@ class ApplyTests(unittest.TestCase):
         result = self._run([survivor, dup], selected={survivor["key"]}, remove={dup["key"]})
         self.assertIn(dup["key"], [s["entry"] for s in result["skipped"]])
 
+    # --- recovery of deletions, trash that leaves the file, undo order ---
+
+    def test_finish_after_a_crash_in_a_deletion_removes_it(self) -> None:
+        _make(self.folder, "unwanted")
+        row = _row(self.folder, "unwanted", "unwanted")
+        steps, _skipped = plan([row], set(), set(), {row["key"]})
+        self.journal.begin(steps)  # crashed before the first file went
+        trashed = []
+        result = recover(RenameJournal(self.data_dir), "finish", trash=_bin(trashed))
+        self.assertEqual([], result["skipped"])
+        self.assertEqual([row["key"]], result["done"])
+        self.assertEqual(set(), _names(self.folder))
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    def test_weights_still_there_after_trash_keep_their_sidecars(self) -> None:
+        _make(self.folder, "unwanted")
+        row = _row(self.folder, "unwanted", "unwanted")
+        trashed = []
+        steps, _skipped = plan([row], set(), set(), {row["key"]})
+        # send2trash returned, but the file ComfyUI has loaded is still there.
+        result = apply_steps(steps, self.journal, trash=trashed.append)
+        self.assertEqual([str(self.folder / "unwanted.safetensors")], trashed)
+        self.assertEqual([], result["done"])
+        self.assertEqual([rename_apply.STILL_THERE], [s["reason"] for s in result["skipped"]])
+        self.assertEqual({"unwanted" + s for s in SIDECARS}, _names(self.folder))
+
+    def _deletion_then_crash(self, trash):
+        """A deletion applied with ``trash``, then a crash before the rename after it."""
+        _make(self.folder, "unwanted")
+        _make(self.folder, "a")
+        gone, renamed = _row(self.folder, "unwanted", "unwanted"), _row(self.folder, "a", "a2")
+        steps, _skipped = plan([gone, renamed], {renamed["key"]}, set(), {gone["key"]})
+
+        def progress(current, total, message):
+            raise RuntimeError("ComfyUI stopped")
+
+        with self.assertRaises(RuntimeError):
+            apply_steps(steps, self.journal, trash=trash, progress=progress)
+        return recover(RenameJournal(self.data_dir), "undo")
+
+    def test_undo_does_not_say_a_removal_given_up_is_in_the_recycle_bin(self) -> None:
+        # send2trash returned with the weights still there: nothing went to the Recycle Bin.
+        result = self._deletion_then_crash([].append)
+        self.assertNotIn(rename_apply.IN_RECYCLE_BIN, {s["reason"] for s in result["skipped"]})
+        self.assertEqual({"unwanted" + s for s in SIDECARS} | {"a" + s for s in SIDECARS}, _names(self.folder))
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    def test_undo_names_only_the_removed_files_of_a_half_removal(self) -> None:
+        trashed = []
+        binned = _bin(trashed)
+
+        def weights_only(path):
+            if not path.endswith(".safetensors"):
+                raise OSError("the Recycle Bin refused it")
+            binned(path)
+
+        result = self._deletion_then_crash(weights_only)
+        self.assertEqual(
+            [(str(self.folder / "unwanted.safetensors"), rename_apply.IN_RECYCLE_BIN)],
+            [(s["path"], s["reason"]) for s in result["skipped"]],
+        )
+
+    def test_undo_of_a_finished_removal_still_points_at_the_recycle_bin(self) -> None:
+        trashed = []
+        result = self._deletion_then_crash(_bin(trashed))
+        self.assertEqual(
+            {str(self.folder / ("unwanted" + s)) for s in SIDECARS},
+            {s["path"] for s in result["skipped"] if s["reason"] == rename_apply.IN_RECYCLE_BIN},
+        )
+
+    def test_finish_stops_at_weights_still_there(self) -> None:
+        _make(self.folder, "unwanted")
+        row = _row(self.folder, "unwanted", "unwanted")
+        steps, _skipped = plan([row], set(), set(), {row["key"]})
+        self.journal.begin(steps)
+        trashed = []
+        result = recover(RenameJournal(self.data_dir), "finish", trash=trashed.append)
+        self.assertEqual([str(self.folder / "unwanted.safetensors")], trashed)
+        self.assertEqual([rename_apply.STILL_THERE], [s["reason"] for s in result["skipped"]])
+        self.assertEqual({"unwanted" + s for s in SIDECARS}, _names(self.folder))
+        self.assertIsNotNone(RenameJournal(self.data_dir).pending())
+
+    def _crash_after(self, rows, entries: int):
+        def progress(current, total, message):
+            if current == entries:
+                raise RuntimeError("ComfyUI stopped")
+
+        with self.assertRaises(RuntimeError):
+            self._run(rows, progress=progress)
+
+    def test_undo_of_a_chain_goes_back_last_first(self) -> None:
+        # "b" gives up its name for "a": undo must move "a" back before "b" can go back.
+        for stem in ("a", "b", "d"):
+            _make(self.folder, stem)
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "c"), _row(self.folder, "d", "d2")]
+        self._crash_after(rows, 2)
+        self.assertEqual("a.civitai.info", self._content("b"))
+        result = recover(RenameJournal(self.data_dir), "undo")
+        self.assertEqual({stem + s for stem in "abd" for s in SIDECARS}, _names(self.folder))
+        self.assertEqual(("a.civitai.info", "b.civitai.info"), (self._content("a"), self._content("b")))
+        self.assertEqual({rows[0]["key"], rows[1]["key"]}, set(result["done"]))
+        self.assertEqual([], result["skipped"])
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    def test_undo_of_a_swap_puts_both_back(self) -> None:
+        for stem in ("a", "b", "d"):
+            _make(self.folder, stem)
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "a"), _row(self.folder, "d", "d2")]
+        self._crash_after(rows, 2)
+        self.assertEqual("b.civitai.info", self._content("a"))
+        result = recover(RenameJournal(self.data_dir), "undo")
+        self.assertEqual({stem + s for stem in "abd" for s in SIDECARS}, _names(self.folder))
+        self.assertEqual(("a.civitai.info", "b.civitai.info"), (self._content("a"), self._content("b")))
+        self.assertEqual({rows[0]["key"], rows[1]["key"]}, set(result["done"]))
+        self.assertEqual([], result["skipped"])
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    def test_undo_of_a_ring_of_three(self) -> None:
+        for stem in ("a", "b", "c", "d"):
+            _make(self.folder, stem)
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "c"), _row(self.folder, "c", "a"),
+                _row(self.folder, "d", "d2")]
+        self._crash_after(rows, 3)
+        result = recover(RenameJournal(self.data_dir), "undo")
+        self.assertEqual({stem + s for stem in "abcd" for s in SIDECARS}, _names(self.folder))
+        self.assertEqual(("a.civitai.info", "b.civitai.info", "c.civitai.info"),
+                         (self._content("a"), self._content("b"), self._content("c")))
+        self.assertEqual([], result["skipped"])
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    def test_undo_never_swaps_a_swap_that_did_not_happen(self) -> None:
+        # Both sides of the swap failed (a locked file) and were put back; then a crash.
+        for stem in ("a", "b", "d"):
+            _make(self.folder, stem)
+        real_rename = os.rename
+
+        def fake_rename(src, dst):
+            if Path(src).name == "b.safetensors":
+                raise PermissionError("in use")
+            return real_rename(src, dst)
+
+        rows = [_row(self.folder, "a", "b"), _row(self.folder, "b", "a"), _row(self.folder, "d", "d2")]
+        with mock.patch("os.rename", side_effect=fake_rename):
+            self._crash_after(rows, 2)
+        before = _names(self.folder)
+        result = recover(RenameJournal(self.data_dir), "undo")
+        self.assertEqual(before, _names(self.folder))
+        self.assertEqual(("a.civitai.info", "b.civitai.info"), (self._content("a"), self._content("b")))
+        self.assertEqual([], result["skipped"])
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    def test_undo_keeps_a_file_whose_old_name_is_taken(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        rows = [_row(self.folder, "a", "a2"), _row(self.folder, "b", "b2")]
+        self._crash_after(rows, 1)
+        (self.folder / "a.safetensors").write_text("someone else's", encoding="utf-8")
+        result = recover(RenameJournal(self.data_dir), "undo")
+        self.assertEqual([(rows[0]["key"], rename_apply.OLD_NAME_TAKEN)],
+                         [(s["entry"], s["reason"]) for s in result["skipped"]])
+        self.assertEqual([], result["done"])
+        self.assertEqual({"a2.safetensors", "a.safetensors", "a.civitai.info", "a.preview.png"}
+                         | {"b" + s for s in SIDECARS}, _names(self.folder))
+        self.assertEqual("someone else's", (self.folder / "a.safetensors").read_text(encoding="utf-8"))
+        pending = RenameJournal(self.data_dir).pending()
+        self.assertIsNotNone(pending, "a file still under its new name must stay journaled")
+        self.assertEqual({rows[0]["key"]}, {s["entry"] for s in pending["steps"]})
+        # Once the name is free again, undo finishes the job.
+        os.remove(self.folder / "a.safetensors")
+        second = recover(RenameJournal(self.data_dir), "undo")
+        self.assertEqual([], second["skipped"])
+        self.assertEqual({"a" + s for s in SIDECARS} | {"b" + s for s in SIDECARS}, _names(self.folder))
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    def test_finish_after_an_undo_that_found_the_old_name_taken(self) -> None:
+        _make(self.folder, "a")
+        _make(self.folder, "b")
+        rows = [_row(self.folder, "a", "a2"), _row(self.folder, "b", "b2")]
+        self._crash_after(rows, 1)
+        (self.folder / "a.safetensors").write_text("someone else's", encoding="utf-8")
+        recover(RenameJournal(self.data_dir), "undo")
+        result = recover(RenameJournal(self.data_dir), "finish")
+        self.assertEqual([], result["skipped"])
+        self.assertEqual({"a2" + s for s in SIDECARS} | {"b" + s for s in SIDECARS} | {"a.safetensors"},
+                         _names(self.folder))
+        self.assertEqual("someone else's", (self.folder / "a.safetensors").read_text(encoding="utf-8"))
+        self.assertIsNone(RenameJournal(self.data_dir).pending())
+
+    # --- new names that are not bare file names --------------------------
+
+    def test_a_new_name_that_leaves_the_folder_is_refused(self) -> None:
+        inner = self.folder / "inner"
+        inner.mkdir()
+        bad = ["..\\..\\x", "../x", "sub/x", "sub\\x", "..", ".", "d:x", "con", "x.", "x ", "tab\there"]
+        rows = []
+        for n, new in enumerate(bad):
+            _make(inner, f"m{n}")
+            rows.append(_row(inner, f"m{n}", new))
+        before = _names(inner)
+        steps, skipped = plan(rows, {row["key"] for row in rows}, set())
+        self.assertEqual([], steps)
+        self.assertEqual({row["key"] for row in rows}, {s["entry"] for s in skipped})
+        self.assertEqual({rename_apply.UNSAFE_NEW_NAME}, {s["reason"] for s in skipped})
+        result = self._run(rows)
+        self.assertEqual([], result["done"])
+        self.assertEqual(before, _names(inner))
+        self.assertEqual({"inner"}, _names(self.folder))
+
+    def test_a_row_with_a_blocking_flag_is_refused(self) -> None:
+        for flag in ("forbidden:title", "exists", "collision", "empty:creator"):
+            with self.subTest(flag=flag):
+                _make(self.folder, "a")
+                row = _row(self.folder, "a", "b", flags=[flag])
+                steps, skipped = plan([row], {row["key"]}, set())
+                self.assertEqual([], steps)
+                self.assertEqual([(row["key"], rename_apply.BLOCKED_NEW_NAME)],
+                                 [(s["entry"], s["reason"]) for s in skipped])
+        # A warning flag does not block.
+        row = _row(self.folder, "a", "maker - title - v1.5 (sdxl)", flags=["maker-unknown", "invented:v1.5"])
+        self.assertEqual(3, len(plan([row], {row["key"]}, set())[0]))
+
     def test_update_saved_paths(self) -> None:
         old = str(self.folder / "Old.safetensors")
         new = str(self.folder / "new.safetensors")
@@ -915,7 +1146,7 @@ class RenameLogTests(unittest.TestCase):
         survivor = _row(self.folder, "keep", "keep", status="unchanged", modelPath=str(self.folder / "keep.safetensors"))
         dup = _row(self.folder, "copy", "copy", status="duplicate", survivorKey=survivor["key"])
         trashed = []
-        self._apply([survivor, dup], set(), {dup["key"]}, trash=trashed.append)
+        self._apply([survivor, dup], set(), {dup["key"]}, trash=_bin(trashed))
         self.assertEqual(3, len(trashed))
         lines = self.lines()
         self.assertEqual({"trash"}, {line["kind"] for line in lines})

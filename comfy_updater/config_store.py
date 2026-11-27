@@ -207,6 +207,7 @@ def _clean_hf_repos(values: list) -> list[str]:
 def _int_in_range(value, default: int, minimum: int, maximum: int) -> int:
     try:
         as_int = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: JSON's 1e999 parses to inf, and int(inf) raises it.
         return default
     return max(minimum, min(maximum, as_int))

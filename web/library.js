@@ -6,6 +6,7 @@
 // reads a sidecar for every file in the folder. One cache means one fetch, and
 // it also means the two can never be describing different libraries.
 
+import { fetchRoute, withThumbnails } from "./api_base.js";
 import { guardHeaders } from "./request_guard.js";
 
 let pending = null;
@@ -18,9 +19,18 @@ let modelsCached = null;
 // Throws on failure rather than returning nothing: the browser wants to say why
 // it is empty, and the prompt - which does not care - catches at its own call.
 async function ask(url, key) {
-  const response = await fetch(url, { headers: guardHeaders() });
-  if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-  return (await response.json())[key] || [];
+  const response = await fetchRoute(url, { headers: guardHeaders() });
+  if (!response.ok) {
+    // A refusal from the request guard says what to do about it; pass that on.
+    const reason = await response
+      .json()
+      .then((body) => (typeof body?.error === "string" ? body.error : ""))
+      .catch(() => "");
+    throw new Error(reason || `${url} answered ${response.status}`);
+  }
+  // The backend names thumbnails by root-absolute path, which 404s under a URL
+  // prefix. Fixed here, once, so the Gallery and the prompt both get a usable one.
+  return withThumbnails((await response.json())[key] || []);
 }
 
 /** Every LoRA. */

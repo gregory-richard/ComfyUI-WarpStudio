@@ -3,6 +3,7 @@
 // Both the prompt's completion and the library browser need this, and they must
 // not be able to disagree about what matches what, so it lives in one place.
 
+import { fetchRoute } from "./api_base.js";
 import { guardHeaders } from "./request_guard.js";
 
 /** What a LoRA is filed under: what it says it is, else where it sits.
@@ -118,16 +119,22 @@ export async function connectedBase(node) {
   if (asked.has(name)) return asked.get(name);
 
   let answer = null;
+  let answered = false;
   try {
-    const info = await fetch(`/warp-studio/model/base?name=${encodeURIComponent(name)}`, {
+    const info = await fetchRoute(`/warp-studio/model/base?name=${encodeURIComponent(name)}`, {
       headers: guardHeaders(),
-    }).then((r) => r.json());
+    }).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    });
+    answered = true;
     if (info.base_model) answer = { name: info.base_model, fromFolder: false };
   } catch {
-    /* fall through to the folder */
+    /* fall through to the folder, without remembering it */
   }
   if (!answer) answer = folderBase(name);
-  asked.set(name, answer);
+  // Only the server's own answer is kept: a failed ask (a restart) is asked again.
+  if (answered) asked.set(name, answer);
   return answer;
 }
 

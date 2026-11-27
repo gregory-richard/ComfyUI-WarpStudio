@@ -19,6 +19,7 @@ import math
 import mimetypes
 import os
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -53,6 +54,8 @@ IMPROVE_REQUEST = "Improve this prompt. Keep what it describes."
 BASE_REQUEST = "Write the current version of the prompt."
 # A thought cut off by a token limit never closes, and is still only a thought.
 _THINK = re.compile(r"(?s)<think>.*?(?:</think>|\Z)")
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
 # A system prompt may tell the model to ask instead of writing. This is how it says so.
 QUESTION_MARKER = "===QUESTION==="
 QUESTION_RULE = (
@@ -217,11 +220,16 @@ def _error_message(code: int, raw: bytes) -> str:
     return f"HTTP {code}: {text[:300] or 'no response body'}"
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    # Python 3.9's socket.timeout is an OSError but not yet a TimeoutError (3.10 made them one).
+    return isinstance(exc, (TimeoutError, socket.timeout))
+
+
 def _broke_off(
     host: str, exc: Exception, api_key: Optional[str], timeout: float
 ) -> "PromptWriterError":
     """A connection that failed while the answer was being read."""
-    if isinstance(exc, TimeoutError):
+    if _is_timeout(exc):
         return PromptWriterError(f"{host} did not answer within {timeout} s")
     return PromptWriterError(
         _scrub(f"The connection to {host} broke off ({type(exc).__name__})", api_key)
@@ -268,12 +276,14 @@ def _send(url, *, api_key, body=None, timeout, opener):
         raise PromptWriterError(_scrub(_error_message(exc.code, raw), api_key)) from None
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
-        if isinstance(reason, TimeoutError):
+        if _is_timeout(reason):
             raise _broke_off(host, reason, api_key, timeout) from None
         raise PromptWriterError(_scrub(f"Could not reach {host}: {reason}", api_key)) from None
-    except (TimeoutError, http.client.HTTPException) as exc:
+    except http.client.HTTPException as exc:
         raise _broke_off(host, exc, api_key, timeout) from None
     except OSError as exc:
+        if _is_timeout(exc):
+            raise _broke_off(host, exc, api_key, timeout) from None
         raise PromptWriterError(_scrub(f"Could not reach {host}: {exc}", api_key)) from None
 
 
@@ -414,7 +424,7 @@ def parse_reply(payload: dict) -> str:
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     if not isinstance(content, str):
         content = ""
-    text = _THINK.sub("", content).strip()
+    text = _split_think(content)[1]
     if not text:
         raise PromptWriterError("The model returned no text")
     return text
@@ -434,47 +444,89 @@ def parse_reasoning(payload: dict) -> str:
     content = message.get("content")
     if not isinstance(content, str):
         return ""
-    return "\n".join(
-        m.strip() for m in re.findall(r"(?s)<think>(.*?)(?:</think>|\Z)", content)
-    ).strip()
+    return _split_think(content)[0]
 
 
-_THINK_OPEN = "<think>"
-_THINK_CLOSE = "</think>"
+def _orphan_close(text: str) -> int:
+    """Where a </think> with no <think> before it starts, or -1.
+
+    A reasoning model whose chat template already wrote the opening tag sends
+    its thought and then only the closing one.
+    """
+    close = text.find(_THINK_CLOSE)
+    opened = text.find(_THINK_OPEN)
+    return close if close >= 0 and (opened < 0 or close < opened) else -1
+
+
+def _split_think(content: str) -> tuple:
+    """(thought, answer) of a whole reply, both stripped."""
+    thoughts = []
+    orphan = _orphan_close(content)
+    if orphan >= 0:
+        thoughts.append(content[:orphan])
+        content = content[orphan + len(_THINK_CLOSE) :]
+    thoughts += re.findall(r"(?s)<think>(.*?)(?:</think>|\Z)", content)
+    thought = "\n".join(m.strip() for m in thoughts).strip()
+    return thought, _THINK.sub("", content).strip()
+
+
+def _held_back(text: str, tags) -> int:
+    """How much of the end of `text` may be the start of one of `tags`, finished by the next piece."""
+    return max(
+        (
+            k
+            for tag in tags
+            for k in range(min(len(tag) - 1, len(text)), 0, -1)
+            if text.endswith(tag[:k])
+        ),
+        default=0,
+    )
 
 
 class _ThinkSplitter:
-    """Splits streamed content into thought and answer at <think> tags, wherever a piece cuts one."""
+    """Splits streamed content into thought and answer at <think> tags, wherever a piece cuts one.
+
+    `feed` returns (thought, answer, retract). `retract` is true once, when a
+    </think> comes before any <think>: the answer handed out before this piece
+    was thought as well, and the caller must take it back.
+    """
 
     def __init__(self):
         self.inside = False
         self.held = ""
+        # Only before the first tag can a </think> be one whose <think> was never sent.
+        self.tagged = False
 
     def feed(self, piece: str) -> tuple:
         text = self.held + piece
         self.held = ""
-        thought, answer = [], []
+        thought, answer, retract = [], [], False
         while text:
-            tag = _THINK_CLOSE if self.inside else _THINK_OPEN
+            if self.inside:
+                tags = (_THINK_CLOSE,)
+            elif self.tagged:
+                tags = (_THINK_OPEN,)
+            else:
+                tags = (_THINK_OPEN, _THINK_CLOSE)
             into = thought if self.inside else answer
-            at = text.find(tag)
-            if at < 0:
-                # The end may be the start of the tag, finished by the next piece.
-                keep = next(
-                    (
-                        k
-                        for k in range(min(len(tag) - 1, len(text)), 0, -1)
-                        if text.endswith(tag[:k])
-                    ),
-                    0,
-                )
+            found = [(text.find(tag), tag) for tag in tags if tag in text]
+            if not found:
+                keep = _held_back(text, tags)
                 into.append(text[: len(text) - keep])
                 self.held = text[len(text) - keep :]
                 break
-            into.append(text[:at])
+            at, tag = min(found)
+            self.tagged = True
+            if tag == _THINK_CLOSE and not self.inside:
+                thought += answer
+                thought.append(text[:at])
+                answer = []
+                retract = True
+            else:
+                into.append(text[:at])
+                self.inside = not self.inside
             text = text[at + len(tag) :]
-            self.inside = not self.inside
-        return "".join(thought), "".join(answer)
+        return "".join(thought), "".join(answer), retract
 
     def flush(self) -> tuple:
         held, self.held = self.held, ""
@@ -528,16 +580,24 @@ def _read_stream(resp, on_delta, stopped) -> dict:
             "",
         )
         content = delta.get("content") if isinstance(delta.get("content"), str) else ""
-        more, text = split.feed(content)
+        more, text, retract = split.feed(content)
+        if retract:
+            thought += answer
+            answer = []
         think += more
-        if not think and not text:
+        if not think and not text and not retract:
             continue
         thought.append(think)
         answer.append(text)
         chars += len(think) + len(text)
         if on_delta is not None:
             running = usage.get("completion_tokens")
-            on_delta(think, text, running if isinstance(running, int) else _estimate_tokens(chars))
+            tokens = running if isinstance(running, int) else _estimate_tokens(chars)
+            # The fourth argument only when it is true, so a listener of three still hears every other piece.
+            if retract:
+                on_delta(think, text, tokens, True)
+            else:
+                on_delta(think, text, tokens)
     think, text = split.flush()
     thought.append(think)
     answer.append(text)
@@ -648,7 +708,7 @@ EDIT_TITLE_SYSTEM = (
 
 def clean_title(text: str) -> str:
     """One short line from whatever the model returned; empty when nothing usable is left."""
-    text = _THINK.sub("", text or "").strip()
+    text = _split_think(text or "")[1]
     line = text.split("\n", 1)[0].strip()
     line = re.sub(r"^title\s*:\s*", "", line, flags=re.IGNORECASE)
     line = line.strip(" \t\"'`*\u201c\u201d\u2018\u2019").rstrip(" .")
@@ -1130,6 +1190,136 @@ def handle_write(
     return {"error": message}
 
 
+# --- saved chats ------------------------------------------------------------
+#
+# All chats live in one file in the ComfyUI user folder, which every open page
+# saves whole. Each page sends its copy here, and the copy on disk is merged
+# with it chat by chat, so two tabs saving in any order lose nothing. The same
+# rules are in mergeStores in web/prompt_chats.js, which the page uses when it
+# talks to a server without this route.
+
+CHATS_FILE_NAME = "warp_studio_prompt_chats.json"
+CHATS_STORE_VERSION = 1
+# How long a deleted chat's id is kept, so that a tab still holding the chat
+# does not bring it back when it saves. A tab open longer than this could.
+TOMBSTONE_MS = 60 * 24 * 3600 * 1000
+_CHATS_LOCK = threading.Lock()
+
+
+def _finite_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def is_chat_store(raw) -> bool:
+    """A chat file this version can read; the same test as isStore in prompt_chats.js."""
+    version = raw.get("version") if isinstance(raw, dict) else None
+    return (
+        _finite_number(version)
+        and version == CHATS_STORE_VERSION
+        and isinstance(raw.get("chats"), list)
+    )
+
+
+def _rev(chat: dict) -> float:
+    """Which copy of a chat is newer. Chats saved before revisions count as the oldest."""
+    rev = chat.get("rev")
+    return rev if _finite_number(rev) and rev > 0 else 0
+
+
+def _tombstones(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and k and _finite_number(v)}
+
+
+def merge_chat_stores(current: dict, incoming: dict, now_ms: float) -> dict:
+    """Both stores' chats, the newer copy of each, minus those deleted after their last change.
+
+    Chats are kept as they are: only `id` and `rev` are read, so a field this
+    version does not know is not lost. A tie keeps the copy already on disk.
+    """
+    deleted = {}
+    for store in (current, incoming):
+        for chat_id, at in _tombstones(store.get("deleted")).items():
+            deleted[chat_id] = max(deleted.get(chat_id, at), at)
+    newest = {}
+    for store in (current, incoming):
+        for chat in store.get("chats") or []:
+            if not isinstance(chat, dict) or not isinstance(chat.get("id"), str) or not chat["id"]:
+                continue
+            held = newest.get(chat["id"])
+            if held is None or _rev(chat) > _rev(held):
+                newest[chat["id"]] = chat
+    chats = []
+    for chat_id, chat in newest.items():
+        if chat_id in deleted:
+            if deleted[chat_id] >= _rev(chat):
+                continue
+            # Changed after it was deleted elsewhere: the change wins.
+            del deleted[chat_id]
+        chats.append(chat)
+    deleted = {k: v for k, v in deleted.items() if v >= now_ms - TOMBSTONE_MS}
+    return {"version": CHATS_STORE_VERSION, "chats": chats, "deleted": deleted}
+
+
+def _replace_file(path: Path, text: str) -> None:
+    """Write text to path all at once: a reader sees the old file or the new one, never half."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A name of its own, so two writers never share a temporary file.
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows refuses while another reader (ComfyUI serving the file) has it open.
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def save_chats(path: Path, incoming, now_ms: float) -> dict:
+    """Merge a page's chats into the file under a lock, and return what the file now holds."""
+    if not is_chat_store(incoming):
+        raise PromptWriterError("Not a chat file this version can read")
+    path = Path(path)
+    with _CHATS_LOCK:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            current = {"version": CHATS_STORE_VERSION, "chats": []}
+        else:
+            try:
+                current = json.loads(raw)
+            except ValueError:
+                current = None
+            # Never written over: it may be a newer version's, or need repair by hand.
+            if not is_chat_store(current):
+                raise PromptWriterError(
+                    f"{path.name} is not a chat file this version can read, so it was left as it is"
+                )
+        merged = merge_chat_stores(current, incoming, now_ms)
+        _replace_file(path, json.dumps(merged, ensure_ascii=False, separators=(",", ":")))
+    return merged
+
+
+def _comfy_chats_file(request) -> Optional[str]:
+    """Where ComfyUI's own /userdata route keeps the chat file for the user of this request."""
+    from server import PromptServer  # type: ignore
+
+    return PromptServer.instance.user_manager.get_request_user_filepath(request, CHATS_FILE_NAME)
+
+
 # --- aiohttp routes ---------------------------------------------------------
 
 
@@ -1180,17 +1370,43 @@ def key_status(base_url: str, *, env, key_file) -> dict:
     return {"set": bool(source), "source": source, "host": sorted(hosts)[0]}
 
 
-def register(routes, web, *, user_dir: str, settings_loader, image_path, guard) -> None:
+def register(
+    routes, web, *, user_dir: str, settings_loader, image_path, guard, chats_path=None
+) -> None:
     """Attach the /warp-studio/llm routes. Blocking work runs in a thread.
 
     ``guard`` wraps every handler. It refuses requests that did not come from the
     ComfyUI page (see comfy_updater/request_guard.py), so no other web page the
     user has open can save a key or have a prompt or picture sent anywhere.
+
+    ``chats_path(request)`` is the chat file of the request's user; by default
+    the one ComfyUI's /userdata route reads, so the page can still read it there.
     """
     import asyncio
 
     key_file = Path(user_dir) / KEY_FILE_NAME
     log_path = Path(user_dir) / LOG_FILE_NAME
+    chats_file = chats_path or _comfy_chats_file
+
+    @routes.post("/warp-studio/llm/chats")
+    @guard
+    async def _chats(request):
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid request body"})
+        try:
+            path = chats_file(request)
+        except Exception as exc:
+            # ComfyUI with several users names an unknown one this way.
+            return web.json_response({"error": f"No chat file for this user ({exc})"})
+        if not path:
+            return web.json_response({"error": "No chat file for this user"})
+        try:
+            merged = await asyncio.to_thread(save_chats, Path(path), body, time.time() * 1000)
+        except (PromptWriterError, OSError) as exc:
+            return web.json_response({"error": str(exc)})
+        return web.json_response({"store": merged})
 
     @routes.get("/warp-studio/llm/models")
     @guard
@@ -1266,8 +1482,12 @@ def register(routes, web, *, user_dir: str, settings_loader, image_path, guard) 
             loop.call_soon_threadsafe(events.put_nowait, event)
 
         def work():
-            def piece(thinking, text, tokens):
-                send({"type": "delta", "thinking": thinking, "text": text, "tokens": tokens})
+            def piece(thinking, text, tokens, retract=False):
+                event = {"type": "delta", "thinking": thinking, "text": text, "tokens": tokens}
+                # The text sent so far was thinking after all: the page moves it there first.
+                if retract:
+                    event["retract"] = True
+                send(event)
 
             # handle_write answers every failure itself, so the stream always ends with its done line.
             out = handle_write(

@@ -325,6 +325,21 @@ class ModelDownloadTests(unittest.TestCase):
         self.assertNotIn("SECRET", str(ctx.exception))
         self.assertNotIn("sig=", str(ctx.exception))
         self.assertIn("https://files.example-storage.net/x", str(ctx.exception))
+
+    def test_the_error_text_carries_no_signed_query_after_a_bare_path(self):
+        class Dropping(FakeSession):
+            def get(self, url, headers=None, **kwargs):
+                raise requests.ConnectionError(
+                    "HTTPSConnectionPool(host='x', port=443): Max retries exceeded with url: "
+                    "/file/a.safetensors?X-Amz-Credential=KEY&X-Amz-Signature=SECRET "
+                    "(Caused by NameResolutionError('lookup failed'))"
+                )
+
+        with self.assertRaises(DownloadError) as ctx:
+            self.run_download(Dropping({}))
+        self.assertNotIn("SECRET", str(ctx.exception))
+        self.assertNotIn("X-Amz", str(ctx.exception))
+        self.assertIn("url: /file/a.safetensors (Caused by", str(ctx.exception))
         self.assert_folder_empty()
 
 

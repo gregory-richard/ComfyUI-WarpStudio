@@ -12,7 +12,9 @@ export const PROMPT_TYPE = "Warp Lora Prompt";
 const BOOKMARK = /\s*\[(\d+)\]\s*$/;
 
 // The same tag the prompt colours and the backend loads.
-const TAG_RE = /<lora:([^:>]+):(-?[0-9]*\.?[0-9]+)([^>]*)>/gi;
+// The weight is optional: <lora:name> loads at 1, as in A1111.
+const TAG_RE = /<lora:([^:>]+)(?::(-?[0-9]*\.?[0-9]+)([^>]*))?>/gi;
+const tagWeight = (match) => (match[2] === undefined ? 1 : parseFloat(match[2]));
 const COMMENT = "//";
 const TRIGGER_JOIN = ", ";
 // What the server takes; more would only be numbers it throws away.
@@ -35,6 +37,11 @@ export function modelLabel(m) {
   const parts = [String(m?.name ?? m?.id ?? ""), modelPrice(m)].filter(Boolean);
   if (m?.vision) parts.push("👁");
   return parts.join(" · ");
+}
+
+/** True only for a listed model marked as blind; an unknown model gets its images. */
+export function cannotSeeImages(model) {
+  return model != null && model.vision === false;
 }
 
 /** ["0.3 ¢", "8 s", "1,812 → 640 tokens"], leaving out what the reply does not say. */
@@ -150,7 +157,7 @@ export function activeLoraTags(text) {
   const found = [];
   for (const match of value.matchAll(TAG_RE)) {
     if (commentedAt(value, match.index)) continue;
-    found.push({ name: match[1].trim(), weight: parseFloat(match[2]) });
+    found.push({ name: match[1].trim(), weight: tagWeight(match) });
   }
   return found;
 }
@@ -169,7 +176,7 @@ export function switchedOffLoraTags(text) {
   const found = [];
   for (const match of value.matchAll(TAG_RE)) {
     if (commentedAt(value, match.index)) {
-      found.push({ name: match[1].trim(), weight: parseFloat(match[2]) });
+      found.push({ name: match[1].trim(), weight: tagWeight(match) });
     }
   }
   return found;
@@ -582,4 +589,19 @@ export function diffLines(before, after) {
   }
   flush();
   return rows;
+}
+
+/**
+ * One streamed piece of a write, added to what came so far ({thinking, text, tokens}).
+ * `retract` says the text so far was thinking: a reasoning model sent its
+ * thought and then a </think> whose <think> its chat template had already written.
+ */
+export function addPiece(live, piece) {
+  if (piece.retract) {
+    live.thinking += live.text;
+    live.text = "";
+  }
+  live.thinking += piece.thinking ?? "";
+  live.text += piece.text ?? "";
+  live.tokens = piece.tokens ?? live.tokens;
 }

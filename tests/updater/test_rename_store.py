@@ -149,7 +149,7 @@ class RenameStoreTests(unittest.TestCase):
             journal.begin([{"kind": "rename", "from": f"a{n}", "to": f"b{n}", "entry": "e"} for n in range(3)])
             writes = []
             real_write = journal._write
-            journal._write = lambda payload: (writes.append(1), real_write(payload))
+            journal._write = lambda payload, **kwargs: (writes.append(1), real_write(payload, **kwargs))
             journal.mark_done_many([0, 2])
             self.assertEqual(1, len(writes))
             pending = RenameJournal(data_dir).pending()
@@ -180,6 +180,31 @@ class RenameStoreTests(unittest.TestCase):
             self.assertNotIn(": ", text)
             journal.mark_done(0)
             self.assertNotIn("\n", (data_dir / "rename_journal.json").read_text(encoding="utf-8"))
+
+    def test_journal_keeps_delete_and_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            RenameJournal(data_dir).begin([
+                {"kind": "trash", "from": "a.safetensors", "to": "", "entry": "a", "delete": True},
+                {"kind": "rename", "from": "b.safetensors", "to": "c.safetensors", "entry": "b", "suffix": ".safetensors"},
+                {"kind": "rename", "from": "d.safetensors", "to": "e.safetensors", "entry": "d"},
+            ])
+            steps = RenameJournal(data_dir).pending()["steps"]
+            self.assertIs(True, steps[0]["delete"])
+            self.assertEqual(".safetensors", steps[1]["suffix"])
+            # Absent fields stay absent.
+            self.assertEqual({"kind", "from", "to", "entry", "done"}, set(steps[2]))
+
+    def test_marking_steps_done_is_synced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal = RenameJournal(Path(tmpdir))
+            journal.begin([{"kind": "rename", "from": f"a{n}", "to": f"b{n}", "entry": f"e{n}"} for n in range(3)])
+            with mock.patch("os.fsync") as fsync:
+                journal.mark_done(0)
+            self.assertEqual(1, fsync.call_count)
+            with mock.patch("os.fsync") as fsync:
+                journal.mark_done_many([1, 2])
+            self.assertEqual(1, fsync.call_count)
 
     def test_other_stores_keep_their_indented_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

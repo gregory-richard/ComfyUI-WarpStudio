@@ -28,6 +28,8 @@ _PACE_SECONDS = 1.5
 _MAX_JSON_BYTES = 10_000_000
 # Longest side of a saved preview: keeps it well under the local-preview route's size cap.
 MAX_PREVIEW_SIDE = 2048
+# Most pixels a preview may decode from: a small palette PNG can claim 13000x13000.
+MAX_PREVIEW_PIXELS = 40_000_000
 
 
 def is_allowed_url(url: str) -> bool:
@@ -188,7 +190,9 @@ def save_preview_png(data: bytes, target: Path) -> bool:
         return False
     tmp_path = target.with_name(f"{target.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with Image.open(io.BytesIO(data)) as image:
+        with Image.open(io.BytesIO(data), formats=["PNG", "JPEG", "WEBP", "GIF"]) as image:
+            if image.size[0] * image.size[1] > MAX_PREVIEW_PIXELS:
+                return False
             if image.mode not in ("RGB", "RGBA"):
                 image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
             if max(image.size) > MAX_PREVIEW_SIDE:

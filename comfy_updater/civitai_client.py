@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import io
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import threading
 import time
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 
@@ -23,6 +26,13 @@ try:
 except Exception:  # pragma: no cover - optional import guard
     Image = None
 
+
+# Bounds on a Retry-After wait: not so short that a "0" hammers the server, not
+# so long that one odd header parks a whole check for an hour.
+RETRY_AFTER_MIN_SECONDS = 1.0
+RETRY_AFTER_MAX_SECONDS = 120.0
+# How long a cool-down sleep runs before Stop is looked at again.
+_COOLDOWN_SLICE_SECONDS = 1.0
 
 # Civitai's category is one of a model's tags; these are the tags that are one.
 CATEGORY_KEYS = (
@@ -60,6 +70,11 @@ class CivitaiClient:
         # Checked between retries, so a stopped job does not sit through the
         # whole back-off when Civitai is failing.
         self.should_stop = should_stop
+        # Earliest time.monotonic() at which a request may go out. Civitai's
+        # Retry-After applies to the whole client, not to the request that got
+        # it, so threads sharing this client do not each hit the same 429.
+        self._cooldown_until = 0.0
+        self._cooldown_lock = threading.Lock()
         self.session = requests.Session()
         # Caches the model payload, None for a silent miss, or the error that
         # a strict lookup raised, so several files of one model share a call.
@@ -74,8 +89,18 @@ class CivitaiClient:
         if api_key:
             self.default_headers["Authorization"] = f"Bearer {api_key}"
 
-    def get_version_by_hash(self, sha256_hash: str) -> dict | None:
-        return self._get_json(f"{VERSION_BY_HASH_URL}/{sha256_hash}")
+    def get_version_by_hash(self, sha256_hash: str, *, raise_on_error: bool = False) -> dict | None:
+        """Look a file up by its SHA256.
+
+        With ``raise_on_error`` a failure raises ``CivitaiRequestError`` as for
+        ``get_model``; ``status`` 404 (or 400) is the one that means Civitai
+        does not know the hash.
+        """
+        # Hashes come from sidecars, which shared model packs also write: only
+        # a real SHA256 goes into the path of a request that carries the key.
+        if not isinstance(sha256_hash, str) or not _SHA256_RE.fullmatch(sha256_hash):
+            return _not_found(raise_on_error, f"Not a SHA256 hash: {sha256_hash!r}")
+        return self._get_json(f"{VERSION_BY_HASH_URL}/{sha256_hash}", raise_on_error=raise_on_error)
 
     def get_model(self, model_id: int | str, *, raise_on_error: bool = False) -> dict | None:
         """Fetch a model page payload.
@@ -85,6 +110,8 @@ class CivitaiClient:
         ``CivitaiRequestError`` instead of returning None, so callers can tell
         a missing model from an empty one.
         """
+        if _path_id(model_id) is None:
+            return _not_found(raise_on_error, f"Not a Civitai model id: {model_id!r}")
         key = str(model_id)
         if key not in self._model_cache:
             try:
@@ -100,6 +127,8 @@ class CivitaiClient:
         return cached
 
     def get_version(self, version_id: int | str, *, raise_on_error: bool = False) -> dict | None:
+        if _path_id(version_id) is None:
+            return _not_found(raise_on_error, f"Not a Civitai version id: {version_id!r}")
         return self._get_json(f"{MODEL_VERSION_BY_ID_URL}/{version_id}", raise_on_error=raise_on_error)
 
     def get_model_versions_for_model(self, model_id: int | str) -> tuple[str, list[dict], bool]:
@@ -302,9 +331,35 @@ class CivitaiClient:
             return self.default_headers
         return {"User-Agent": USER_AGENT}
 
+    def _extend_cooldown(self, seconds: float) -> None:
+        """No request of this client before ``seconds`` from now; never shortens an earlier wait."""
+        until = time.monotonic() + seconds
+        with self._cooldown_lock:
+            if until > self._cooldown_until:
+                self._cooldown_until = until
+
+    def _wait_for_cooldown(self) -> bool:
+        """Sleeps out the shared cool-down; False when Stop was asked meanwhile."""
+        while True:
+            with self._cooldown_lock:
+                remaining = self._cooldown_until - time.monotonic()
+            if remaining <= 0:
+                return True
+            if self.should_stop and self.should_stop():
+                return False
+            # Sliced so Stop is noticed within a second, and so a later 429
+            # that extends the cool-down is picked up on the next pass.
+            time.sleep(min(remaining, _COOLDOWN_SLICE_SECONDS))
+
     def _get_json(self, url: str, *, raise_on_error: bool = False) -> dict | None:
         last_error = None
         for attempt in range(self.max_retries + 1):
+            # Sitting out a cool-down another request set is not an attempt.
+            if not self._wait_for_cooldown():
+                # Nothing was sent, which is not an answer: a caller that asked
+                # for errors must not read it as "Civitai does not have this".
+                last_error = last_error or "stopped while waiting out Civitai's rate limit"
+                break
             try:
                 response = self.session.get(
                     url,
@@ -319,6 +374,10 @@ class CivitaiClient:
                     try:
                         return response.json()
                     except ValueError:
+                        # An HTML page with status 200 (a Cloudflare check) is a
+                        # failure, not an answer that the item does not exist.
+                        if raise_on_error:
+                            raise CivitaiRequestError(f"{url} :: {response.status_code} reply was not JSON")
                         return None
                 if response.status_code in (401, 403):
                     if "Authorization" in self.default_headers:
@@ -340,10 +399,27 @@ class CivitaiClient:
                     return None
                 last_error = f"{response.status_code} {response.reason}"
 
+            told_to_wait = None
+            if response is not None and (
+                response.status_code == 429 or response.status_code == 503
+            ):
+                told_to_wait = _retry_after_seconds(response)
+                if told_to_wait is None and response.status_code == 429 and attempt < self.max_retries:
+                    # A 429 that names no wait still means "everyone slow down":
+                    # the usual backoff becomes the shared cool-down, so the
+                    # other pending lookups do not each run into it as well.
+                    told_to_wait = _retry_delay_seconds(attempt)
+            if told_to_wait is not None:
+                # Recorded even on the last attempt: other requests of this
+                # client are still to be sent and should not hit the same wall.
+                self._extend_cooldown(told_to_wait)
+
             if self.should_stop and self.should_stop():
                 break
-            if attempt < self.max_retries:
+            if attempt < self.max_retries and told_to_wait is None:
                 time.sleep(_retry_delay_seconds(attempt))
+            # With a Retry-After the wait is the shared cool-down, which the
+            # next pass through the loop sits out before sending.
 
         if last_error:
             print(f"Civitai updater request failed: {url} :: {last_error}")
@@ -476,8 +552,60 @@ def _refuse_foreign_redirect(response, *args, **kwargs):
     return response
 
 
+_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
+_ID_RE = re.compile(r"[0-9]+")
+
+
+def _path_id(value) -> str | None:
+    """A Civitai id as a URL path segment: digits only, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value) if value >= 0 else None
+    if isinstance(value, str) and _ID_RE.fullmatch(value):
+        return value
+    return None
+
+
+def _not_found(raise_on_error: bool, detail: str) -> None:
+    """What a lookup of a value that cannot be on Civitai answers, with no request sent."""
+    if raise_on_error:
+        raise CivitaiRequestError(f"404 Not Found. {detail}", status=404)
+    return None
+
+
 def _retry_delay_seconds(attempt: int) -> float:
     return min(10.0, 0.5 * (2**attempt))
+
+
+def _retry_after_seconds(response) -> float | None:
+    """The wait a 429/503 asked for, clamped; None when absent or unusable.
+
+    Retry-After is whole seconds or an HTTP date. A bad or negative value is
+    ignored (the caller then backs off as usual) rather than guessed at.
+    """
+    headers = getattr(response, "headers", None)
+    raw = headers.get("Retry-After") if headers else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    raw = raw.strip()
+    if re.fullmatch(r"\d+", raw):
+        seconds = float(raw)
+    else:
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - _wall_now()).total_seconds()
+    if seconds < 0:
+        return None
+    return min(RETRY_AFTER_MAX_SECONDS, max(RETRY_AFTER_MIN_SECONDS, seconds))
+
+
+def _wall_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _is_png_data(data: bytes) -> bool:

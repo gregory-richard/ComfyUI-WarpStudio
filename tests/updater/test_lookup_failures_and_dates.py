@@ -54,11 +54,31 @@ class ClientStrictLookupTests(unittest.TestCase):
         client = self._client_returning(404)
         self.assertIsNone(client.get_version(11745))
 
+    def test_strict_hash_lookup_tells_a_miss_from_a_failure(self) -> None:
+        for status, expected in ((404, 404), (400, 400), (401, 401), (403, 403), (429, None), (503, None)):
+            client = self._client_returning(status)
+            with self.assertRaises(CivitaiRequestError) as raised:
+                client.get_version_by_hash("ab" * 32, raise_on_error=True)
+            self.assertEqual(expected, raised.exception.status, status)
+            self.assertIsNone(client.get_version_by_hash("ab" * 32))
+
+    def test_strict_lookup_raises_for_a_page_that_is_not_json(self) -> None:
+        class _Html(_Response):
+            def json(self):
+                raise ValueError("Expecting value")
+
+        client = CivitaiClient(api_key="", timeout_seconds=5, max_retries=0)
+        client.session.get = lambda *args, **kwargs: _Html(200)  # type: ignore[assignment]
+        with self.assertRaises(CivitaiRequestError) as raised:
+            client.get_version_by_hash("ab" * 32, raise_on_error=True)
+        self.assertIsNone(raised.exception.status)
+        self.assertIsNone(client.get_version_by_hash("ab" * 32))
+
 
 class _MissingModelClient:
     """Model page gone from Civitai: strict lookups raise, as the real client does."""
 
-    def get_version_by_hash(self, sha256_hash):  # noqa: ARG002
+    def get_version_by_hash(self, sha256_hash, raise_on_error=False):  # noqa: ARG002
         return None
 
     def get_model_versions_for_model(self, model_id):
@@ -98,7 +118,7 @@ class _RecordingHashClient:
         self.hashes: list[str] = []
         self.found = found
 
-    def get_version_by_hash(self, sha256_hash):
+    def get_version_by_hash(self, sha256_hash, raise_on_error=False):  # noqa: ARG002
         self.hashes.append(sha256_hash)
         return self.found
 
@@ -112,15 +132,24 @@ class _RecordingHashClient:
 class _UnreachableClient:
     """Every lookup fails, as the real client reports Civitai being down."""
 
-    def get_version(self, version_id):  # noqa: ARG002
-        return None
+    def __init__(self, status: int | None = None):
+        self.status = status
+        self.hashes: list[str] = []
 
-    def get_version_by_hash(self, sha256_hash):  # noqa: ARG002
-        return None
+    def get_version(self, version_id, raise_on_error=False):  # noqa: ARG002
+        if not raise_on_error:
+            return None
+        raise CivitaiRequestError(f"version {version_id} :: failed", status=self.status)
+
+    def get_version_by_hash(self, sha256_hash, raise_on_error=False):  # noqa: ARG002
+        self.hashes.append(sha256_hash)
+        if not raise_on_error:
+            return None
+        raise CivitaiRequestError(f"hash {sha256_hash} :: failed", status=self.status)
 
 
 class _FoundByHashClient(_DatelessSidecarClient):
-    def get_version_by_hash(self, sha256_hash):  # noqa: ARG002
+    def get_version_by_hash(self, sha256_hash, raise_on_error=False):  # noqa: ARG002
         return {"id": 20, "modelId": 1, "name": "v2", "publishedAt": "2024-01-01T00:00:00Z",
                 "images": [], "files": [{"hashes": {}}]}
 
@@ -188,16 +217,63 @@ class UpdaterServiceLookupTests(unittest.TestCase):
             self.assertEqual("fresh", read_json(info_sidecar_path(model_path))["files"][0]["hashes"]["SHA256"])
 
     def test_failed_refetch_keeps_the_identifying_sidecar(self) -> None:
+        # The version id and the hash are both gone from Civitai.
         sidecar = {"id": 456, "modelId": 123, "name": "Local", "images": []}
         with tempfile.TemporaryDirectory() as tmpdir:
             model_path = _write_model(tmpdir, sidecar)
+            client = _UnreachableClient(status=404)
             with patch("comfy_updater.updater_service.sha256_file", return_value="abc"):
                 item = UpdaterService(None)._process_one(
-                    client=_UnreachableClient(), model_path=model_path, model_type="lora",
+                    client=client, model_path=model_path, model_type="lora",
                     mode="scan", refetch_metadata=True, force_rehash=False,
                 )
             self.assertEqual("not_found", item["status"])
+            self.assertEqual(["abc"], client.hashes)
             self.assertEqual(sidecar, read_json(info_sidecar_path(model_path)))
+
+    def test_refetch_during_an_outage_is_an_error_and_does_not_rehash(self) -> None:
+        sidecar = {"id": 456, "modelId": 123, "name": "Local", "images": []}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = _write_model(tmpdir, sidecar)
+            client = _UnreachableClient()
+            with patch("comfy_updater.updater_service.sha256_file", return_value="abc") as hash_file:
+                with self.assertRaises(CivitaiRequestError):
+                    UpdaterService(None)._process_one(
+                        client=client, model_path=model_path, model_type="lora",
+                        mode="scan", refetch_metadata=True, force_rehash=False,
+                    )
+                hash_file.assert_not_called()
+            self.assertEqual([], client.hashes)
+            self.assertEqual(sidecar, read_json(info_sidecar_path(model_path)))
+
+    def test_hash_lookup_failure_is_not_recorded_as_not_found(self) -> None:
+        # The real client against Civitai rate-limiting, down or refusing the key.
+        for status in (429, 503, 401, 403):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmpdir:
+                model_path = _write_model(tmpdir, None)
+                client = CivitaiClient(api_key="key", timeout_seconds=5, max_retries=0)
+                client.session.get = lambda *args, status=status, **kwargs: _Response(status)  # type: ignore[assignment]
+                with patch("comfy_updater.updater_service.sha256_file", return_value="ab" * 32):
+                    with self.assertRaises(CivitaiRequestError):
+                        UpdaterService(None)._process_one(
+                            client=client, model_path=model_path, model_type="lora",
+                            mode="scan", refetch_metadata=False, force_rehash=False,
+                        )
+                # No stub sidecar claims the file is unknown to Civitai.
+                self.assertFalse(info_sidecar_path(model_path).exists())
+
+    def test_hash_unknown_to_civitai_is_still_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = _write_model(tmpdir, None)
+            client = CivitaiClient(api_key="key", timeout_seconds=5, max_retries=0)
+            client.session.get = lambda *args, **kwargs: _Response(404)  # type: ignore[assignment]
+            with patch("comfy_updater.updater_service.sha256_file", return_value="ab" * 32):
+                item = UpdaterService(None)._process_one(
+                    client=client, model_path=model_path, model_type="lora",
+                    mode="scan", refetch_metadata=False, force_rehash=False,
+                )
+            self.assertEqual("not_found", item["status"])
+            self.assertEqual("ab" * 32, read_json(info_sidecar_path(model_path))["files"][0]["hashes"]["SHA256"])
 
     def test_scan_replaces_a_stub_once_the_model_is_found(self) -> None:
         stub = {"id": "", "modelId": "", "files": [{"hashes": {"SHA256": "abc"}}]}

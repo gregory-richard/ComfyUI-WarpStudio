@@ -498,6 +498,8 @@ async function showFrame(promptId, blob) {
 }
 
 function endPrompt(promptId) {
+  // A finished prompt is not running any more, tracked or not.
+  if (promptId === runningPrompt) runningPrompt = null;
   const run = trackedPrompts.get(promptId);
   if (!run) return;
   trackedPrompts.delete(promptId);
@@ -548,11 +550,14 @@ function setupPreviewMirror() {
     sawMetadata = true;
     showFrame(detail?.jobId ?? detail?.promptId, detail?.blob);
   });
-  // Without metadata there is no prompt id: the running prompt is the newest tracked one.
+  // Without metadata there is no prompt id: use the running prompt. The newest
+  // tracked one is only a fallback, as with queued runs it is still waiting.
   api.addEventListener("b_preview", ({ detail }) => {
     if (sawMetadata) return;
-    const last = [...trackedPrompts.keys()].pop();
-    if (last) showFrame(last, detail);
+    const target = trackedPrompts.has(runningPrompt)
+      ? runningPrompt
+      : [...trackedPrompts.keys()].pop();
+    if (target) showFrame(target, detail);
   });
   api.addEventListener("execution_start", ({ detail }) => {
     runningPrompt = detail?.prompt_id ?? null;

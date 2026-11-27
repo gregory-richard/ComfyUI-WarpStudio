@@ -33,6 +33,7 @@ from .hashing import HashingCancelled, sha256_file
 from .model_actions import WEIGHTS_STILL_THERE, _reason
 from .model_download import DownloadError, DownloadStopped, _move_into_place, file_sha256
 from .model_files import stem_files
+from .path_identity import path_key
 from .rename_apply import send_to_trash
 from .sidecar import preview_path_for, read_json
 
@@ -141,18 +142,20 @@ def unarchive_target(weights: Path, archive_root: Path, type_roots: list) -> Opt
 
 
 def taken_name(files: Iterable[Path], folder: Path) -> str:
-    """The first of ``files`` whose name ``folder`` already has, in any case; "" when none.
+    """The first of ``files`` whose name ``folder`` already has (``path_key``); "" when none.
 
     A folder that isn't there yet has none; one that can't be read raises ``OSError``.
+    Each copy is also made only onto a name the drive itself says is free.
     """
     try:
-        present = {name.casefold() for name in os.listdir(folder)}
+        present = {path_key(name) for name in os.listdir(folder)}
     except FileNotFoundError:
         return ""
     for path in files:
-        if path.name.casefold() in present:
+        if path_key(path.name) in present:
             return path.name
     return ""
+
 
 
 def info_hashes(info_path: Optional[Path]) -> set:

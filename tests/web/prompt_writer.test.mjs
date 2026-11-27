@@ -49,6 +49,15 @@ test("modelLabel", () => {
   assert.equal(modelLabel({ name: "Q", prompt_price: 0, completion_price: 0 }), "Q · $0.00/$0.00");
 });
 
+test("cannotSeeImages: only a listed model marked blind", () => {
+  assert.equal(core.cannotSeeImages({ id: "a", vision: false }), true);
+  assert.equal(core.cannotSeeImages({ id: "a", vision: true }), false);
+  // Not loaded, cleared or unlisted: unknown, so the images go.
+  assert.equal(core.cannotSeeImages(null), false);
+  assert.equal(core.cannotSeeImages(undefined), false);
+  assert.equal(core.cannotSeeImages({ id: "a" }), false);
+});
+
 test("statusParts: cost, time and tokens, leaving out what the reply does not say", () => {
   assert.deepEqual(
     statusParts({
@@ -245,7 +254,17 @@ test("activeLoraTags skips a tag after // anywhere earlier on its line", () => {
 test("activeLoraTags on nothing", () => {
   assert.deepEqual(activeLoraTags(""), []);
   assert.deepEqual(activeLoraTags(null), []);
-  assert.deepEqual(activeLoraTags("<lora:broken>"), []);
+  assert.deepEqual(activeLoraTags("<lora:broken:heavy>"), []);
+});
+
+test("a tag without a weight reads as weight 1, as the backend loads it", () => {
+  assert.deepEqual(activeLoraTags("<lora:bare name v1.5>"), [
+    { name: "bare name v1.5", weight: 1 },
+  ]);
+  assert.deepEqual(switchedOffLoraTags("// <lora:off>"), [{ name: "off", weight: 1 }]);
+  assert.equal(isLoraListed("<lora:soft>", "soft"), true);
+  assert.equal(removeLoraTag("<lora:a:1>\n<lora:soft>", "soft"), "<lora:a:1>");
+  assert.equal(disableLoraTag("<lora:soft>", "soft"), "// <lora:soft>");
 });
 
 test("targetLoraTags reads text and loras, and loras_2 only when it is on", () => {
@@ -767,4 +786,14 @@ test("diffLines: an old line pairs with the new line closest to it", () => {
     ["added", "changed"]
   );
   assert.equal(textOf(rows[1].now), "- A red bike by the lake at dusk, mist on the water.");
+});
+
+test("addPiece adds each streamed piece, and a retract moves the text so far into the thinking", () => {
+  const live = { thinking: "", text: "", tokens: 0 };
+  core.addPiece(live, { thinking: "", text: "Plan ", tokens: 1 });
+  assert.deepEqual(live, { thinking: "", text: "Plan ", tokens: 1 });
+  core.addPiece(live, { thinking: "it.", text: "", tokens: 2, retract: true });
+  assert.deepEqual(live, { thinking: "Plan it.", text: "", tokens: 2 });
+  core.addPiece(live, { text: "A red bicycle." });
+  assert.deepEqual(live, { thinking: "Plan it.", text: "A red bicycle.", tokens: 2 });
 });

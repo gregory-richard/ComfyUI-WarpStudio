@@ -29,10 +29,10 @@ class NoHashClient:
     def __init__(self, **kwargs) -> None:  # noqa: ARG002
         pass
 
-    def get_version_by_hash(self, sha256):  # noqa: ARG002
+    def get_version_by_hash(self, sha256, raise_on_error=False):  # noqa: ARG002
         return None
 
-    def get_version(self, version_id):  # noqa: ARG002
+    def get_version(self, version_id, raise_on_error=False):  # noqa: ARG002
         return None
 
     def get_model_versions_for_model(self, model_id):
@@ -48,7 +48,7 @@ class NoHashClient:
 class ErroringHashClient(NoHashClient):
     """Civitai failing every hash lookup."""
 
-    def get_version_by_hash(self, sha256):  # noqa: ARG002
+    def get_version_by_hash(self, sha256, raise_on_error=False):  # noqa: ARG002
         raise CivitaiRequestError("https://civitai.red/api/v1/model-versions/by-hash :: 500 Internal Server Error")
 
 
@@ -333,6 +333,26 @@ class FallbackServiceTests(unittest.TestCase):
         self.assertEqual([], fallbacks.calls)
         self.assertEqual([], fallbacks.built)
         self.http.assert_not_called()
+
+    def test_a_lookup_cut_short_by_stop_reports_nothing(self) -> None:
+        # The strict lookup raises when Stop ends its retries; that is no error per file.
+        self.model("a.safetensors")
+        self.model("b.safetensors")
+        control = JobControl()
+
+        class StoppedHashClient(NoHashClient):
+            def get_version_by_hash(self, sha256, raise_on_error=False):  # noqa: ARG002
+                control.cancel()
+                raise CivitaiRequestError("https://civitai.red/api/v1/model-versions/by-hash :: 503 Service Unavailable")
+
+        self.client = StoppedHashClient
+        fallbacks = FakeFallbacks()
+
+        summary, items = self.run_job(fallbacks=fallbacks, control=control)
+
+        self.assertEqual({}, items)
+        self.assertEqual(0, summary["errors"])
+        self.assertEqual([], fallbacks.calls)
 
     def test_progress_names_each_source_asked(self) -> None:
         self.model("a.safetensors", preview=PNG)

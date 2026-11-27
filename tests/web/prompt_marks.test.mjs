@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
+  LORA_TAG_SOURCE,
+  parseLoraTags,
   loraLines,
   loraState,
   cycleLora,
@@ -143,4 +146,22 @@ test("cycleLora leaves the text alone for a stem the tag cannot hold", () => {
     assert.deepEqual(cycleLora("one", stem), { text: "one", state: null });
     assert.deepEqual(cycleLora("", stem), { text: "", state: null });
   }
+});
+
+test("a tag without a weight is a LoRA at 1, as A1111 reads it", () => {
+  assert.equal(loraState("<lora:maker - glow v1.5>", "maker - glow v1.5"), "on");
+  assert.equal(loraState("// <lora:sub/a>", "sub/a"), "parked");
+  assert.deepEqual(parseLoraTags("x <lora:a> <lora:b:0.4:0.2> <lora:c:strong>"), [
+    { raw: "<lora:a>", name: "a", weight: 1, start: 2, end: 10 },
+    { raw: "<lora:b:0.4:0.2>", name: "b", weight: 0.4, start: 11, end: 27 },
+  ]);
+  // The weight keys add to what this returns; NaN would write <lora:a:NaN>.
+  assert.ok(parseLoraTags("<lora:a>").every((t) => Number.isFinite(t.weight)));
+});
+
+test("the frontend tag is the backend's", () => {
+  // One source in warp_pipe.py and one here, so this is what keeps them the same.
+  const python = readFileSync(new URL("../../warp_pipe.py", import.meta.url), "utf8");
+  const pattern = /^_LORA_TAG_RE = re\.compile\(r"(.*)", re\.IGNORECASE\)$/m.exec(python)?.[1];
+  assert.equal(pattern, LORA_TAG_SOURCE);
 });

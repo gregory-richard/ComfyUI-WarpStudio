@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
 from .archive import ARCHIVE_RESULTS_FILENAME, folder_key
 from .constants import CACHE_SCHEMA_VERSION
+from .rename_apply import SAVED_PATH_FILES, rewrite_paths
 from .sidecar import preview_path_for, read_data_file, write_json
 from .updater_service import sidecar_seed_item
 
@@ -121,7 +124,49 @@ def _update_locked(
     )
     summary["total"] = sum(1 for item in items if isinstance(item, dict) and not item.get("deleted"))
     payload["summary"] = summary
-    write_json(path, payload)
+    _write_atomic(path, payload)
+
+
+def save_last_check(data_dir: Path, payload: dict) -> None:
+    """Write last_check.json whole: the one way every writer of it goes."""
+    with _WRITE_LOCK:
+        _write_atomic(Path(data_dir) / LAST_CHECK_FILENAME, payload)
+
+
+def rewrite_saved_paths(data_dir: Path, mapping: dict) -> None:
+    """Point the saved check's (and progress.json's) ``…Path`` values at renamed files' new paths.
+
+    The read and the write are one step under the lock, so a download's edit of
+    the saved check in between is not lost.
+    """
+    if not mapping:
+        return
+    with _WRITE_LOCK:
+        for name in SAVED_PATH_FILES:
+            path = Path(data_dir) / name
+            if not path.is_file():
+                continue
+            payload = read_data_file(path)
+            if payload is None:
+                continue  # Unreadable or corrupt: leave it for its owner to handle.
+            if rewrite_paths(payload, mapping):
+                _write_atomic(path, payload)
+
+
+def _write_atomic(path: Path, payload: dict) -> None:
+    """Write through a temporary file of its own, so two writers never share one; call under the lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _update_archive_locked(

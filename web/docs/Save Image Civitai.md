@@ -44,7 +44,8 @@ reports the right one.
 
 It recognises loaders by the input they carry — `ckpt_name`, `unet_name` — which
 covers checkpoint, diffusion/UNet and GGUF loaders alike. It also reads
-`<lora:name:weight>` tags from text inputs, including this pack's Prompt +
+`<lora:name:weight>` tags from text inputs (the weight is optional, and `<lora:name>`
+loads at 1.0 as in A1111), including this pack's Prompt +
 LoRAs node and power-prompt nodes from other packs, and the stacked slot format
 used by rgthree's Power Lora Loader, honouring each slot's on/off switch.
 
