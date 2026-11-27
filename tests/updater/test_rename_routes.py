@@ -24,7 +24,6 @@ from comfy_updater.routes import (
     _normalize_decision_payload,
     _short_error,
     RENAME_DRY_RUN_JOB,
-    ExclusiveSlot,
     apply_followups,
     download_naming_model,
     dry_run_rows_writer,
@@ -783,36 +782,6 @@ class RenameRouteHelperTests(unittest.TestCase):
             [(line["kind"], line["dryRunJobId"], line["from"], line["to"]) for line in lines],
         )
 
-    def test_exclusive_slot_lets_one_recovery_run_at_a_time(self) -> None:
-        import asyncio
-
-        slot = ExclusiveSlot()
-        order = []
-
-        async def recovery(name, gate):
-            if not slot.acquire():
-                order.append(f"{name} refused")
-                return
-            try:
-                order.append(f"{name} started")
-                await gate.wait()
-            finally:
-                slot.release()
-
-        async def main():
-            gate = asyncio.Event()
-            first = asyncio.ensure_future(recovery("first", gate))
-            await asyncio.sleep(0)
-            await recovery("second", gate)
-            gate.set()
-            await first
-            # Free again once the first recovery ends.
-            self.assertTrue(slot.acquire())
-            slot.release()
-
-        asyncio.run(main())
-        self.assertEqual(["first started", "second refused"], order)
-
     def test_status_says_whether_duplicates_can_be_removed(self) -> None:
         journal = RenameJournal(self.data_dir)
         status = rename_status({"namingModel": ""}, True, [], journal)
@@ -824,8 +793,10 @@ class RenameRouteHelperTests(unittest.TestCase):
     def test_recovered_path_mapping(self) -> None:
         pending = {"runId": "r", "steps": [
             {"kind": "trash", "from": "d", "to": "a", "entry": "d", "done": False},
-            {"kind": "rename", "from": "a", "to": "a2", "entry": "a", "done": True},
+            {"kind": "rename", "from": "a", "to": "a2", "entry": "a", "done": True, "applied": True},
             {"kind": "rename", "from": "b", "to": "b2", "entry": "b", "done": False},
+            # Given up before the interruption and put back under its old name: done, not applied.
+            {"kind": "rename", "from": "c", "to": "c2", "entry": "c", "done": True},
         ]}
         self.assertEqual({"a": "a2"}, recovered_path_mapping(pending, {"done": ["a", "d"], "skipped": []}, "finish"))
         # "a" was done before the interruption, so recovery does not list it; it still moved.

@@ -54,6 +54,7 @@ from .naming_scheme import (
     part_problems,
     stem_problems,
 )
+from .path_identity import path_key
 from .path_resolver import list_model_files
 from .rename_apply import assign_siblings, file_identity, removable_copy_files
 from .rename_folders import plan_moves, recheck_folder_flags
@@ -197,11 +198,11 @@ def _identity(path: Path) -> dict:
 
 
 def path_file_key(path: Path) -> str:
-    return "path:" + str(path.absolute()).lower()
+    return "path:" + path_key(str(path.absolute()))
 
 
 def _entry_key(entry: Entry) -> str:
-    return str(entry.path).lower()
+    return path_key(str(entry.path))
 
 
 def _match_file(version: dict, sha256: str) -> Optional[dict]:
@@ -351,7 +352,7 @@ def _split_duplicates(placed: List[Placed], model: Optional[dict] = None) -> Tup
             file_id = "sha:" + item.entry.sha256.lower()
         else:
             file_id = ""
-        bucket = (str(item.entry.folder).lower(), item.entry.version_id, file_id)
+        bucket = (path_key(str(item.entry.folder)), item.entry.version_id, file_id)
         buckets.setdefault(bucket, []).append(item)
     duplicates: Dict[int, Placed] = {}
     rows: List[dict] = []
@@ -394,11 +395,11 @@ def _split_duplicates(placed: List[Placed], model: Optional[dict] = None) -> Tup
             row["removeFiles"] = [
                 str(path)
                 for path in removable_copy_files(
-                    siblings[folder].get(item.entry.stem.lower(), []),
+                    siblings[folder].get(path_key(item.entry.stem), []),
                     item.entry.stem,
                     item.entry.path,
                     survivor.entry.path,
-                    shares_stem=survivor.entry.stem.lower() == item.entry.stem.lower(),
+                    shares_stem=path_key(survivor.entry.stem) == path_key(item.entry.stem),
                 )
             ]
             row["nameMatchesInfo"] = name_matches_info(
@@ -416,7 +417,7 @@ def _slots(placed: List[Placed]) -> Dict[str, List[Placed]]:
     for item in placed:
         if item.file is None:
             continue
-        bucket = (item.entry.version_id, str(item.entry.folder).lower())
+        bucket = (item.entry.version_id, path_key(str(item.entry.folder)))
         seen.setdefault(bucket, set()).add(_identifier(item.file.get("id")))
     for (version_id, _folder), file_ids in seen.items():
         if len(file_ids) >= 2:
@@ -1195,7 +1196,7 @@ _ANSWER_FLAG_KINDS = {
 
 
 def _disk_stems(folder: Path) -> Set[str]:
-    """Lowercased stems of the weights files and info sidecars in a folder."""
+    """Stems (``path_key``) of the weights files and info sidecars in a folder."""
     stems: Set[str] = set()
     try:
         names = [item.name for item in folder.iterdir() if item.is_file()]
@@ -1204,11 +1205,11 @@ def _disk_stems(folder: Path) -> Set[str]:
     for name in names:
         lower = name.lower()
         if lower.endswith(INFO_SIDECAR_SUFFIX):
-            stems.add(lower[: -len(INFO_SIDECAR_SUFFIX)])
+            stems.add(path_key(name[: -len(INFO_SIDECAR_SUFFIX)]))
             continue
         suffix = os.path.splitext(lower)[1]
         if suffix in SUPPORTED_MODEL_EXTENSIONS:
-            stems.add(lower[: -len(suffix)])
+            stems.add(path_key(name[: -len(suffix)]))
     return stems
 
 
@@ -1229,8 +1230,8 @@ class _FolderCheck:
     def __init__(self, entries: Iterable[Entry]) -> None:
         self._renaming: Dict[str, Dict[str, int]] = {}  # folder -> stem -> entries that may still be renamed
         for entry in entries:
-            stems = self._renaming.setdefault(str(entry.folder).lower(), {})
-            stem = entry.stem.lower()
+            stems = self._renaming.setdefault(path_key(str(entry.folder)), {})
+            stem = path_key(entry.stem)
             stems[stem] = stems.get(stem, 0) + 1
         self._disk: Dict[str, Set[str]] = {}
         self._by_new: Dict[Tuple[str, str], List[dict]] = {}
@@ -1241,9 +1242,9 @@ class _FolderCheck:
 
     def stays(self, entry: Entry) -> None:
         """This entry keeps its name: its file is now outside the rename set."""
-        folder = str(entry.folder).lower()
+        folder = path_key(str(entry.folder))
         stems = self._renaming.get(folder, {})
-        stem = entry.stem.lower()
+        stem = path_key(entry.stem)
         if stems.get(stem, 0) <= 0:
             return
         stems[stem] -= 1
@@ -1254,8 +1255,8 @@ class _FolderCheck:
 
     def place(self, row: dict) -> None:
         """Flag the row; an earlier row it collides with is flagged too, in place."""
-        folder = row["folder"].lower()
-        new = row["newStem"].lower()
+        folder = path_key(row["folder"])
+        new = path_key(row["newStem"])
         if folder not in self._disk:
             self._disk[folder] = _disk_stems(Path(row["folder"]))
         if new in self._disk[folder] and self._renaming.get(folder, {}).get(new, 0) <= 0:
@@ -1268,7 +1269,7 @@ class _FolderCheck:
 
     def unplace(self, row: dict) -> None:
         """Take a placed row back (it is being named again); a peer left alone loses its collision."""
-        peers = self._by_new.get((row["folder"].lower(), row["newStem"].lower()), [])
+        peers = self._by_new.get((path_key(row["folder"]), path_key(row["newStem"])), [])
         for index, peer in enumerate(peers):
             if peer is row:
                 del peers[index]
@@ -1657,7 +1658,8 @@ def place_moves(rows: List[dict]) -> None:
     paths: Dict[str, str] = {}
     for row in moving:
         for folder in (str(row["folder"]), str(row["newFolder"])):
-            paths.setdefault(folder.lower(), folder)
+            paths.setdefault(path_key(folder), folder)
+
     listing = {key: _disk_stems(Path(path)) for key, path in paths.items()}
     recheck_folder_flags(rows, set(paths), listing)
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Collection, Optional
 
 from .constants import INFO_SIDECAR_SUFFIX, SUPPORTED_MODEL_EXTENSIONS
+from .path_identity import path_key
 from .rename_apply import assign_siblings
 from .sidecar import model_file_path, read_json, sidecar_identifies_model
 
@@ -76,7 +77,7 @@ def _weight_stems(folder: Path) -> set[str]:
     for name in names:
         extension = _weights_extension(name)
         if extension and len(name) > len(extension):
-            stems.add(name[: -len(extension)].lower())
+            stems.add(path_key(name[: -len(extension)]))
     return stems
 
 
@@ -93,7 +94,7 @@ def missing_loras(roots: list[Path], on_disk: Collection[str] = frozenset()) -> 
                 continue
             stems = _weight_stems(Path(folder))
             for name in sorted(infos):
-                if name[: -len(INFO_SIDECAR_SUFFIX)].lower() in stems:
+                if path_key(name[: -len(INFO_SIDECAR_SUFFIX)]) in stems:
                     continue
                 info_path = Path(folder) / name
                 info = read_json(info_path)
@@ -118,7 +119,7 @@ def missing_info(roots: list[Path], name: str) -> Optional[tuple[Path, dict]]:
         info_path = _inside(root, stem + INFO_SIDECAR_SUFFIX)
         if info_path is None or not info_path.is_file():
             continue
-        if info_path.name[: -len(INFO_SIDECAR_SUFFIX)].lower() in _weight_stems(info_path.parent):
+        if path_key(info_path.name[: -len(INFO_SIDECAR_SUFFIX)]) in _weight_stems(info_path.parent):
             return None
         info = read_json(info_path)
         if not sidecar_identifies_model(info):
@@ -132,7 +133,8 @@ def stem_files(weights: Path) -> list[Path]:
     weights = Path(weights)
     if not weights.is_file():
         return []
-    siblings = assign_siblings(weights.parent).get(weights.stem.lower(), [])
+    siblings = assign_siblings(weights.parent).get(path_key(weights.stem), [])
+
     mine = _norm(weights)
     others = [p for p in siblings if _norm(p) != mine]
     if any(_weights_extension(p.name) for p in others):

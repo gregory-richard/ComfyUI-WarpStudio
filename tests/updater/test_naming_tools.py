@@ -70,6 +70,16 @@ class RunnerHelperTests(unittest.TestCase):
         self.assertEqual(code, runner.EXIT_BAD_INPUT)
         self.assertIn("REFUSED", out.getvalue())
 
+    def test_a_case_with_a_missing_slot_field_is_refused(self):
+        bad = case(1)
+        del bad["input"]["slots"][0]["base_model"]
+        with tempfile.TemporaryDirectory() as folder, redirect_stdout(io.StringIO()) as out:
+            path = Path(folder) / "cases.json"
+            path.write_text(json.dumps({"cases": [bad]}), encoding="utf-8")
+            code = runner.main(["--clip", "x", "--data", str(path)])
+        self.assertEqual(code, runner.EXIT_BAD_INPUT)
+        self.assertIn("REFUSED", out.getvalue())
+
     def test_group_size_asks_several_models_per_call_and_scores_each(self):
         calls = []
 

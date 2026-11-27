@@ -7,7 +7,8 @@ Write the prompt and the LoRAs it uses on one node.
 The **Prompt + LoRAs** node keeps a prompt and its LoRAs together instead of
 splitting them between a text node and a loader. The prose goes in the prompt
 box; the LoRAs go in the short box under it, one to a line, in the same
-`<lora:name:weight>` syntax A1111 uses:
+`<lora:name:weight>` syntax A1111 uses. The weight is optional: `<lora:name>`
+loads at 1.0, as in A1111.
 
 ```
 Prompt   a portrait, dramatic lighting, sharp focus

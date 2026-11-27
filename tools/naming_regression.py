@@ -181,10 +181,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         cases = select_cases(load_cases(args.data), args.case)
+        inputs = [model_input(c) for c in cases]
     except (BadData, OSError, KeyError, TypeError, ValueError) as exc:  # OSError: no data file
         print(f"REFUSED: {exc}")
         return EXIT_BAD_INPUT
-    inputs = [model_input(c) for c in cases]
     size = max(1, args.group_size)
     chunks = [inputs[i:i + size] for i in range(0, len(inputs), size)]
     messages = [build_group_message(chunk) for chunk in chunks]
@@ -201,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     except QueueBusy as exc:
         print(f"BUSY: {exc}")
         return EXIT_BUSY
-    except (NamingModelError, OSError) as exc:  # OSError: /queue unreachable
+    except (NamingModelError, OSError, ValueError) as exc:  # OSError: /queue unreachable; ValueError: not JSON
         print(f"BLOCKED: {exc}")
         return EXIT_BLOCKED
 

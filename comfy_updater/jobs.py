@@ -17,6 +17,7 @@ from .constants import (
     SUPPORTED_MODEL_TYPES,
 )
 from .naming_scheme import THREE_PART_TYPES, name_tail, own_name
+from .path_identity import path_key
 
 NAMING_PHASE = "naming"
 _MAX_FINISHED_JOBS = 5
@@ -84,6 +85,41 @@ class JobManager:
         self.release_names = release_names
         self._finish_listeners: list = []
         self._reserved: str | None = None
+        self._hold: "SlotHold | None" = None
+
+    def hold(self, name: str, *, beside: tuple = ()) -> "SlotHold | None":
+        """Take the job slot for a short file-changing operation that is not a job, or None when busy.
+
+        Refused while a job is active (unless its type is in ``beside``), a
+        job is reserved, or another hold is taken; while it is held, no job
+        starts. Never waits: the caller answers "busy". Release it with
+        ``release()`` or a ``with`` block; work running in a thread registered
+        with ``begin_work`` keeps it taken until that work ends.
+        """
+        with self._lock:
+            if self._hold is not None or self._reserved is not None:
+                return None
+            for job in self._jobs.values():
+                if job.status in ("running", "queued", "paused") and job.type not in beside:
+                    return None
+            self._hold = SlotHold(self, name)
+            return self._hold
+
+    def held_by(self) -> str | None:
+        """The name of the operation holding the slot, or None."""
+        with self._lock:
+            return self._hold.name if self._hold is not None else None
+
+    def _drop_hold(self, hold: "SlotHold") -> None:
+        with self._lock:
+            if self._hold is not hold:
+                return
+            self._hold = None
+        # As after a job: a download that came in meanwhile and waits for the slot starts now.
+        now = _utc_now()
+        self._notify_finished(
+            JobRecord(id=f"hold:{hold.name}", type=hold.name, status="completed", startedAt=now, finishedAt=now)
+        )
 
     def reserve(self, job_type: str) -> None:
         """Let only ``job_type`` start next: any other job's start is refused until it does.
@@ -103,7 +139,8 @@ class JobManager:
 
         It runs after the final status is set (completed, failed or cancelled),
         so the slot is free by then. A listener that raises is logged and does
-        not stop the others.
+        not stop the others. It also runs when a ``hold`` frees the slot, with a
+        record of the hold's name as its type, on whichever thread released it.
         """
         with self._lock:
             self._finish_listeners.append(listener)
@@ -126,11 +163,13 @@ class JobManager:
         if seed_items:
             record.items = list(seed_items)
             record.seededPaths = {
-                str(item.get("modelPath") or "").lower()
+                path_key(str(item.get("modelPath") or ""))
                 for item in seed_items
                 if item.get("modelPath")
             }
         with self._lock:
+            if self._hold is not None:
+                return None
             for job in self._jobs.values():
                 if job.status in ("running", "queued", "paused"):
                     return None
@@ -177,7 +216,7 @@ class JobManager:
                 return
             kept: list[dict] = []
             for item in job.items:
-                key = str(item.get("modelPath") or "").lower()
+                key = path_key(str(item.get("modelPath") or ""))
                 if (
                     item.get("_seeded")
                     and not item.get("archived")
@@ -188,9 +227,9 @@ class JobManager:
                     continue
                 kept.append(item)
             job.items = kept
-            present = {str(item.get("modelPath") or "").lower() for item in job.items}
+            present = {path_key(str(item.get("modelPath") or "")) for item in job.items}
             for seed in added_seeds:
-                key = str(seed.get("modelPath") or "").lower()
+                key = path_key(str(seed.get("modelPath") or ""))
                 if not key or key in present:
                     continue
                 job.items.append(seed)
@@ -222,7 +261,10 @@ class JobManager:
             job = self._jobs.get(job_id)
             if not job:
                 return None
-            items = list(job.items)
+            # Copies: the grouping below runs without the lock, while edit_items adds keys
+            # (``deleted``, ``moved``) to these dicts in place. Nested values are only ever
+            # replaced under keys they already have, so a shallow copy is enough.
+            items = [dict(item) if isinstance(item, dict) else item for item in job.items]
             provisional = job.status in ("running", "queued", "paused")
             # A row stamped after the check finished came from a download since.
             finished_at = None if provisional else job.finishedAt
@@ -480,7 +522,7 @@ class JobManager:
 
         def emit_item(item: dict) -> None:
             with self._lock:
-                key = str(item.get("modelPath") or "").lower()
+                key = path_key(str(item.get("modelPath") or ""))
                 if key and key in job.seededPaths:
                     job.seededPaths.discard(key)
                     job.items = [
@@ -488,7 +530,7 @@ class JobManager:
                         for existing in job.items
                         if not (
                             existing.get("_seeded")
-                            and str(existing.get("modelPath") or "").lower() == key
+                            and path_key(str(existing.get("modelPath") or "")) == key
                         )
                     ]
                 job.items.append(item)
@@ -623,12 +665,12 @@ def _build_group_outline(
     for card in cards:
         p_key, p_label, p_sort = _group_value(card, group_by)
         s_key, s_label, s_sort = _group_value(card, then_by) if then_by != "none" else ("", "", (0, ""))
-        path_key = f"{p_key}{GROUP_PATH_SEPARATOR}{s_key}" if s_key else p_key
+        group_path_key = f"{p_key}{GROUP_PATH_SEPARATOR}{s_key}" if s_key else p_key
 
         card["groupPrimary"] = p_label
         card["groupSecondary"] = s_label
         card["groupPrimaryKey"] = p_key
-        card["groupPathKey"] = path_key
+        card["groupPathKey"] = group_path_key
 
         primary = primaries.setdefault(p_key, {
             "key": p_key, "label": p_label, "sort": p_sort,
@@ -640,7 +682,7 @@ def _build_group_outline(
 
         if s_key:
             secondary = primary["subgroups"].setdefault(s_key, {
-                "key": path_key, "label": s_label, "sort": s_sort,
+                "key": group_path_key, "label": s_label, "sort": s_sort,
                 "models": 0, "releases": 0, "cards": [],
             })
             secondary["models"] += 1
@@ -1256,6 +1298,54 @@ def _file_path(item: dict) -> str:
 def _filename(path: str) -> str:
     index = max(path.rfind("/"), path.rfind("\\"))
     return path[index + 1 :] if index >= 0 else path
+
+
+class SlotHold:
+    """The job slot as taken by ``JobManager.hold``; frees it once released and its work has ended.
+
+    A route handler can be cancelled (the client went away) while a thread it
+    started still renames or trashes files: that thread registers with
+    ``begin_work``/``end_work``, so the slot stays taken until it is done.
+    """
+
+    def __init__(self, manager: JobManager, name: str) -> None:
+        self.name = name
+        self._manager = manager
+        self._lock = threading.Lock()
+        self._work = 0
+        self._released = False
+        self._freed = False
+
+    def begin_work(self) -> None:
+        with self._lock:
+            if self._freed:
+                raise RuntimeError(f"the {self.name} hold is already free")
+            self._work += 1
+
+    def end_work(self) -> None:
+        with self._lock:
+            self._work -= 1
+            free = self._released and self._work == 0 and not self._freed
+            if free:
+                self._freed = True
+        if free:
+            self._manager._drop_hold(self)
+
+    def release(self) -> None:
+        """Safe to call more than once; the slot frees when the last work ends."""
+        with self._lock:
+            self._released = True
+            free = self._work == 0 and not self._freed
+            if free:
+                self._freed = True
+        if free:
+            self._manager._drop_hold(self)
+
+    def __enter__(self) -> "SlotHold":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
 
 
 class JobControl:

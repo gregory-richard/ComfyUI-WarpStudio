@@ -17,7 +17,8 @@ from typing import Any, Callable, Optional
 
 from .hashing import HashingCancelled, sha256_file
 from .constants import INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX, SUPPORTED_MODEL_EXTENSIONS
-from .naming_scheme import target_path
+from .naming_scheme import _has_forbidden, stem_problems, target_path
+from .path_identity import path_key
 from .rename_store import RenameJournal, RenameLog
 from .sidecar import read_data_file, read_json, write_json
 
@@ -34,6 +35,13 @@ SHARES_SURVIVOR_NAME = "shares its name with the copy that is kept; renamed toge
 COPY_DIFFERS = "not identical to the copy that is kept; not removed"
 COMPARE_STOPPED = "stopped before the copies were compared; not removed"
 COMPARE_FAILED = "could not be compared"
+# model_actions.WEIGHTS_STILL_THERE's wording; that module imports this one.
+STILL_THERE = "could not move to the Recycle Bin (it is still there)"
+OLD_NAME_TAKEN = "could not undo: its old name is taken by another file"
+UNSAFE_NEW_NAME = "its new name is not a safe file name; not renamed"
+BLOCKED_NEW_NAME = "its new name is flagged as unusable; not renamed"
+# The flag kinds the panel refuses to apply (web/rename_view.js BLOCKING_KINDS).
+BLOCKING_FLAG_KINDS = frozenset({"empty", "forbidden", "separator", "reserved", "trailing", "collision", "exists"})
 
 _STEM_SOURCES = tuple(SUPPORTED_MODEL_EXTENSIONS) + (INFO_SIDECAR_SUFFIX,)
 _KNOWN_SUFFIXES = (INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX) + tuple(SUPPORTED_MODEL_EXTENSIONS)
@@ -43,7 +51,8 @@ _KNOWN_SUFFIXES = (INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX) + tuple(SUPPORTE
 
 
 def _norm(path: Any) -> str:
-    return os.path.normpath(str(path)).lower()
+    """A path's identity (``path_key``): two spellings of one file share it where case does not count."""
+    return path_key(os.path.normpath(str(path)))
 
 
 def _is_weights(name: str) -> bool:
@@ -51,7 +60,10 @@ def _is_weights(name: str) -> bool:
 
 
 def assign_siblings(folder: Path) -> dict[str, list[Path]]:
-    """Lowercased stem -> its files; each file goes to the longest stem it starts with."""
+    """Stem (``path_key``) -> its files; each file goes to the longest stem it starts with.
+
+    Suffixes match in any case; the stem before them is the file's identity.
+    """
     try:
         files = sorted((p for p in Path(folder).iterdir() if p.is_file()), key=lambda p: p.name.lower())
     except OSError:
@@ -61,15 +73,15 @@ def assign_siblings(folder: Path) -> dict[str, list[Path]]:
         lower = path.name.lower()
         for suffix in _STEM_SOURCES:
             if lower.endswith(suffix) and len(lower) > len(suffix):
-                stems.add(lower[: -len(suffix)])
+                stems.add(path_key(path.name[: -len(suffix)]))
     longest_first = sorted(stems, key=len, reverse=True)
     result: dict[str, list[Path]] = {}
     for path in files:
-        lower = path.name.lower()
-        if TMP_MARKER in lower:
+        if TMP_MARKER in path.name.lower():
             continue  # A leftover of an interrupted case-only rename belongs to recovery.
+        key = path_key(path.name)
         for stem in longest_first:
-            if lower.startswith(stem + "."):
+            if key.startswith(stem + "."):
                 result.setdefault(stem, []).append(path)
                 break
     return result
@@ -102,10 +114,15 @@ def removable_copy_files(files: list[Path], stem: str, own: Any, keep: Any, *, s
     stays (the kept copy has the same name, or other weights share them), only
     its own file goes. The kept copy's file never does.
     """
-    lower = str(stem).lower()
-    known = {lower + suffix for suffix in _KNOWN_SUFFIXES}
+    stem = str(stem)
+    stem_key = path_key(stem)
+
+    def known(name: str) -> bool:
+        # The stem is the file's identity; the suffix may be in any case.
+        return path_key(name[: len(stem)]) == stem_key and name[len(stem):].lower() in _KNOWN_SUFFIXES
+
     own_key = _norm(own)
-    files = [path for path in files if _norm(path) == own_key or path.name.lower() in known]
+    files = [path for path in files if _norm(path) == own_key or known(path.name)]
     files = _ordered(files, own_key)
     other_weights = [path for path in files if _is_weights(path.name) and _norm(path) != own_key]
     if shares_stem or other_weights:
@@ -134,6 +151,15 @@ def _identity_problem(row: dict, own: str) -> Optional[str]:
     return None
 
 
+def _new_stem_problem(row: dict, new: str) -> Optional[str]:
+    """Why a row's ``newStem`` must not be applied, or None: not a bare file-name stem, or flagged."""
+    if "/" in new or "\\" in new or _has_forbidden(new) or new.strip() in ("", ".", "..") or stem_problems(new):
+        return UNSAFE_NEW_NAME
+    if any(str(flag).split(":", 1)[0] in BLOCKING_FLAG_KINDS for flag in row.get("flags") or []):
+        return BLOCKED_NEW_NAME
+    return None
+
+
 def plan(
     rows: list[dict], selected_keys: set[str], remove_duplicate_keys: set[str], delete_keys: Any = frozenset()
 ) -> tuple[list[dict], list[dict]]:
@@ -153,7 +179,7 @@ def plan(
         folder = str(row.get("folder") or "")
         if folder not in cache:
             cache[folder] = assign_siblings(Path(folder))
-        return list(cache[folder].get(str(row.get("oldStem") or "").lower(), []))
+        return list(cache[folder].get(path_key(str(row.get("oldStem") or "")), []))
 
     def own_file(row: dict) -> str:
         return str(row.get("modelPath") or row.get("key") or "")
@@ -184,16 +210,29 @@ def plan(
         if row.get("status") != "change" or key not in selected_keys or not old or not new or (old == new and not moves):
             continue
         change_keys.add(key)
+        # The panel refuses these rows; any other caller must not move a file out of its folder.
+        problem = _new_stem_problem(row, new)
+        if problem is not None:
+            skipped.append({"entry": key, "path": own_file(row), "reason": problem})
+            continue
         files = checked_siblings(row)
         if files is None:
             continue
         folder = Path(row["newFolder"] if moves else row["folder"])
-        for path in _ordered(files, _norm(key)):
-            suffix = path.name[len(old):]
-            target = target_path(folder, new, suffix)
-            if str(target) == str(path):
-                continue
-            renames.append({"kind": "rename", "from": str(path), "to": str(target), "entry": key, "suffix": suffix})
+        entry_renames = []
+        try:
+            for path in _ordered(files, _norm(key)):
+                suffix = path.name[len(old):]
+                target = target_path(folder, new, suffix)
+                if str(target) == str(path):
+                    continue
+                entry_renames.append(
+                    {"kind": "rename", "from": str(path), "to": str(target), "entry": key, "suffix": suffix}
+                )
+        except ValueError:
+            skipped.append({"entry": key, "path": own_file(row), "reason": UNSAFE_NEW_NAME})
+            continue
+        renames.extend(entry_renames)
     for key in sorted(k for k in selected_keys if k not in change_keys and k not in delete_keys):
         skipped.append({"entry": key, "path": key, "reason": NOT_A_RENAME})
 
@@ -217,9 +256,9 @@ def plan(
             continue
         # Exactly the survivor's own file; apply refuses the removal when it is gone.
         keep = _survivor_file(survivor) if survivor is not None and survivor is not row else ""
-        shares_stem = survivor is not None and _norm(survivor.get("folder")) == _norm(row.get("folder")) and str(
-            survivor.get("oldStem") or ""
-        ).lower() == str(row.get("oldStem") or "").lower()
+        shares_stem = survivor is not None and _norm(survivor.get("folder")) == _norm(row.get("folder")) and path_key(
+            str(survivor.get("oldStem") or "")
+        ) == path_key(str(row.get("oldStem") or ""))
         files = removable_copy_files(files, str(row.get("oldStem") or ""), key, "", shares_stem=shares_stem)
         if not keep:
             # Planned anyway so apply reports the refused removal instead of dropping it.
@@ -262,8 +301,29 @@ def send_to_trash(path: str) -> None:
 
 
 def _same_name(a: Path, b: Path) -> bool:
-    """The same path apart from letter case (one file on Windows)."""
-    return _norm(a) == _norm(b)
+    """The same path apart from letter case: one file on a case-insensitive volume, maybe two elsewhere.
+
+    Case-insensitive on every platform, unlike ``_norm``: it picks the careful way
+    to rename (through a temporary name, never onto a name that is there), right
+    on both kinds of volume. A Linux mount of an NTFS drive is the case that needs it.
+    """
+    return os.path.normpath(str(a)).lower() == os.path.normpath(str(b)).lower()
+
+
+def _taken(src: Path, dst: Path) -> bool:
+    """``dst`` is on disk and is not ``src``'s own file under another spelling.
+
+    The disk answers, not ``_norm``: two spellings are one file exactly when the
+    volume says so, whatever the platform.
+    """
+    if not os.path.lexists(dst):
+        return False
+    if not _same_name(src, dst):
+        return True
+    try:
+        return not os.path.samefile(src, dst)
+    except OSError:
+        return False  # ``src`` is gone: nothing of its own to tell apart
 
 
 def _guess_suffix(name: str) -> str:
@@ -282,14 +342,14 @@ def _tmp_path(dst: Path, suffix: Optional[str], run_id: str) -> Path:
 
 
 def _find_tmp(dst: Path, run_id: str) -> Optional[Path]:
-    marker = (TMP_MARKER + run_id[:8]).lower()
+    marker = path_key(TMP_MARKER + run_id[:8])
     try:
         names = os.listdir(dst.parent)
     except OSError:
         return None
     for name in names:
-        lower = name.lower()
-        if marker in lower and lower.replace(marker, "", 1) == dst.name.lower():
+        key = path_key(name)
+        if marker in key and key.replace(marker, "", 1) == path_key(dst.name):
             return dst.parent / name
     return None
 
@@ -379,7 +439,8 @@ def _undo_move(step: dict, run_id: str) -> bool:
         _rename_new(tmp, src)
         return True
     if _same_name(src, dst):
-        if src.name != dst.name and _exists_as(dst):
+        # Both spellings there as two files (a case-sensitive volume): this rename never ran.
+        if src.name != dst.name and _exists_as(dst) and not _taken(dst, src):
             _move(dst, src, step.get("suffix"), run_id)
             return True
         return False
@@ -389,17 +450,35 @@ def _undo_move(step: dict, run_id: str) -> bool:
     return False
 
 
-def _undo_entry(steps: list[dict], run_id: str, moved: Optional[list] = None) -> tuple[bool, list[dict]]:
+def _old_name_taken(step: dict, run_id: str) -> bool:
+    """A renamed file (``applied``) that cannot go back: another file holds its old name."""
+    src, dst = Path(step["from"]), Path(step["to"])
+    return bool(
+        step.get("applied")
+        and _find_tmp(dst, run_id) is None
+        and os.path.lexists(dst)
+        # A case-only rename's old name is taken only by a second file (a case-sensitive volume).
+        and _taken(dst, src)
+    )
+
+
+def _undo_entry(
+    steps: list[dict], run_id: str, moved: Optional[list] = None, blocked: Optional[list] = None
+) -> tuple[bool, list[dict]]:
     """Undo an entry's rename steps in reverse. (anything restored, problems).
 
-    ``moved`` collects the steps whose file was put back.
+    ``moved`` collects the steps whose file was put back. With ``blocked``, a
+    renamed file whose old name is taken is collected there instead of left as is.
     """
     restored = False
     problems: list[dict] = []
     for step in reversed(steps):
         if step.get("kind") == "trash":
-            if step.get("done"):
+            if _in_recycle_bin(step):
                 problems.append({"entry": step.get("entry"), "path": step.get("from"), "reason": IN_RECYCLE_BIN})
+            continue
+        if blocked is not None and _old_name_taken(step, run_id):
+            blocked.append(step)
             continue
         try:
             if _undo_move(step, run_id):
@@ -409,6 +488,19 @@ def _undo_entry(steps: list[dict], run_id: str, moved: Optional[list] = None) ->
         except OSError as exc:
             problems.append({"entry": step.get("entry"), "path": step.get("to"), "reason": f"could not undo: {_reason(exc)}"})
     return restored, problems
+
+
+def _in_recycle_bin(step: dict) -> bool:
+    """A removal step whose file went to the Recycle Bin.
+
+    A removal given up (its kept copy differs, the Recycle Bin refused) is done
+    too, with its file still in place: nothing to restore. A step done without
+    ``applied`` whose file is gone (the Recycle Bin took it and then failed, or a
+    journal from before ``applied``) counts as removed.
+    """
+    if not step.get("done"):
+        return False
+    return bool(step.get("applied")) or not os.path.lexists(step.get("from") or "")
 
 
 def _group(steps: list[dict]) -> list[tuple[Any, list[int]]]:
@@ -541,8 +633,7 @@ def _held_by(entry_steps: list[dict], free: set) -> set:
         _norm(step["to"])
         for step in entry_steps
         if step.get("kind") == "rename"
-        and os.path.lexists(step["to"])
-        and not _same_name(Path(step["from"]), Path(step["to"]))
+        and _taken(Path(step["from"]), Path(step["to"]))
         and _norm(step["to"]) not in free
     }
 
@@ -676,7 +767,7 @@ def _blocked(entry_steps: list[dict], freed: Optional[set] = None, run_id: str =
         src, dst = Path(step["from"]), Path(step["to"])
         if not os.path.lexists(src) and not (run_id and _find_tmp(dst, run_id) is not None):
             return {"entry": step.get("entry"), "path": str(src), "reason": SOURCE_MISSING}
-        if os.path.lexists(dst) and not _same_name(src, dst) and _norm(dst) not in (freed or ()):
+        if _taken(src, dst) and _norm(dst) not in (freed or ()):
             return {"entry": step.get("entry"), "path": str(dst), "reason": TARGET_EXISTS}
     return None
 
@@ -713,9 +804,10 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=No
     entry = steps[indices[0]].get("entry")
     record = record or _recorder(None, run_id, "")
 
-    def give_up(path: Any, reason: str) -> dict:
+    def give_up(path: Any, reason: str, went_through: tuple = ()) -> dict:
         # The entry's steps are settled (not to be run by "finish"), except a file
         # stranded under a temporary name: that step stays open for recovery.
+        # ``went_through``: removals that did reach the Recycle Bin, for undo's report.
         stranded = _stranded([steps[index] for index in indices], run_id)
         stranded_keys = {_norm(path) for path in stranded}
         settle = [
@@ -723,7 +815,7 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=No
             for index in indices
             if not (steps[index].get("kind") == "rename" and _tmp_key(steps[index], run_id) in stranded_keys)
         ]
-        journal.mark_done_many(settle)
+        journal.mark_done_many(settle, applied_to=went_through)
         problem = {"entry": entry, "path": str(path), "reason": reason}
         if stranded:
             problem["reason"] += "; left under the temporary name " + ", ".join(str(p) for p in stranded)
@@ -738,17 +830,24 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=No
         if problem is not None:
             return give_up(problem["path"], problem["reason"])
         trashed: list[dict] = []
+        binned: list[int] = []
         for index in indices:
             path = steps[index]["from"]
             if os.path.lexists(path):
                 try:
                     trash(str(path))
                 except OSError as exc:
-                    problem = give_up(path, f"could not move to the Recycle Bin ({exc})")
+                    problem = give_up(path, f"could not move to the Recycle Bin ({exc})", tuple(binned))
                     record(trashed)  # those are in the Recycle Bin all the same
                     return problem
+                if os.path.lexists(path):
+                    # send2trash can return while a file ComfyUI has loaded stays: its sidecars stay too.
+                    problem = give_up(path, STILL_THERE, tuple(binned))
+                    record(trashed)
+                    return problem
                 trashed.append(steps[index])
-        journal.mark_done_many(indices)
+                binned.append(index)
+        journal.mark_done_many(indices, applied_to=binned)
         record(trashed)
         return None
 
@@ -779,7 +878,7 @@ def _apply_entry(steps, indices, journal, run_id, trash, control=None, record=No
             _restored, problems = _undo_entry(finished, run_id)
             return give_up(step["from"], _with_problems(_reason(exc), problems))
         finished.append(step)
-    journal.mark_done_many(indices)
+    journal.mark_done_many(indices, applied=True)
     record(finished)
     return None
 
@@ -817,20 +916,12 @@ def recover(
     steps = data["steps"]
     record = _recorder(log, run_id, str(data.get("dryRunJobId") or ""))
     retry: set = set()
-    for entry, indices in _group(steps):
+    put_back: set = set()
+    if action == "undo":
+        done, skipped, retry, put_back = _undo_run(steps, run_id, record)
+    finishing = _group(steps) if action == "finish" else []
+    for entry, indices in finishing:
         entry_steps = [steps[index] for index in indices]
-        if action == "undo":
-            moved: list[dict] = []
-            restored, problems = _undo_entry(entry_steps, run_id, moved)
-            # Only renames the log holds (done steps) are logged as reversed.
-            record([{"from": step["to"], "to": step["from"]} for step in moved if step.get("done")], "undo")
-            skipped.extend(problems)
-            if any(problem["reason"] != IN_RECYCLE_BIN for problem in problems):
-                # Half undone: its renames stay journaled so undo can run again.
-                retry.update(index for index in indices if steps[index].get("kind") == "rename")
-            elif restored:
-                done.append(entry)
-            continue
         if all(step.get("done") for step in entry_steps):
             continue
         problem = _finish_entry(entry_steps, journal, indices, run_id, trash, record)
@@ -852,10 +943,91 @@ def recover(
         )
     retry.update(open_steps)
     if retry:
-        journal.keep_only(sorted(retry))
+        journal.keep_only(sorted(retry), put_back)
     else:
         journal.clear()
     return {"done": done, "skipped": skipped}
+
+
+def _undo_run(steps: list[dict], run_id: str, record) -> tuple[list, list[dict], set, set]:
+    """Undo every entry, the last one first. (done entries, problems, steps to keep, steps put back).
+
+    An entry that took a name another gave up goes back first, freeing it. Passes
+    repeat while files move. In a swap or ring every old name is held by another
+    entry's renamed file: one entry waits under temporary names, as in apply.
+    An entry whose renamed file cannot go back stays journaled, with a problem.
+    """
+    index_of = {id(step): index for index, step in enumerate(steps)}
+    groups = list(reversed(_group(steps)))
+    outcome: dict = {}  # entry -> (problems, blocked steps) of its last pass
+    restored: set = set()
+    put_back: set = set()
+    parked: dict = {}  # entry -> its steps waiting under temporary names ([] when parking failed)
+
+    def open_(entry: Any) -> bool:
+        problems, blocked = outcome[entry]
+        return bool(blocked) or any(problem["reason"] != IN_RECYCLE_BIN for problem in problems)
+
+    left = groups
+    while left:
+        progress = False
+        for entry, indices in left:
+            moved: list[dict] = []
+            blocked: list[dict] = []
+            anything, problems = _undo_entry([steps[index] for index in indices], run_id, moved, blocked)
+            if anything:
+                progress = True
+                restored.add(entry)
+            # Only renames the log holds (done steps) are logged as reversed.
+            record([{"from": step["to"], "to": step["from"]} for step in moved if step.get("done")], "undo")
+            for step in moved:
+                step.pop("applied", None)  # under its old name again
+                put_back.add(index_of[id(step)])
+            outcome[entry] = (problems, blocked)
+        left = [(entry, indices) for entry, indices in left if open_(entry)]
+        if progress:
+            continue
+        ring = _ring_entry(left, outcome, parked)
+        if ring is None:
+            break
+        blocked = outcome[ring][1]
+        # Its files move to the temporary names apply parks under; their undo then finds them there.
+        stand_ins = [{"kind": "rename", "from": s["to"], "to": s["to"], "suffix": s.get("suffix")} for s in blocked]
+        parked[ring] = blocked if _park(stand_ins, list(range(len(stand_ins))), run_id) else []
+    for entry_steps in parked.values():
+        for step in entry_steps:
+            tmp = _find_tmp(Path(step["to"]), run_id)
+            if tmp is not None:
+                try:
+                    _rename_new(tmp, Path(step["to"]))  # the ring did not close: back under the new name
+                except OSError:
+                    pass  # left under the temporary name; reported and kept below
+    done = [entry for entry, _indices in groups if entry in restored and not open_(entry)]
+    skipped: list[dict] = []
+    retry: set = set()
+    for entry, indices in groups:
+        problems, blocked = outcome[entry]
+        skipped.extend(problems)
+        skipped.extend({"entry": entry, "path": step["to"], "reason": OLD_NAME_TAKEN} for step in blocked)
+        if open_(entry):
+            # Half undone: its renames stay journaled so undo can run again.
+            retry.update(index for index in indices if steps[index].get("kind") == "rename")
+    return done, skipped, retry, put_back
+
+
+def _ring_entry(left: list, outcome: dict, tried: dict) -> Any:
+    """An entry whose every blocked old name is held by another blocked entry's file, or None."""
+    held: dict = {}
+    for entry, _indices in left:
+        for step in outcome[entry][1]:
+            held.setdefault(_norm(step["to"]), set()).add(entry)
+    for entry, _indices in left:
+        problems, blocked = outcome[entry]
+        if entry in tried or not blocked or any(problem["reason"] != IN_RECYCLE_BIN for problem in problems):
+            continue
+        if all(held.get(_norm(step["from"]), set()) - {entry} for step in blocked):
+            return entry
+    return None
 
 
 def _finish_entry(entry_steps, journal, indices, run_id, trash, record) -> Optional[dict]:
@@ -881,6 +1053,9 @@ def _finish_entry(entry_steps, journal, indices, run_id, trash, record) -> Optio
                 except OSError as exc:
                     record(trashed)
                     return {"entry": entry, "path": str(src), "reason": f"could not move to the Recycle Bin ({exc})"}
+                if os.path.lexists(src):
+                    record(trashed)  # still there: the rest of the entry stays as well
+                    return {"entry": entry, "path": str(src), "reason": STILL_THERE}
                 trashed.append(step)
             continue
         dst = Path(step["to"])
@@ -891,7 +1066,12 @@ def _finish_entry(entry_steps, journal, indices, run_id, trash, record) -> Optio
             record(trashed)
             return {"entry": entry, "path": str(dst), "reason": _with_problems(_reason(exc), problems)}
         renamed.append(step)
-    journal.mark_done_many(indices)
+    # Every rename of the entry is under its new name now; a removal only when this run binned it.
+    binned = {id(step) for step in trashed}
+    went_through = [
+        index for index, step in zip(indices, entry_steps) if step.get("kind") == "rename" or id(step) in binned
+    ]
+    journal.mark_done_many(indices, applied_to=went_through)
     record(trashed + renamed)
     return None
 
@@ -903,12 +1083,14 @@ def _finish_move(step: dict, run_id: str) -> None:
         _rename_new(tmp, dst)
         return
     if _same_name(src, dst):
-        if _exists_as(dst):
-            return  # Already renamed.
+        if _exists_as(dst) and not _taken(src, dst):
+            return  # Already renamed (not a second file of that spelling on a case-sensitive volume).
         if not os.path.lexists(src):
             raise FileNotFoundError(errno.ENOENT, SOURCE_MISSING, str(src))
         _move(src, dst, step.get("suffix"), run_id)
         return
+    if step.get("applied") and os.path.lexists(dst):
+        return  # Renamed; an undo found its old name taken by another file.
     if os.path.lexists(src):
         _move(src, dst, step.get("suffix"), run_id)
         return

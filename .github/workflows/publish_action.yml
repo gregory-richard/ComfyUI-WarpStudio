@@ -11,9 +11,11 @@ permissions:
   contents: read
 
 jobs:
-  publish-node:
-    name: Publish Custom Node to Registry
+  version:
+    name: Check whether the version changed
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -24,7 +26,8 @@ jobs:
       # The push trigger fires on any change to pyproject.toml, not just a
       # release. Without this gate, editing metadata or tool config re-publishes
       # the current version, which the registry rejects and which turns the run
-      # red. Manual runs always publish.
+      # red. Manual runs always publish. This is its own job so an unchanged
+      # version also skips the test run below.
       - name: Check whether the version changed
         id: version
         run: |
@@ -55,8 +58,28 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+  # A version bump used to publish even when the tests failed, because this
+  # workflow ran apart from test.yml. Publishing now needs this job to pass.
+  test:
+    name: Run the test workflow
+    needs: version
+    if: needs.version.outputs.changed == 'true'
+    uses: ./.github/workflows/test.yml
+
+  publish-node:
+    name: Publish Custom Node to Registry
+    needs: [version, test]
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # The action reads pyproject.toml from the workspace, and this job runs on
+      # a fresh runner, so it needs its own checkout.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Pinned to a commit: this action receives the registry token, and a
+      # moving branch would let an upstream push run new code with it.
       - name: Publish Custom Node
-        if: steps.version.outputs.changed == 'true'
-        uses: Comfy-Org/publish-node-action@main
+        uses: Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9 # main
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

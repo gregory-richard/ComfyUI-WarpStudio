@@ -376,10 +376,19 @@ Delete sends a file there to that drive's recycle bin. Nothing there is renamed.
 **Show in
 folder** works only in a browser on the computer ComfyUI runs on. Every route
 but the thumbnail asks for a header that only the ComfyUI page sends, and refuses
-requests from other sites. That holds for ordinary web pages, not for a DNS
-rebinding attack, which ComfyUI's own server doesn't stop either. ComfyUI has no
-login, so keep it off the internet. The details are in the
-[wiki](WIKI.md#http-api).
+requests from other sites. ComfyUI has no login, so keep it off the internet.
+The details are in the [wiki](WIKI.md#http-api).
+
+A web page can also try to reach ComfyUI by pointing its own web address at
+your computer (DNS rebinding). So while ComfyUI listens only on this computer
+(the default, without `--listen`), those routes answer only requests sent to `localhost`, a
+`*.localhost` name or an IP address such as `127.0.0.1`, and refuse the rest
+with a message naming the address. If you open ComfyUI through a tunnel or
+proxy under another name, list that name, without `https://`, in the
+`WARP_STUDIO_TRUSTED_HOSTS` environment variable before starting ComfyUI, for
+example `WARP_STUDIO_TRUSTED_HOSTS=comfy.example.net` (separate several names
+with commas). With `--listen` set to a network address such as `0.0.0.0`,
+ComfyUI is open to your network and this check is off.
 
 ## Example workflow
 

@@ -2,7 +2,9 @@ import http.client
 import importlib.util
 import inspect
 import json
+import socket
 import threading
+import urllib.error
 import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -255,6 +257,24 @@ def test_parse_reply_strips_thinking():
         pw.parse_reply(msg(content="<think>cut off before it closed"))
     with pytest.raises(pw.PromptWriterError, match="returned no text"):
         pw.parse_reply({})
+
+
+def test_a_close_tag_without_an_open_one_ends_the_thinking():
+    # A chat template that already wrote <think> leaves the reply with only the </think>.
+    def msg(**kw):
+        return {"choices": [{"message": kw}]}
+
+    reply = msg(content="Plan the light.\n</think>\n\nA red bicycle")
+    assert pw.parse_reply(reply) == "A red bicycle"
+    assert pw.parse_reasoning(reply) == "Plan the light."
+    both = msg(content="first</think>A<think>second</think>B")
+    assert pw.parse_reply(both) == "AB"
+    assert pw.parse_reasoning(both) == "first\nsecond"
+    with pytest.raises(pw.PromptWriterError, match="returned no text"):
+        pw.parse_reply(msg(content="only thoughts</think>"))
+    # A reasoning field still comes first; the orphan thought is still not the answer.
+    assert pw.parse_reply(msg(content="t</think>P", reasoning="R")) == "P"
+    assert pw.parse_reasoning(msg(content="t</think>P", reasoning="R")) == "R"
 
 
 def test_cost_of():
@@ -693,6 +713,7 @@ def test_clean_title():
     assert len(pw.clean_title("word " * 40)) <= 60
     assert pw.clean_title("   ") == ""
     assert pw.clean_title("<think>Okay, the user wants") == ""
+    assert pw.clean_title("The user wants a name.</think>\nRed bicycle") == "Red bicycle"
 
 
 def test_make_title_request(server):
@@ -1231,6 +1252,35 @@ def test_a_connection_that_breaks_off_is_an_error_the_user_can_read():
         pw._request("https://nano-gpt.com/api/v1/models", api_key="k", timeout=5, opener=opener)
 
 
+class _Py39Timeout(OSError):
+    """socket.timeout as Python 3.9 has it: an OSError that is not a TimeoutError."""
+
+
+@pytest.mark.parametrize("where", ["open", "url_error", "read"])
+def test_a_python_39_socket_timeout_says_the_provider_did_not_answer(monkeypatch, where):
+    monkeypatch.setattr(socket, "timeout", _Py39Timeout)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise _Py39Timeout("timed out")
+
+    def opener(request, timeout):
+        if where == "open":
+            raise _Py39Timeout("timed out")
+        if where == "url_error":
+            raise urllib.error.URLError(_Py39Timeout("timed out"))
+        return _Resp()
+
+    with pytest.raises(pw.PromptWriterError, match=r"did not answer within 5 s"):
+        pw._request("https://nano-gpt.com/api/v1/models", api_key="k", timeout=5, opener=opener)
+
+
 @pytest.mark.parametrize("body", [["x"], "x", 3, None])
 def test_handle_title_refuses_a_body_that_is_not_an_object(body):
     assert pw.handle_title(body, env={}, key_file=None) == {"error": "Invalid request"}
@@ -1414,9 +1464,56 @@ def test_write_a_stream_with_think_tags_in_the_content(server):
 def test_think_tags_are_split_where_the_pieces_cut_them():
     split = pw._ThinkSplitter()
     got = [split.feed(piece) for piece in ["<thi", "nk>plan", " more</th", "ink>\nPROMPT", " end<"]]
-    got.append(split.flush())
-    assert "".join(thought for thought, _ in got) == "plan more"
-    assert "".join(answer for _, answer in got) == "\nPROMPT end<"
+    got.append((*split.flush(), False))
+    assert "".join(thought for thought, _, _ in got) == "plan more"
+    assert "".join(answer for _, answer, _ in got) == "\nPROMPT end<"
+    assert not any(retract for _, _, retract in got)
+
+
+def test_a_close_tag_without_an_open_one_takes_back_the_answer_given_so_far():
+    split = pw._ThinkSplitter()
+    got = [split.feed(piece) for piece in ["plan ", "more</th", "ink>\nPROMPT", " a </think> b"]]
+    assert got == [
+        ("", "plan ", False),
+        ("", "more", False),
+        ("", "\nPROMPT", True),
+        ("", " a </think> b", False),
+    ]
+    # In one piece: what came before the tag in it is thought too.
+    assert pw._ThinkSplitter().feed("x</think>y") == ("x", "y", True)
+    # After a proper block, a later </think> is just text.
+    assert pw._ThinkSplitter().feed("<think>a</think>b</think>c") == ("a", "b</think>c", False)
+
+
+def test_write_a_stream_whose_thinking_has_no_open_tag(server):
+    server.replies.append(
+        (
+            200,
+            _sse(
+                {"choices": [{"delta": {"content": "Plan "}}]},
+                {"choices": [{"delta": {"content": "it.</think>"}}]},
+                {"choices": [{"delta": {"content": "\nA red bicycle."}}]},
+            ),
+            SSE,
+        )
+    )
+    pieces = []
+    out = pw.write(
+        server.url,
+        "m",
+        "S",
+        0.6,
+        "i",
+        None,
+        [],
+        api_key=None,
+        model=None,
+        on_delta=lambda *piece: pieces.append(piece),
+    )
+    assert out["text"] == "A red bicycle."
+    assert out["reasoning"] == "Plan it."
+    # The page is told the answer it was shown so far was thinking.
+    assert pieces == [("", "Plan ", 1), ("it.", "", 2, True), ("", "\nA red bicycle.", 6)]
 
 
 def test_write_stops_when_told(server):

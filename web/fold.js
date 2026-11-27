@@ -4,10 +4,14 @@
 // so a folded LoRA still loads and folded prose still goes to the model. The
 // DOM side lives in prompt_editor.js; this is the part that needs no page.
 
+import { LORA_TAG_SOURCE } from "./prompt_marks.js";
+
 // Matched one line at a time, so \s cannot run on into the line after.
 const HEADER_LINE = /^\s*\/\/\/\/\s*(.*)$/;
 
-const LORA_TAG = /<lora:[^<>\n]*>/gi;
+// The tag the backend loads, so a header counts the LoRAs that will apply and
+// not, say, a <lora:name:strong> that loads nothing.
+const LORA_TAG = new RegExp(LORA_TAG_SOURCE, "gi");
 
 /** How many LoRA tags a stretch of text holds, and how many are not behind a //. */
 export function countLoras(text) {

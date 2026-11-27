@@ -122,5 +122,14 @@ def stem_problems(stem: str) -> List[str]:
 
 
 def target_path(folder: Path, stem: str, suffix: str) -> Path:
-    """``folder / (stem + suffix)``; never ``with_suffix`` (stems contain dots)."""
-    return folder / (stem + suffix)
+    """``folder / (stem + suffix)``; never ``with_suffix`` (stems contain dots).
+
+    Raises ValueError for a name that would land anywhere but in ``folder``.
+    """
+    name = stem + suffix
+    if "/" in name or "\\" in name or name in ("", ".", ".."):
+        raise ValueError(f"not a file name: {name!r}")
+    path = folder / name
+    if path.parent != folder:
+        raise ValueError(f"not a file name in {folder}: {name!r}")  # e.g. a drive ("D:x") on Windows
+    return path

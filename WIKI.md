@@ -79,7 +79,7 @@ Don't uninstall Civitai Updater until Warp Studio has started once: your updater
 
 On the first start, Warp Studio copies your data to its own names. It copies and
 never moves, never overwrites a file that is already there, and leaves the old
-files in place. If a copy fails, it tries again on the next start.
+files in place. If a copy fails, it tries again on the next start, for the items that failed only, so a file you deleted since is not copied back.
 
 | Was | Now |
 | --- | --- |
@@ -211,7 +211,11 @@ folder name, as before.
 
 #### Naming a LoRA
 
-A tag does not need the full filename, only enough to identify one file.
+A tag does not need the full filename, only enough to identify one file. The
+weight is optional: `<lora:name>` loads at 1.0, as in A1111, and is taken out of
+the prompt text like any other tag. The editor colours, counts and nudges it the
+same way.
+
 Matching is tried in this order, ignoring case and slash direction:
 
 1. the full name — `sdxl/atelier - Detail Tweaker - v2.0 (SDXL).safetensors`
@@ -226,7 +230,8 @@ shortest thing worth typing.
 what it matched. That is deliberate: generating without a LoRA the prompt asked
 for gives a wrong picture *and* wrong metadata, and a console warning is too easy
 to miss. A near miss suggests the closest names, so a typo is a question rather
-than a dead end.
+than a dead end. A LoRA that matches a file but fails to load (a truncated
+download, say) stops the run too, with an error that names the LoRA.
 
 #### Completing with `/`
 
@@ -585,10 +590,10 @@ The dot says where that version stands:
 | green | `Downloaded` | Downloaded since the check. |
 | dashed | `Archived` | In the archive folder. |
 | dashed, dim | `Deleted` | Deleted since the check. The row has no buttons. |
-| amber | `Error` | The lookup failed or Civitai refused it (a removed model, one that needs an API key). The line over the picture gives the reason. |
+| amber | `Error` | The lookup failed or Civitai refused it (a removed model, one that needs an API key, a rejected key, a rate limit, an outage). The line over the picture gives the reason. |
 | amber | `Duplicate` | The same version is in the archive too. |
 | dashed amber | `Info only` | Only the `.civitai.info` is on this drive; the model is in the archive. |
-| dashed | `No match` | Civitai has no release with this file's hash. |
+| dashed | `No match` | Civitai answered that it has no release with this file's hash. A rate limit, a rejected key or an outage is an `Error` instead. |
 
 Red is used for one meaning only: a release exists that you do not have.
 
@@ -965,7 +970,12 @@ Re-pick them.
 If ComfyUI stops in the middle of a rename, a journal remembers where it got
 to, and the Rename view offers **Finish** or **Undo** on the next start. A file
 that already has the new name is never overwritten, and a file Windows has
-locked (a model loaded right now) is skipped and reported.
+locked (a model loaded right now) is skipped and reported. **Undo** puts back
+chained, swapped and three-way renames, and **Finish** can complete an
+interrupted Delete. While the journal waits, Scan and Check for Updates refuse to
+start, because they would record the temporary names. Recovery, Delete and
+editing a rename decision each take the job slot while they run, so they cannot
+overlap a running job or each other: a second tab gets "busy".
 
 Every file the renamer moves is recorded in `ComfyUI/user/warp-studio/updater/rename_log.jsonl`: one JSON line per file with the time, the kind
 (`rename`, `trash` for a removed copy, `undo` for a rename that **Undo** put
@@ -1364,7 +1374,10 @@ card with **Retry**; it is kept with the chat until it is retried, taken back or
 is deleted, and **Retry** uses the current settings.
 
 **Storage:** chats are saved in the ComfyUI user folder as
-`warp_studio_prompt_chats.json`, never in a workflow or in images. Each request is also
+`warp_studio_prompt_chats.json`, never in a workflow or in images. A save is merged
+with the file chat by chat, the newer copy of each chat winning, so two ComfyUI tabs
+no longer overwrite each other's chats, and a chat deleted in one tab stays deleted
+(its id is kept for 60 days so a tab still holding it cannot bring it back). Each request is also
 logged to `ComfyUI/user/warp-studio/llm_log.jsonl`: a `request` line when it is sent
 and a `result` line with the same `id` when it ends (text, question, error or
 stopped, with usage, cost and seconds). No key and no image data is written; the
@@ -1440,9 +1453,17 @@ unless it runs with `--enable-cors-header`. The thumbnail route can't ask for th
 header, because an `<img>` sends none; it refuses `Sec-Fetch-Site: cross-site` and
 `same-site` instead, and serves only the preview beside a model file (`name` must
 end in a model extension) in one of ComfyUI's model folders. A `name` with a
-drive, a leading slash or a `..` step finds nothing. The guard doesn't stop DNS
-rebinding, and neither does ComfyUI's own server, so keep ComfyUI off untrusted
-networks.
+drive, a leading slash or a `..` step finds nothing.
+
+While ComfyUI listens only on this computer (the default, without `--listen`),
+every guarded route also checks the request's `Host`. It must be `localhost`, a
+`*.localhost` name, an IP address, or a name listed in the environment variable
+`WARP_STUDIO_TRUSTED_HOSTS` (comma-separated, no `https://`). Any other name is
+refused with 403 and a message that names it. This stops DNS rebinding, where a
+web page points its own name at your computer. If you reach a loopback-bound
+ComfyUI through a tunnel or reverse proxy under a name, set the variable and
+restart ComfyUI. With `--listen` set to a network address the check is off, and
+ComfyUI is open to your network: keep it off untrusted networks.
 
 The Prompt Writer sends only to NanoGPT, to `localhost` / `127.0.0.1` / `::1`, or
 to a host you saved a key for through `POST /warp-studio/llm/key`. Any other
@@ -1879,7 +1900,7 @@ POST /warp-studio/updater/jobs/download-naming-model
 - `rename/status` says whether the renamer can run (a ComfyUI with **Generate Text**, a naming model) and, if not, why. It also carries the id of the last saved dry run.
 - `jobs/rename-dry-run` and `jobs/rename-apply` start jobs like the update jobs, and answer HTTP 409 while another job runs or a rename journal is waiting to be finished or undone. Poll them through `jobs/{job_id}`.
 - `rename/rows` pages the dry run's rows; `rename/decision` saves an edit, a keep or an **Ask again** for one model; `rename/base-code` saves a base code.
-- `rename/recover` finishes or undoes an interrupted rename.
+- `rename/recover` finishes or undoes an interrupted rename. It, `rename/decision` and the Delete routes answer 409 while a job runs or another of them holds the slot. `jobs/scan` and `jobs/check-updates` answer 409 while an interrupted rename waits.
 - `rename/reveal` and `reveal` show a file in its folder; `local-preview` returns a local preview image to the panel.
 - `jobs/download-naming-model` downloads the default naming model into the first `text_encoders` folder, unless it is already in one.
 
@@ -1906,7 +1927,7 @@ POST /warp-studio/updater/delete-file
 ## Architecture
 
 ```
-warp_pipe.py          every node, the storage, the resource scan, the routes
+warp_pipe.py          every node, the signal helpers, the resource scan, the routes
 prompt_writer.py      the Prompt Writer's backend and its /warp-studio/llm routes
 comfy_updater/        the Warp Studio panel's backend, see below
 studio/               the first-start data migration and the check for old packages
@@ -1939,18 +1960,23 @@ tests/web/            node --test for the frontend modules that need no page
 
 ### How a warp travels
 
-A `WARPPIPE` link does not carry the data. It carries `{"id": "<uuid>"}`, and
-the data sits in a module-level dict keyed by that id.
+A `WARPPIPE` signal is `{"id": "<uuid>", "values": <the bundle>}`. The bundle
+rides in the node's output itself. The id is only a label that names the Warp
+in log messages.
 
-That is a deliberate trade. Passing tensors and model patchers down a link would
-have ComfyUI copy and cache them at every hop; passing a token means a Warp
-costs the same whether it carries a seed or six models.
+That is a deliberate trade. ComfyUI passes node outputs by reference, so a Warp
+costs the same whether it carries a seed or six models, and nothing is copied at
+each hop.
 
-The cost is that the dict holds references, so a stored bundle keeps its models
-alive. Two limits bound it: entries older than an hour are pruned, and no more
-than 256 are kept, oldest evicted first. An Unwarp refreshes an entry's
-timestamp when it reads it, so a warp in active use never expires. All of it is
-under one lock, and the cleanup runs on insertion rather than on a timer.
+Because the bundle is part of the output, it lives exactly as long as ComfyUI's
+cached output does. Nothing prunes it while a downstream node may still read it,
+and its models are released when ComfyUI drops the output. There is no age limit
+and no cap.
+
+Several nodes may read one signal: a cached upstream Warp feeds every run
+downstream. So a bundle is never changed once it is returned. A downstream Warp
+copies it before adding its own inputs, and an Unwarp and Save Image Civitai only
+read it. An upstream output is never changed by what comes after it.
 
 Each `Warp` instance gets its id at construction. ComfyUI caches node instances
 per graph node, so the id is stable across runs of the same workflow.
@@ -2028,8 +2054,8 @@ none of its LoRAs: the checkpoint comes from `Model hash`, which both agree on,
 and the LoRAs were never anywhere Civitai looked.
 
 JPEG has no text chunks, so for that format the same block goes into EXIF
-`UserComment` as UTF-16BE behind a `UNICODE\0` marker — what A1111 writes and
-what every reader of these files expects.
+`UserComment` as UTF-16BE behind a `UNICODE\0` marker, in the Exif block — what A1111
+writes and where its readers look.
 
 ### The prompt box
 
@@ -2277,7 +2303,9 @@ Save flat UI shots as lossless WebP and anything with real gradients as quality
 The publish workflow fires on a push touching `pyproject.toml`, but only
 publishes when the version there actually changed against the previous commit —
 editing lint config does not re-publish. A manual `workflow_dispatch` always
-publishes.
+publishes. Before it publishes, it runs the test workflow (`test.yml`), and a red
+build stops the release. The publish action is pinned to a commit, not to
+`main`.
 
 Semver as this project reads it: a new node or a new capability is a minor; a
 change that makes an existing workflow load differently is a major. 3.0.0 was

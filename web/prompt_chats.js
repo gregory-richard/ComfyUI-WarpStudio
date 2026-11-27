@@ -22,7 +22,7 @@ const TITLE_WORDS = 6;
 const TITLE_CHARS = 40;
 
 export function emptyStore() {
-  return { version: STORE_VERSION, chats: [] };
+  return { version: STORE_VERSION, chats: [], deleted: {} };
 }
 
 const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -217,6 +217,7 @@ function normalizeChat(raw) {
   }
   return {
     id: raw.id,
+    rev: revOf(raw),
     title: stringOr(raw.title, DEFAULT_TITLE),
     titleEdited: raw.titleEdited === true,
     created: stampOf(raw.created),
@@ -240,12 +241,17 @@ export function isStore(raw) {
 export function normalizeStore(raw) {
   if (!isStore(raw)) return emptyStore();
   const chats = validUnique(raw.chats, (c) => Array.isArray(c.versions));
-  return { version: STORE_VERSION, chats: chats.map(normalizeChat) };
+  return {
+    version: STORE_VERSION,
+    chats: chats.map(normalizeChat),
+    deleted: normalizeDeleted(raw.deleted),
+  };
 }
 
 export function createChat(store, { id, now, seedPrompt = null, targetLabel = null }) {
   const chat = {
     id,
+    rev: 0,
     title: DEFAULT_TITLE,
     titleEdited: false,
     created: now,
@@ -828,11 +834,142 @@ export function renameChat(chat, title) {
   chat.titleEdited = true;
 }
 
-export function deleteChat(store, id) {
+/** Removes the chat and leaves a tombstone, so another tab's save does not bring it back. */
+export function deleteChat(store, id, now = Date.now()) {
   const index = store.chats.findIndex((c) => c.id === id);
   if (index < 0) return false;
-  store.chats.splice(index, 1);
+  const [chat] = store.chats.splice(index, 1);
+  store.deleted ??= {};
+  store.deleted[id] = Math.max(now, revOf(chat) + 1);
   return true;
+}
+
+// --- Several tabs, one file ---------------------------------------------------
+//
+// Every open page holds the whole file and saves it whole. So that two tabs
+// saving in any order lose nothing, a save is merged with the file chat by
+// chat: each chat carries `rev`, stamped when it changes, and the newer copy
+// wins whole (edits of one chat in two tabs are not merged). A deleted chat
+// leaves its id in `deleted` with the time, so a tab still holding an
+// unchanged copy cannot bring it back. Pages from before this ignore both
+// fields. The server does the same merge (merge_chat_stores in prompt_writer.py).
+
+/** How long a tombstone is kept: a tab open longer than this could bring its chat back. */
+export const TOMBSTONE_MS = 60 * 24 * 3600 * 1000;
+
+/** Which copy of a chat is newer; chats saved before revisions are the oldest. */
+function revOf(chat) {
+  return Number.isFinite(chat?.rev) && chat.rev > 0 ? chat.rev : 0;
+}
+
+function normalizeDeleted(raw) {
+  if (!isObject(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw).filter(([id, at]) => isId(id) && Number.isFinite(at))
+  );
+}
+
+/** The chat as text, without its revision: what tells a changed chat from an unchanged one. */
+export function chatPrint(chat) {
+  return JSON.stringify({ ...chat, rev: undefined });
+}
+
+/** Each chat's print by id. */
+export function printsOf(store) {
+  return new Map(store.chats.map((chat) => [chat.id, chatPrint(chat)]));
+}
+
+/**
+ * Stamps every chat that differs from what the file is known to hold (`known`,
+ * a printsOf) as changed now. Always newer than before, even within one millisecond.
+ */
+export function stampChanges(store, known, now) {
+  for (const chat of store.chats) {
+    if (chatPrint(chat) !== known.get(chat.id)) chat.rev = Math.max(now, revOf(chat) + 1);
+  }
+}
+
+/** What adoptStore needs to know about a save: what was sent. Taken just before sending. */
+export function sentOf(store) {
+  return { prints: printsOf(store), deleted: new Set(Object.keys(store.deleted ?? {})) };
+}
+
+/**
+ * Two stores as one: the newer copy of each chat (a tie keeps `base`'s), less
+ * those deleted after their last change. Tombstones older than TOMBSTONE_MS go.
+ */
+export function mergeStores(base, incoming, now) {
+  const deleted = new Map();
+  for (const side of [base, incoming]) {
+    for (const [id, at] of Object.entries(side.deleted ?? {})) {
+      deleted.set(id, Math.max(deleted.get(id) ?? at, at));
+    }
+  }
+  const newest = new Map();
+  for (const chat of [...base.chats, ...incoming.chats]) {
+    const held = newest.get(chat.id);
+    if (!held || revOf(chat) > revOf(held)) newest.set(chat.id, chat);
+  }
+  const chats = [];
+  for (const [id, chat] of newest) {
+    if (deleted.has(id)) {
+      if (deleted.get(id) >= revOf(chat)) continue;
+      // Changed after it was deleted elsewhere: the change wins.
+      deleted.delete(id);
+    }
+    chats.push(chat);
+  }
+  for (const [id, at] of deleted) if (at < now - TOMBSTONE_MS) deleted.delete(id);
+  return { version: STORE_VERSION, chats, deleted: Object.fromEntries(deleted) };
+}
+
+/**
+ * Takes in what the file holds after a save (`remote`, normalized), where
+ * `sent` (sentOf) is what the save sent. A chat changed here since then keeps
+ * the change; one deleted here since is not taken back. A chat that stays
+ * keeps its object, so a write in progress still finds it.
+ * Returns `known`, the prints of what the file now holds, and the ids of the
+ * chats it added, replaced or removed here.
+ */
+export function adoptStore(store, remote, sent) {
+  const known = new Map();
+  const changed = new Set();
+  const theirs = new Map(remote.chats.map((chat) => [chat.id, chat]));
+  const kept = [];
+  for (const chat of store.chats) {
+    const copy = theirs.get(chat.id);
+    const sentPrint = sent.prints.get(chat.id);
+    const untouched = sentPrint !== undefined && chatPrint(chat) === sentPrint;
+    if (copy && untouched && revOf(copy) > revOf(chat)) {
+      for (const key of Object.keys(chat)) delete chat[key];
+      Object.assign(chat, copy);
+      changed.add(chat.id);
+      known.set(chat.id, chatPrint(chat));
+    } else if (!copy && untouched && (remote.deleted[chat.id] ?? -1) >= revOf(chat)) {
+      changed.add(chat.id);
+      continue;
+    } else if (sentPrint !== undefined) {
+      // Unchanged, the file holds what was sent; changed meanwhile, the next save stamps it.
+      known.set(chat.id, sentPrint);
+    }
+    kept.push(chat);
+  }
+  const here = new Set(kept.map((chat) => chat.id));
+  for (const copy of remote.chats) {
+    if (here.has(copy.id)) continue;
+    if ((store.deleted?.[copy.id] ?? -1) >= revOf(copy)) continue;
+    kept.push(copy);
+    changed.add(copy.id);
+    known.set(copy.id, chatPrint(copy));
+  }
+  store.chats = kept;
+  // The file's tombstones, and those made here since the save was sent.
+  const deleted = new Map(Object.entries(remote.deleted));
+  for (const [id, at] of Object.entries(store.deleted ?? {})) {
+    if (!sent.deleted.has(id)) deleted.set(id, Math.max(deleted.get(id) ?? at, at));
+  }
+  store.deleted = Object.fromEntries(deleted);
+  return { known, changed };
 }
 
 // Stamps are whatever the caller passed as `now`: epoch numbers or ISO strings.

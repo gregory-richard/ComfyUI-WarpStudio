@@ -15,7 +15,7 @@ import {
   loadCodeEditor,
   mountCodeEditor,
 } from "./prompt_editor.js";
-import { addEmbedding, cycleLora } from "./prompt_marks.js";
+import { LORA_TAG_SOURCE, addEmbedding, cycleLora, parseLoraTags } from "./prompt_marks.js";
 import { PROMPT_CHANGED, noteUsed } from "./prompt_target.js";
 import { writeBarFor } from "./prompt_writer.js";
 import { escapeAttr, escapeHTML, stemOf, toggleCommentLines } from "./text.js";
@@ -106,7 +106,7 @@ const STRIP_H = 24;
 // each node adds itself here while it lives.
 const live = new Set();
 
-const TAG_RE = /<lora:([^:>]+):(-?[0-9]*\.?[0-9]+)([^>]*)>/gi;
+const TAG_RE = new RegExp(LORA_TAG_SOURCE, "gi");
 const COMMENT_RE = /\/\/[^\n]*/g;
 const EMBED_RE = /\bembedding:([^\s,]+)/gi;
 
@@ -330,21 +330,7 @@ function inComment(text, index) {
   return text.slice(lineStart, index).includes("//");
 }
 
-function parseTags(text) {
-  const found = [];
-  TAG_RE.lastIndex = 0;
-  let m;
-  while ((m = TAG_RE.exec(text)) !== null) {
-    found.push({
-      raw: m[0],
-      name: m[1].trim(),
-      weight: parseFloat(m[2]),
-      start: m.index,
-      end: m.index + m[0].length,
-    });
-  }
-  return found;
-}
+const parseTags = parseLoraTags;
 
 /** The tag the caret is in or against. Touching either edge counts, so the
  *  weight keys work with the caret just after the closing bracket. */
@@ -599,6 +585,8 @@ function findTextarea(node, name) {
   const overlaid = widget.inputEl ?? widget.element;
   if (overlaid?.tagName === "TEXTAREA" && overlaid.isConnected) return overlaid;
 
+  // Ids repeat across subgraphs: a node that is not on screen must not get another's boxes.
+  if (node.graph !== app.canvas?.graph) return null;
   const root = document.querySelector(`[data-node-id="${node.id}"]`);
   if (!root) return null;
   const shown = widgets.filter((w) => BOX_WIDGETS.includes(w.name) && !w._wpeHidden);

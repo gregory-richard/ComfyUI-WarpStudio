@@ -4,7 +4,7 @@ import shutil
 import pytest
 
 from studio import migration
-from studio.migration import MARKER, find_old_updater_data, migrate
+from studio.migration import MARKER, PROGRESS, find_old_updater_data, migrate
 
 SETTINGS = {
     "WarpPipe.PromptWriter.BaseUrl": "http://x",
@@ -234,3 +234,60 @@ def test_settings_are_written_as_ascii(env):
     data = json.loads(raw)
     assert data["WarpStudio.Name"] == values["WarpPipe.Name"]
     assert data["WarpStudio.Glyph"] == values["WarpPipe.Glyph"]
+
+
+def test_retry_redoes_only_failed_items_and_keeps_deletions(env, monkeypatch):
+    user, nodes, own = env
+    (user / "warppipe_llm_keys.json").write_text("keys")
+    make_updater(nodes)
+    real = shutil.copy2
+    state = {"fail": True}
+
+    def flaky(src, dst, *a, **k):
+        if state["fail"] and str(src).endswith("config.json"):
+            raise OSError("disk hiccup")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(shutil, "copy2", flaky)
+    assert migrate(user, [nodes], own).errors
+    keys = user / "warp-studio" / "llm_keys.json"
+    assert keys.read_text() == "keys"
+    assert not (user / MARKER).exists()
+
+    # The user removes a file that was migrated fine; it must stay removed.
+    keys.unlink()
+    state["fail"] = False
+    report = migrate(user, [nodes], own)
+    assert report.errors == []
+    assert not keys.exists()
+    assert (user / "warp-studio" / "updater" / "config.json").exists()
+    assert (user / MARKER).exists()
+    assert not (user / PROGRESS).exists()
+
+
+def test_old_style_marker_means_everything_is_done(env):
+    user, nodes, own = env
+    (user / "warppipe_llm_keys.json").write_text("keys")
+    (user / MARKER).parent.mkdir()
+    (user / MARKER).write_text(json.dumps({"migrated_at": 1, "report": {}}))
+    assert migrate(user, [nodes], own) is None
+    assert not (user / "warp-studio" / "llm_keys.json").exists()
+
+
+def test_unreadable_progress_file_does_not_raise_or_recopy(env):
+    user, nodes, own = env
+    (user / "warppipe_llm_keys.json").write_text("keys")
+    (user / PROGRESS).parent.mkdir()
+    (user / PROGRESS).write_text("{not json")
+    report = migrate(user, [nodes], own)
+    assert report.errors == []
+    assert not (user / "warp-studio" / "llm_keys.json").exists()
+    assert (user / MARKER).exists()
+    assert migrate(user, [nodes], own) is None
+
+
+def test_corrupt_marker_is_still_treated_as_done(env):
+    user, nodes, own = env
+    (user / MARKER).parent.mkdir()
+    (user / MARKER).write_text("{not json")
+    assert migrate(user, [nodes], own) is None

@@ -975,6 +975,16 @@ export function renderGalleryView(el, options) {
     (ev) => {
       const img = ev.target;
       if (!(img instanceof HTMLImageElement)) return;
+      if (img.classList.contains("cu-g-avatar")) {
+        // A dead avatar falls back to what a creator without one gets: the initial.
+        const hitCard = cards.get(img.closest("[data-g-key]")?.dataset.gKey);
+        const initial = document.createElement("span");
+        initial.className = "cu-g-avatar";
+        initial.textContent = Array.from(hitCard?.model.creator || "")[0]?.toUpperCase() ?? "";
+        img.replaceWith(initial);
+        return;
+      }
+      if (!img.closest(".cu-g-thumb")) return;
       const hit = cards.get(img.closest("[data-g-key]")?.dataset.gKey);
       const blank = document.createElement("span");
       blank.className = "cu-g-noimg";

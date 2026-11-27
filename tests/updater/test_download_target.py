@@ -229,6 +229,21 @@ class DownloadTargetTests(unittest.TestCase):
         self.assertEqual(self.choose(reference_folder=self.root / "GR", fallback_code="zit").folder, self.root / "GR")
         self.assertEqual(self.choose(reference_folder=self.root, fallback_code="zit").folder, self.root)
 
+    def test_a_new_base_beside_a_per_base_root_stays_beside_the_old_version(self) -> None:
+        # Each root is one base's folder: a new folder beside it would be outside every root.
+        sdxl, pony = self.tmp / "sdxl", self.tmp / "pony"
+        for i in range(3):
+            touch(sdxl / f"maker - a{i} - v1 (sdxl).safetensors")
+            touch(pony / f"maker - b{i} - v1 (pony).safetensors")
+        target = choose_target(
+            glow_file(),
+            reference_folder=sdxl,
+            type_roots=[sdxl, pony],
+            named=None,
+            fallback_code="zit",
+        )
+        self.assertEqual(target, Target(sdxl, "glowV2", ".safetensors", False))
+
     def test_a_taken_ai_name_falls_back_to_civitais_name(self) -> None:
         touch(self.ill / "maker - glow - v2 (ill).civitai.info")
         target = self.choose(named=("maker - glow - v2 (ill)", "ill"))

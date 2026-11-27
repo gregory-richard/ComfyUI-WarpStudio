@@ -1,7 +1,24 @@
 // What a prompt list holds, and what one Gallery click does to it.
 // Pure string functions: every call reads the text it is given.
 
-const TAG = /<lora:([^:>]+):(-?[0-9]*\.?[0-9]+)([^>]*)>/i;
+// warp_pipe._LORA_TAG_RE, the one the backend loads: name, then an optional
+// weight and whatever follows it (a clip weight). A1111 reads <lora:name> as 1.
+// Every frontend copy is built from this, so what is coloured, counted and
+// nudged is what gets applied.
+export const LORA_TAG_SOURCE = "<lora:([^:>]+)(?::(-?[0-9]*\\.?[0-9]+)([^>]*))?>";
+const TAG = new RegExp(LORA_TAG_SOURCE, "i");
+const ALL_TAGS = new RegExp(LORA_TAG_SOURCE, "gi");
+
+/** Every LoRA tag in the text, with its weight (1 when it names none). */
+export function parseLoraTags(text) {
+  return [...str(text).matchAll(ALL_TAGS)].map((m) => ({
+    raw: m[0],
+    name: m[1].trim(),
+    weight: m[2] === undefined ? 1 : parseFloat(m[2]),
+    start: m.index,
+    end: m.index + m[0].length,
+  }));
+}
 const SECTION_LINE = /^\s*\/\/\/\//;
 const PARKED_LINE = /^\s*\/\//;
 const COMMENT_LINE = /^(\s*)\/{2,} ?/;

@@ -22,6 +22,7 @@ from .constants import (
     PREVIEW_SIDECAR_SUFFIX,
     SUPPORTED_MODEL_EXTENSIONS,
 )
+from .path_identity import path_key
 from .path_resolver import _read_identifying_sidecar
 from .sidecar import model_file_path, read_data_file, write_json
 
@@ -87,8 +88,9 @@ def list_archive_entries(
             for dir_path, dir_names, file_names in os.walk(archive_folder, onerror=unreadable.append):
                 dir_names.sort(key=str.casefold)
                 names = sorted(file_names, key=str.casefold)
+                # A weights file and its info by stem (``path_key``): two files on a case-sensitive drive.
                 info_stems = {
-                    name[: -len(INFO_SIDECAR_SUFFIX)].casefold()
+                    path_key(name[: -len(INFO_SIDECAR_SUFFIX)])
                     for name in names
                     if name.lower().endswith(INFO_SIDECAR_SUFFIX)
                 }
@@ -96,8 +98,8 @@ def list_archive_entries(
                 for name in names:
                     if Path(name).suffix.lower() in SUPPORTED_MODEL_EXTENSIONS:
                         weights = Path(dir_path) / name
-                        weights_by_stem.setdefault(weights.stem.casefold(), weights)
-                        if weights.stem.casefold() not in info_stems:
+                        weights_by_stem.setdefault(path_key(weights.stem), weights)
+                        if path_key(weights.stem) not in info_stems:
                             without_info += 1
                 for name in names:
                     if not name.lower().endswith(INFO_SIDECAR_SUFFIX):
@@ -111,7 +113,8 @@ def list_archive_entries(
                         {
                             "modelType": model_type,
                             "path": info_path,
-                            "filePath": weights_by_stem.get(stem.casefold()) or model_file_path(info_path, info),
+                            "filePath": weights_by_stem.get(path_key(stem)) or model_file_path(info_path, info),
+
                             "infoPath": info_path,
                             "previewPath": info_path.with_name(f"{stem}{PREVIEW_SIDECAR_SUFFIX}"),
                             "metadataOnly": True,

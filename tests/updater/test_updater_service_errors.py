@@ -32,7 +32,7 @@ class MetadataOnlyClient:
     def model_stats(self, model_id):  # noqa: ARG002
         return {}
 
-    def get_version(self, version_id):
+    def get_version(self, version_id, raise_on_error=False):  # noqa: ARG002
         self.requested_version_ids.append(version_id)
         return {
             "id": version_id,

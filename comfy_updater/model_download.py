@@ -196,7 +196,9 @@ def download_to(
 
 def _without_queries(text: str) -> str:
     """The text with every URL's query string cut off: a signed link must not reach the card."""
-    return _URL_QUERY.sub(lambda match: match.group(1), text)
+    text = _URL_QUERY.sub(lambda match: match.group(1), text)
+    # urllib3 writes "url: /path?query" with no scheme or host.
+    return re.sub(r"(\burl: [^\s?]+)\?[^\s)]*", r"\1", text)
 
 
 def _move_into_place(part: Path, target: Path) -> None:

@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 import threading
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 import uuid
 
 from .sidecar import quarantine_corrupt_file, write_json
@@ -304,6 +304,17 @@ class AnswerCache(_JsonStore):
             self._save()
 
 
+def _journal_step(step: dict) -> dict:
+    """The fields recovery reads. A deletion's ``delete`` (no kept copy to compare
+    with) and a rename's ``suffix`` (its temporary name) go along when present."""
+    saved = {"kind": step.get("kind"), "from": step.get("from"), "to": step.get("to"), "entry": step.get("entry")}
+    for name in ("delete", "suffix"):
+        if name in step:
+            saved[name] = step[name]
+    saved["done"] = False
+    return saved
+
+
 class RenameJournal(_JsonStore):
     """Every planned step of a rename run, written before the first one, for crash recovery.
 
@@ -339,16 +350,7 @@ class RenameJournal(_JsonStore):
                 "startedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 # For the rename log, when "finish" completes the run after a restart.
                 "dryRunJobId": str(dry_run_job_id or ""),
-                "steps": [
-                    {
-                        "kind": step.get("kind"),
-                        "from": step.get("from"),
-                        "to": step.get("to"),
-                        "entry": step.get("entry"),
-                        "done": False,
-                    }
-                    for step in steps
-                ],
+                "steps": [_journal_step(step) for step in steps],
             }
             self._write(self._data, durable=True)
             return run_id
@@ -358,25 +360,45 @@ class RenameJournal(_JsonStore):
             if self._data is None:
                 raise IndexError("no rename run is journaled")
             self._data["steps"][index]["done"] = True
-            self._write(self._data)
+            # Synced: a journal cut short by a power loss is set aside as corrupt, stranding the run.
+            self._write(self._data, durable=True)
 
-    def mark_done_many(self, indices: list[int]) -> None:
-        """Mark several steps done with one write (a whole entry at once)."""
+    def mark_done_many(self, indices: list[int], *, applied: bool = False, applied_to: Iterable[int] = ()) -> None:
+        """Mark several steps done with one write (a whole entry at once).
+
+        ``applied``: the entry went through, so its files are under their new names
+        (a removal's file is in the Recycle Bin). ``applied_to``: only these of the
+        steps did. "Done" alone also covers an entry given up and put back, or a
+        removal given up with its file still there; undo tells them apart.
+        """
+        went_through = set(applied_to)
         with self._lock:
             if self._data is None:
                 raise IndexError("no rename run is journaled")
             for index in indices:
                 self._data["steps"][index]["done"] = True
+                if applied or index in went_through:
+                    self._data["steps"][index]["applied"] = True
             if indices:
-                self._write(self._data)
+                self._write(self._data, durable=True)  # one sync per entry, as in mark_done
 
-    def keep_only(self, indices: list[int]) -> None:
-        """Drop every step but these (left open), keeping the run id; one write."""
+    def keep_only(self, indices: list[int], unapplied: Iterable[int] = ()) -> None:
+        """Drop every step but these (left open), keeping the run id; one write.
+
+        Steps in ``unapplied`` were put back under their old names: they lose ``applied``.
+        """
         with self._lock:
             if self._data is None:
                 raise IndexError("no rename run is journaled")
             steps = self._data["steps"]
-            self._data["steps"] = [dict(steps[index], done=False) for index in indices]
+            back = set(unapplied)
+            kept = []
+            for index in indices:
+                step = dict(steps[index], done=False)
+                if index in back:
+                    step.pop("applied", None)
+                kept.append(step)
+            self._data["steps"] = kept
             self._write(self._data, durable=True)
 
     def pending(self) -> Optional[dict]:

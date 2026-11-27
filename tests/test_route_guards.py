@@ -66,7 +66,7 @@ def test_every_json_route_refuses_a_request_without_the_panel_header(
 ):
     handlers = _register(warp_pipe, monkeypatch, tmp_path)
     llm = {key for key in handlers if key[1].startswith("/warp-studio/llm/")}
-    assert len(llm) == 7, "the Prompt Writer routes were not registered"
+    assert len(llm) == 8, "the Prompt Writer routes were not registered"
 
     for (method, path), handler in handlers.items():
         if (method, path) in UNGUARDED:

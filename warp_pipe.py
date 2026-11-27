@@ -256,50 +256,32 @@ def _validate_linked_input_types(
     return True
 
 
-# Global storage for warp data; keys are unique per Warp instance.
+# A WARPPIPE signal is {"id": <label>, WARP_VALUES_KEY: <the bundle>}. The bundle
+# rides in the output itself, so it lives exactly as long as ComfyUI's cached
+# output does: nothing can prune it while a downstream node may still read it,
+# and its models are released when ComfyUI drops the output, not an hour later.
+# ComfyUI passes outputs by reference, so this costs no copy per hop. The id is
+# only a label for logs.
 #
-# A bundle holds whatever was warped into it, models and CLIPs included, so an
-# entry keeps those objects alive and their memory unreclaimable for as long as
-# it lasts. That is what the age limit and the cap below are for: an abandoned
-# workflow's models are released within the hour rather than for the lifetime of
-# the process.
-warp_storage: dict[str, dict[str, Any]] = {}
-_storage_timestamps: dict[str, float] = {}  # Track last-access time per warp ID
-_storage_lock = threading.Lock()
-_STORAGE_MAX_AGE_SECONDS = 3600  # Prune entries older than 1 hour
-_STORAGE_MAX_ENTRIES = 256  # Hard cap on stored entries
+# Several readers may share one signal - a cached upstream Warp feeds every run
+# downstream - so a bundle is never changed once returned. Readers copy it.
+WARP_VALUES_KEY = "values"
 
 
-def _cleanup_warp_storage_locked(now: float) -> None:
-    stale_ids = [
-        warp_id
-        for warp_id in warp_storage
-        if now - _storage_timestamps.get(warp_id, float("-inf")) > _STORAGE_MAX_AGE_SECONDS
-    ]
-    for warp_id in stale_ids:
-        warp_storage.pop(warp_id, None)
-        _storage_timestamps.pop(warp_id, None)
+def warp_signal_values(warp: Any, consequence: str) -> Optional[dict[str, Any]]:
+    """The bundle a WARPPIPE signal carries, or None when there is none.
 
-    if stale_ids:
-        logger.debug("Cleaned up %d stale warp storage entries", len(stale_ids))
-
-    overflow = len(warp_storage) - _STORAGE_MAX_ENTRIES
-    if overflow > 0:
-        oldest_ids = sorted(
-            warp_storage,
-            key=lambda warp_id: _storage_timestamps.get(warp_id, float("-inf")),
-        )[:overflow]
-        for warp_id in oldest_ids:
-            warp_storage.pop(warp_id, None)
-            _storage_timestamps.pop(warp_id, None)
-        logger.debug("Evicted %d warp storage entries (over cap)", len(oldest_ids))
-
-
-def cleanup_warp_storage() -> None:
-    """Prune stale warp storage entries to prevent memory leaks."""
-    now = time.time()
-    with _storage_lock:
-        _cleanup_warp_storage_locked(now)
+    No warp connected is not worth a warning; anything else without a bundle is,
+    since the values it should have carried are missing downstream.
+    """
+    if warp is None:
+        return None
+    values = warp.get(WARP_VALUES_KEY) if isinstance(warp, dict) else None
+    if isinstance(values, dict):
+        return values
+    warp_id = warp.get("id") if isinstance(warp, dict) else None
+    logger.warning("Warp data not found for ID: %s. %s", warp_id, consequence)
+    return None
 
 
 def _fingerprint_inputs(kwargs: dict[str, Any]) -> str:
@@ -530,7 +512,7 @@ class Warp:
     RETURN_NAMES = ("warp",)
 
     def __init__(self):
-        # Unique ID for this warp instance
+        # Names this node in its signals, for logs; the bundle travels in the signal.
         self._warp_id = uuid.uuid4().hex
 
     @classmethod
@@ -572,13 +554,9 @@ class Warp:
         width: Optional[int] = None,
         height: Optional[int] = None,
     ) -> tuple:
-        # If warp input provided, copy existing data
-        if isinstance(warp, dict) and "id" in warp:
-            prev_id = warp["id"]
-            with _storage_lock:
-                data = warp_storage.get(prev_id, {}).copy()
-        else:
-            data = {}
+        # A copy: the upstream bundle is shared with every other reader of it.
+        upstream = warp_signal_values(warp, "Starting from empty values.")
+        data = dict(upstream) if upstream is not None else {}
 
         logger.debug("Warp Input - model_1 type: %s", type(model_1))
         logger.debug("Warp Input - model_2 type: %s", type(model_2))
@@ -617,16 +595,10 @@ class Warp:
             if val is not None:
                 data[key] = val
 
-        with _storage_lock:
-            now = time.time()
-            warp_storage[self._warp_id] = data
-            _storage_timestamps[self._warp_id] = now
-            _cleanup_warp_storage_locked(now)
-
         if latent is not None:
             logger.debug("Warping latent type: %s", type(latent))
 
-        return ({"id": self._warp_id},)
+        return ({"id": self._warp_id, WARP_VALUES_KEY: data},)
 
 
 class Unwarp:
@@ -638,7 +610,7 @@ class Unwarp:
     def INPUT_TYPES(cls):
         return {
             "optional": {
-                "warp": ("WARPPIPE", {}),  # WARPPIPE carries the warp ID
+                "warp": ("WARPPIPE", {}),  # WARPPIPE carries the bundle itself
             }
         }
 
@@ -696,27 +668,8 @@ class Unwarp:
         return (None,) * len(self.RETURN_TYPES)
 
     def unwarp(self, warp: Optional[dict[str, Any]] = None) -> tuple:
-        # Handle case where no warp is connected - return all None values
-        if warp is None:
-            return self._return_empty_values()
-
-        # Handle invalid warp data gracefully
-        if not isinstance(warp, dict) or "id" not in warp:
-            logger.warning("Invalid warp signal received. Returning empty values.")
-            return self._return_empty_values()
-
-        warp_id = warp["id"]
-        with _storage_lock:
-            stored_data = warp_storage.get(warp_id)
-            if stored_data is not None:
-                _storage_timestamps[warp_id] = time.time()  # Refresh on access
-                data = stored_data.copy()
-            else:
-                data = None
-
-        # Handle missing warp data gracefully
+        data = warp_signal_values(warp, "Returning empty values.")
         if data is None:
-            logger.warning("Warp data not found for ID: %s. Returning empty values.", warp_id)
             return self._return_empty_values()
 
         latent_out = data.get("latent")
@@ -1088,8 +1041,11 @@ class WarpCompare:
 CIVITAI_INFO_SUFFIX = ".civitai.info"
 AUTOV2_LENGTH = 10
 
-# Matches an A1111 LoRA tag: <lora:name:0.8>, tolerating a trailing clip weight.
-_LORA_TAG_RE = re.compile(r"<lora:([^:>]+):(-?[0-9]*\.?[0-9]+)[^>]*>", re.IGNORECASE)
+# Matches an A1111 LoRA tag: <lora:name:0.8>, tolerating a trailing clip weight
+# (group 3, unused here). The weight is optional, as in A1111, where <lora:name>
+# means 1; group 2 is then None, which _as_float reads as 1.0. web/prompt_marks.js
+# holds the same pattern character for character, and a test keeps it so.
+_LORA_TAG_RE = re.compile(r"<lora:([^:>]+)(?::(-?[0-9]*\.?[0-9]+)([^>]*))?>", re.IGNORECASE)
 
 
 _hash_cache: dict[str, str] = {}
@@ -1340,15 +1296,22 @@ MODEL_SUFFIXES: tuple[str, ...] = (
 def model_named_by(inputs: dict[str, Any]) -> Optional[str]:
     """The model file a loader names, however that loader spells its input.
 
-    The three usual input names are tried first because they cost nothing. For
-    anything else the question is settled by where the file actually is: a name
+    ``ckpt_name`` and ``unet_name`` are tried first because they cost nothing:
+    only model loaders use them. ``model_name`` is also how upscaler, detector
+    and SAM loaders spell theirs, so it counts only when the file resolves in a
+    model folder. For anything else the question is settled the same way: a name
     that resolves inside the checkpoint, diffusion-model or UNet folders is a
     model whatever its input is called, so a loader from a pack nobody has heard
     of still records what it loaded.
     """
-    for key, _folders in MODEL_INPUT_KEYS:
+    for key, folders in MODEL_INPUT_KEYS:
         value = inputs.get(key)
-        if isinstance(value, str) and value and value.lower() != "none":
+        if not isinstance(value, str) or not value or value.lower() == "none":
+            continue
+        if key != "model_name":
+            return value
+        # An upscaler's "4x-UltraSharp" lives in upscale_models, not here.
+        if any(_resolve_model_path(folder, value) for folder in folders + MODEL_FOLDER_KEYS):
             return value
 
     for value in inputs.values():
@@ -1532,7 +1495,12 @@ def collect_graph_resources(
         # Comments go first, for the same reason they do everywhere else: a tag
         # behind a // was switched off and never loaded, and crediting it in the
         # metadata would describe an image that was not made.
-        for value in inputs.values():
+        #
+        # The Prompt + LoRAs node ignores its second list while that list is
+        # switched off, so its tags were never loaded either.
+        for key, value in inputs.items():
+            if key == "loras_2" and inputs.get("loras_2_on") is False:
+                continue
             if isinstance(value, str) and "<lora:" in value.lower():
                 loras.extend(extract_lora_tags(strip_comments(value)))
 
@@ -1684,7 +1652,7 @@ def available_loras() -> list[str]:
 
 
 class LoraTagError(ValueError):
-    """A LoRA tag names no file, or names too many."""
+    """A LoRA tag names no file, names too many, or names one that will not load."""
 
 
 def _normalise(value: str) -> str:
@@ -1949,6 +1917,7 @@ class WarpLoraPrompt:
         resolved: list[dict[str, Any]] = []
         trigger_words: list[str] = []
         seen: set[str] = set()
+        taken: set[str] = set()
 
         # Comments are stripped here rather than by the caller: a commented tag
         # is one switched off, and forgetting that in any one call site would
@@ -1962,6 +1931,11 @@ class WarpLoraPrompt:
             name = resolve_lora_name(query, candidates, strict=strict)
             if name is None:
                 continue
+            # Two spellings of one file ("detail tweaker" and "sdxl/detail
+            # tweaker") would apply it twice; the first one wins.
+            if name in taken:
+                continue
+            taken.add(name)
             path = _resolve_model_path("loras", name)
             resolved.append(
                 {
@@ -1994,7 +1968,10 @@ class WarpLoraPrompt:
             try:
                 import comfy.sd
                 import comfy.utils
-
+            except ImportError as exc:
+                logger.warning("Could not apply LoRA %s: %s", entry["name"], exc)
+                continue
+            try:
                 lora, metadata = comfy.utils.load_torch_file(
                     entry["path"], safe_load=True, return_metadata=True
                 )
@@ -2010,7 +1987,9 @@ class WarpLoraPrompt:
                 if patched_clip is not None:
                     clip = patched_clip
             except Exception as exc:
-                logger.warning("Could not apply LoRA %s: %s", entry["name"], exc)
+                # A file that will not load (a truncated download) fails the run
+                # like an unresolvable tag: the metadata would still credit it.
+                raise LoraTagError(f"Could not apply LoRA '{entry['name']}': {exc}") from exc
         return model, clip
 
     def apply(
@@ -2283,7 +2262,9 @@ def thumbnail_for(preview_path: str) -> Optional[str]:
     def write(temporary: str) -> None:
         small.save(temporary, "WEBP", quality=THUMBNAIL_QUALITY)
 
-    return cached if _write_atomically(cached, write) else None
+    # A failed write can mean another request put the same file there first (on
+    # Windows the replace fails while that one is being served): serve theirs.
+    return cached if _write_atomically(cached, write) or os.path.isfile(cached) else None
 
 
 def available_models(folder_key: str) -> list[str]:
@@ -2455,7 +2436,7 @@ def _register_routes() -> None:
     @routes.get("/warp-studio/loras")
     @guarded
     async def _loras(request):
-        return web.json_response({"loras": lora_index()})
+        return web.json_response({"loras": await asyncio.to_thread(lora_index)})
 
     @routes.get("/warp-studio/models")
     @guarded
@@ -2470,7 +2451,7 @@ def _register_routes() -> None:
     @routes.get("/warp-studio/embeddings")
     @guarded
     async def _embeddings(request):
-        return web.json_response({"embeddings": embedding_index()})
+        return web.json_response({"embeddings": await asyncio.to_thread(embedding_index)})
 
     @routes.get("/warp-studio/model/base")
     @guarded
@@ -2508,7 +2489,8 @@ def _register_routes() -> None:
         if request.query.get("full") == "1":
             return web.FileResponse(preview, headers={"Cache-Control": "max-age=86400"})
 
-        cached = thumbnail_for(preview)
+        # Decoding and re-encoding a preview is too slow for the event loop.
+        cached = await asyncio.to_thread(thumbnail_for, preview)
         if not cached:
             return web.Response(status=404, text="no thumbnail")
         return web.FileResponse(cached, headers={"Cache-Control": "max-age=86400"})
@@ -2549,7 +2531,9 @@ def _register_prompt_writer_routes(routes, web, instance) -> None:
             )
             for root in roots:
                 root = os.path.realpath(root)
-                if os.path.commonpath([root, path]) == root and os.path.isfile(path):
+                # _within, because commonpath raises across drives on Windows,
+                # and one root elsewhere must not hide the files in the others.
+                if _within(root, path) and os.path.isfile(path):
                     return path
         except Exception:
             pass
@@ -2593,7 +2577,10 @@ def exif_with_parameters(parameters: str) -> bytes:
     from PIL import Image
 
     exif = Image.Exif()
-    exif[0x9286] = b"UNICODE\0" + parameters.encode("utf-16-be")
+    # UserComment belongs in the Exif IFD (pointer 0x8769), where A1111 puts it
+    # and readers look, not in IFD0. A dict under the pointer tag is what
+    # Pillow writes out as that sub-IFD.
+    exif[0x8769] = {0x9286: b"UNICODE\0" + parameters.encode("utf-16-be")}
     return exif.tobytes()
 
 
@@ -2684,11 +2671,8 @@ class SaveImageCivitai:
         }
 
     def _warp_values(self, warp: Optional[dict[str, Any]]) -> dict[str, Any]:
-        if not isinstance(warp, dict) or "id" not in warp:
-            return {}
-        with _storage_lock:
-            stored = warp_storage.get(warp["id"])
-        return dict(stored) if isinstance(stored, dict) else {}
+        values = warp_signal_values(warp, "Saving without it.")
+        return dict(values) if values is not None else {}
 
     def build_metadata(
         self,

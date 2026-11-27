@@ -270,6 +270,24 @@ class SavePreviewTests(unittest.TestCase):
             with Image.open(target) as im:
                 self.assertEqual(im.size, (2048, 900))
 
+    def test_save_preview_png_refuses_too_many_pixels_before_decoding(self):
+        buf = io.BytesIO()
+        Image.new("1", (5000, 5000)).save(buf, format="PNG")
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "m.preview.png"
+            with patch("comfy_updater.fallback_http.MAX_PREVIEW_PIXELS", 10_000_000):
+                self.assertFalse(save_preview_png(buf.getvalue(), target))
+            self.assertEqual(os.listdir(d), [])
+            self.assertTrue(save_preview_png(buf.getvalue(), target))
+
+    def test_save_preview_png_refuses_a_format_off_the_list(self):
+        buf = io.BytesIO()
+        Image.new("RGB", (4, 4), "blue").save(buf, format="BMP")
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "m.preview.png"
+            self.assertFalse(save_preview_png(buf.getvalue(), target))
+            self.assertEqual(os.listdir(d), [])
+
     def test_save_preview_png_rejects_non_image(self):
         with tempfile.TemporaryDirectory() as d:
             target = Path(d) / "m.preview.png"

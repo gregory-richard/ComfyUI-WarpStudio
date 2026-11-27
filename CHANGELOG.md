@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- **Warp Studio's routes refuse a request sent to the wrong host name** while ComfyUI listens only on this computer (the default, without `--listen`). Only `localhost`, an IP address, or a name listed in the environment variable `WARP_STUDIO_TRUSTED_HOSTS` (comma-separated) is answered. This stops a web page from pointing its own name at your computer (DNS rebinding). If you open a loopback-only ComfyUI through a tunnel or reverse proxy under a host name, set that variable to the name and restart ComfyUI. With `--listen`, nothing changes
+- **A rename the panel would refuse is refused by the server too**: a new name with a path separator, `..`, an empty name, a reserved name, or a row flagged as blocking is not applied, whoever sends it
+- **Preview images from fallback sources are limited**: an image with too many pixels is dropped, and only PNG, JPEG, WEBP and GIF are decoded
+
+### Changed
+
+- **A Warp bundle travels in the node's output**: it no longer expires after an hour or gets evicted when many warps exist, and its models are freed when ComfyUI drops the output. A downstream Warp copies the bundle before adding its own inputs, so an upstream output is never changed
+- **`<lora:name>` loads at weight 1.0**, as in A1111. The tag is removed from the prompt text like any other, and the editor colours, counts and nudges it like any other tag
+- **A LoRA that fails to load stops the run** with an error naming the LoRA, instead of a warning in the log and a picture made without it
+- **Check for Updates tells a failure from "No match on Civitai"**: when Civitai is rate-limiting, rejects the API key or is down, the file shows as an error. When Civitai sends `Retry-After`, the check waits that long (1 to 120 seconds), and all pending lookups wait together
+- **Scan and Check for Updates refuse to start while an interrupted rename waits** for Finish or Undo, because they would record the temporary names. Finishing or undoing a rename, Delete and editing a rename decision cannot overlap a running job or each other: a second tab gets "busy"
+- **Prompt Writer chats are merged when saved**, chat by chat, so two ComfyUI tabs no longer overwrite each other's chats. A chat you delete in one tab stays deleted
+- **On Linux, file names that differ only in letter case are different files** throughout the updater: rename, delete, archive and duplicates. Windows and macOS behave as before
+- **The Gallery and the model lists work when ComfyUI is served under a URL sub-path**, for example behind a reverse proxy at `/comfy/`
+
+### Fixed
+
+- **Undo after an interrupted rename restores chained, swapped and three-way renames.** An interrupted Delete can be finished, and Undo no longer says a file is in the Recycle Bin when it was never moved there
+- **Moving a file to the Recycle Bin is checked**: if the file is still there afterwards, the step is reported as failed instead of done
+- **Saved-image metadata**: an upscaler is no longer credited as the checkpoint, LoRAs from a switched-off second list are left out, and in a JPEG the generation info is written to the Exif block where A1111-style readers look
+- **Reasoning text no longer ends up in the prompt** when a model sends only a closing `</think>`
+- **Prompt Writer timeouts give the normal timeout message** on Python 3.9
+- **The migration from WarpPipe and Civitai Updater no longer copies back files you deleted** when an earlier start hit an error. It retries only the items that failed
+- **A naming job removed from ComfyUI's queue is reported** instead of waited on forever, and `--listen ::` is handled
+- **A late reply from an earlier Rename dry run no longer replaces the rows of the current one**
+- **Settings saved in quick succession arrive in order**, so an older save can no longer overwrite a newer one
+- **A creator's avatar that fails to load falls back to their initial** on the Updates cards
+- **The Prompt Writer leaves a picture out of a request** when the chosen model is known not to see images, and says so
+- **On a ComfyUI that does not say which prompt a preview belongs to, Warp Send shows the preview of the run that is executing**, not the newest one in the queue
+
 ## [1.2.0] - 2026-11-24
 
 ### Added

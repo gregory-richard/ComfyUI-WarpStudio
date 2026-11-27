@@ -153,29 +153,61 @@ def test_unwarp_returns_none_for_absent_or_missing_fields(warp_pipe):
     assert values["height"] is None
 
 
-def test_storage_cleanup_enforces_age_and_hard_cap(warp_pipe, monkeypatch):
-    monkeypatch.setattr(warp_pipe, "_STORAGE_MAX_ENTRIES", 2)
-    signals = [warp_pipe.Warp().warp(seed=index)[0] for index in range(3)]
+def test_the_signal_carries_the_bundle_and_no_global_holds_it(warp_pipe):
+    # A global keyed by id outlived ComfyUI's cache for an hour (keeping models
+    # alive) or got pruned under a cached output still pointing at it.
+    model = object()
+    signal = warp_pipe.Warp().warp(model_1=model, seed=4)[0]
 
-    assert len(warp_pipe.warp_storage) == 2
-    assert signals[0]["id"] not in warp_pipe.warp_storage
-    assert signals[-1]["id"] in warp_pipe.warp_storage
-
-    stale_id = signals[1]["id"]
-    warp_pipe._storage_timestamps[stale_id] = time.time() - warp_pipe._STORAGE_MAX_AGE_SECONDS - 1
-    warp_pipe.cleanup_warp_storage()
-    assert stale_id not in warp_pipe.warp_storage
-    assert stale_id not in warp_pipe._storage_timestamps
+    assert signal["id"]
+    assert signal[warp_pipe.WARP_VALUES_KEY] == {"model_1": model, "seed": 4}
+    for name in ("warp_storage", "_storage_timestamps", "cleanup_warp_storage"):
+        assert not hasattr(warp_pipe, name)
 
 
-def test_unwarp_refreshes_storage_timestamp(warp_pipe):
-    signal = warp_pipe.Warp().warp(seed=1)[0]
-    warp_id = signal["id"]
-    warp_pipe._storage_timestamps[warp_id] = 1.0
+def test_unwarp_reads_the_values_from_the_signal(warp_pipe):
+    signal = {"id": "elsewhere", warp_pipe.WARP_VALUES_KEY: {"seed": 9, "cfg": 3.5}}
 
-    warp_pipe.Unwarp().unwarp(signal)
+    values = dict(zip(warp_pipe.Unwarp.RETURN_NAMES, warp_pipe.Unwarp().unwarp(signal)))
 
-    assert warp_pipe._storage_timestamps[warp_id] > 1.0
+    assert values["seed"] == 9
+    assert values["cfg"] == 3.5
+    assert values["model_1"] is None
+
+
+@pytest.mark.parametrize("signal", ["not a dict", {"id": "gone"}, {"id": "x", "values": None}])
+def test_unwarp_of_a_signal_without_values_warns_and_returns_empty(warp_pipe, caplog, signal):
+    with caplog.at_level("WARNING"):
+        result = warp_pipe.Unwarp().unwarp(signal)
+
+    assert all(value is None for value in result)
+    assert "Warp data not found" in caplog.text
+
+
+def test_chained_warps_inherit_and_override_without_touching_upstream(warp_pipe):
+    upstream = warp_pipe.Warp().warp(model_1="the-model", seed=1, prompt_positive="a portrait")[0]
+    before = dict(upstream[warp_pipe.WARP_VALUES_KEY])
+
+    downstream = warp_pipe.Warp().warp(warp=upstream, seed=2, cfg=6.0)[0]
+
+    values = dict(zip(warp_pipe.Unwarp.RETURN_NAMES, warp_pipe.Unwarp().unwarp(downstream)))
+    assert values["model_1"] == "the-model"
+    assert values["prompt_positive"] == "a portrait"
+    assert values["seed"] == 2
+    assert values["cfg"] == 6.0
+    # ComfyUI hands the same cached upstream output to every later run.
+    assert upstream[warp_pipe.WARP_VALUES_KEY] == before
+
+
+def test_two_runs_of_one_warp_leave_the_earlier_output_intact(warp_pipe):
+    # ComfyUI may still hold the first run's output for another consumer.
+    node = warp_pipe.Warp()
+    first = node.warp(seed=1, prompt_positive="first")[0]
+    second = node.warp(seed=2)[0]
+
+    assert first[warp_pipe.WARP_VALUES_KEY] == {"seed": 1, "prompt_positive": "first"}
+    assert second[warp_pipe.WARP_VALUES_KEY] == {"seed": 2}
+    assert first[warp_pipe.WARP_VALUES_KEY] is not second[warp_pipe.WARP_VALUES_KEY]
 
 
 def test_provider_parses_presets_and_builds_expected_latent(warp_pipe):
@@ -323,6 +355,12 @@ def test_v3_entrypoint_schemas_and_execution(warp_pipe_loader):
     signal = warp_pipe.WarpV3.execute(prompt_positive="hello")[0]
     values = warp_pipe.UnwarpV3.execute(signal)
     assert values[10] == "hello"
+
+    # The V3 copy carries the bundle in the signal just as the V1 node does.
+    chained = warp_pipe.WarpV3.execute(warp=signal, seed=5)[0]
+    values = dict(zip(warp_pipe.Unwarp.RETURN_NAMES, warp_pipe.UnwarpV3.execute(chained)))
+    assert (values["prompt_positive"], values["seed"]) == ("hello", 5)
+    assert "seed" not in signal[warp_pipe.WARP_VALUES_KEY]
 
 
 @pytest.mark.parametrize("enable_v3", [False, True])
@@ -574,7 +612,10 @@ def test_jpeg_keeps_the_generation_info_but_cannot_keep_the_workflow(
     saved = result["ui"]["images"][0]["filename"]
     assert saved.endswith(".jpg")
 
-    comment = Image.open(tmp_path / saved).getexif().get(0x9286)
+    # UserComment is an Exif-IFD tag; IFD0 is not where readers look for it.
+    exif = Image.open(tmp_path / saved).getexif()
+    assert 0x9286 not in exif
+    comment = exif.get_ifd(0x8769).get(0x9286)
     assert comment[:8] == b"UNICODE\0"
     text = comment[8:].decode("utf-16-be")
     assert text.startswith("a portrait")
@@ -1409,6 +1450,48 @@ def test_removing_a_tag_does_not_leave_debris(warp_pipe):
     assert warp_pipe.clean_prompt("<lora:only:1>") == ""
 
 
+def test_a_tag_without_a_weight_means_full_strength(warp_pipe):
+    # A1111 reads <lora:name> as weight 1. Unmatched, it was neither applied
+    # nor stripped, so the tag itself was sent to the text encoder.
+    assert warp_pipe.extract_lora_tags("a <lora:detail tweaker> b <lora:sub/v1.5:0.4>") == [
+        ("detail tweaker", 1.0),
+        ("sub/v1.5", 0.4),
+    ]
+    assert warp_pipe.clean_prompt("a portrait <lora:detail tweaker>, dramatic") == (
+        "a portrait, dramatic"
+    )
+    # Something after the name that is not a weight is still not a tag.
+    assert warp_pipe.extract_lora_tags("<lora:name:strong>") == []
+    assert warp_pipe.extract_lora_tags("<lora:a:0.8:0.5>") == [("a", 0.8)]
+
+
+def test_a_weightless_tag_is_applied_at_one_to_model_and_clip(warp_pipe, lora_folder, monkeypatch):
+    seen = {}
+
+    def fake_load(model, clip, lora, s_model, s_clip, lora_metadata=None):
+        seen["strengths"] = (s_model, s_clip)
+        return "patched-model", "patched-clip"
+
+    comfy_sd = types.ModuleType("comfy.sd")
+    comfy_sd.load_lora_for_models = fake_load
+    comfy_utils = types.ModuleType("comfy.utils")
+    comfy_utils.load_torch_file = lambda p, safe_load=True, return_metadata=True: ({}, None)
+    comfy_pkg = types.ModuleType("comfy")
+    comfy_pkg.__path__ = []
+    comfy_pkg.sd = comfy_sd
+    comfy_pkg.utils = comfy_utils
+    monkeypatch.setitem(sys.modules, "comfy", comfy_pkg)
+    monkeypatch.setitem(sys.modules, "comfy.sd", comfy_sd)
+    monkeypatch.setitem(sys.modules, "comfy.utils", comfy_utils)
+
+    model, clip, prompt, _ = warp_pipe.WarpLoraPrompt().apply(
+        text="x <lora:detail tweaker>", model="a-model", clip="a-clip"
+    )
+
+    assert seen["strengths"] == (1.0, 1.0)
+    assert (model, clip, prompt) == ("patched-model", "patched-clip", "x")
+
+
 def test_deliberate_line_breaks_survive(warp_pipe):
     assert warp_pipe.clean_prompt("keep\nmy\nlines") == "keep\nmy\nlines"
 
@@ -2025,3 +2108,227 @@ def test_thumbnail_source_for_model_kinds(warp_pipe, monkeypatch, tmp_path):
 
     assert warp_pipe.thumbnail_source(unet.name, "diffusion_models") == str(preview)
     assert warp_pipe.thumbnail_source(unet.name, "vae") is None
+
+
+def test_a_cached_upstream_warp_is_read_on_every_downstream_run(warp_pipe):
+    # An upstream Warp that ComfyUI caches never runs again. A downstream one
+    # re-running on every seed change reads the same cached output each time.
+    upstream = warp_pipe.Warp().warp(model_1="the-model", prompt_positive="a portrait")[0]
+
+    downstream = warp_pipe.Warp()
+    downstream.warp(warp=upstream, seed=1)
+    downstream.warp(warp=upstream, seed=2)
+    signal = downstream.warp(warp=upstream, seed=3)[0]
+    values = dict(zip(warp_pipe.Unwarp.RETURN_NAMES, warp_pipe.Unwarp().unwarp(signal)))
+    assert values["model_1"] == "the-model"
+    assert values["seed"] == 3
+    assert "seed" not in upstream[warp_pipe.WARP_VALUES_KEY]
+
+
+@pytest.mark.parametrize("signal", [{"id": "gone"}, "not a dict", {"values": ["a list"]}])
+def test_a_missing_upstream_warp_is_reported(warp_pipe, caplog, signal):
+    with caplog.at_level("WARNING"):
+        result = warp_pipe.Warp().warp(warp=signal, seed=1)[0]
+
+    assert "Warp data not found" in caplog.text
+    assert result[warp_pipe.WARP_VALUES_KEY] == {"seed": 1}
+
+
+def test_the_save_node_reads_the_values_from_the_signal(warp_pipe, caplog):
+    signal = warp_pipe.Warp().warp(seed=1, prompt_positive="a portrait")[0]
+
+    values = warp_pipe.SaveImageCivitai()._warp_values(signal)
+    assert values["seed"] == 1
+    values["seed"] = 99  # the save node's copy, not the shared bundle
+    assert signal[warp_pipe.WARP_VALUES_KEY]["seed"] == 1
+
+    with caplog.at_level("WARNING"):
+        assert warp_pipe.SaveImageCivitai()._warp_values({"id": "gone"}) == {}
+    assert "Warp data not found for ID: gone" in caplog.text
+    assert warp_pipe.SaveImageCivitai()._warp_values(None) == {}
+
+
+def test_an_upscaler_named_model_name_is_not_the_checkpoint(warp_pipe, monkeypatch):
+    # UpscaleModelLoader, Impact's detectors and SAMLoader all call their input
+    # model_name too. Nearest wins, so a hires fix credited the upscaler.
+    _folders(
+        monkeypatch,
+        {"checkpoints": {"sdxl/base.safetensors"}, "upscale_models": {"4x-UltraSharp.pth"}},
+    )
+    graph = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "sdxl/base.safetensors"},
+        },
+        "2": {"class_type": "KSampler", "inputs": {"model": ["1", 0]}},
+        "3": {"class_type": "UpscaleModelLoader", "inputs": {"model_name": "4x-UltraSharp.pth"}},
+        "4": {
+            "class_type": "ImageUpscaleWithModel",
+            "inputs": {"upscale_model": ["3", 0], "image": ["2", 0]},
+        },
+        "9": {"class_type": "SaveImageCivitai", "inputs": {"images": ["4", 0]}},
+    }
+
+    model, _ = warp_pipe.collect_graph_resources(graph, start_id="9")
+
+    assert model == "sdxl/base.safetensors"
+    # A model_name that is a model still counts.
+    assert warp_pipe.model_named_by({"model_name": "sdxl/base.safetensors"}) == (
+        "sdxl/base.safetensors"
+    )
+
+
+def test_the_graph_ignores_a_switched_off_second_list(warp_pipe):
+    # The node does not read loras_2 while loras_2_on is off, so it was never
+    # applied and must not be credited.
+    inputs = {
+        "text": "a portrait",
+        "loras": "<lora:detail tweaker:0.8>",
+        "loras_2_on": False,
+        "loras_2": "<lora:other thing:0.4>",
+    }
+    graph = {"1": {"class_type": "Warp Lora Prompt", "inputs": inputs}}
+
+    _, loras = warp_pipe.collect_graph_resources(graph)
+    assert loras == [("detail tweaker", 0.8)]
+
+    inputs["loras_2_on"] = True
+    _, loras = warp_pipe.collect_graph_resources(graph)
+    assert loras == [("detail tweaker", 0.8), ("other thing", 0.4)]
+
+
+def test_a_lora_that_will_not_load_fails_the_run(warp_pipe, lora_folder, monkeypatch):
+    # A truncated download: generating without it while the metadata credits it
+    # describes an image that was not made.
+    def broken(path, safe_load=True, return_metadata=True):
+        raise OSError("truncated file")
+
+    comfy_sd = types.ModuleType("comfy.sd")
+    comfy_sd.load_lora_for_models = lambda *args, **kwargs: ("m", "c")
+    comfy_utils = types.ModuleType("comfy.utils")
+    comfy_utils.load_torch_file = broken
+    comfy_pkg = types.ModuleType("comfy")
+    comfy_pkg.__path__ = []
+    comfy_pkg.sd = comfy_sd
+    comfy_pkg.utils = comfy_utils
+    monkeypatch.setitem(sys.modules, "comfy", comfy_pkg)
+    monkeypatch.setitem(sys.modules, "comfy.sd", comfy_sd)
+    monkeypatch.setitem(sys.modules, "comfy.utils", comfy_utils)
+
+    with pytest.raises(warp_pipe.LoraTagError, match="Could not apply LoRA") as raised:
+        warp_pipe.WarpLoraPrompt().apply(text="x <lora:detail tweaker:0.8>", model="a-model")
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_without_comfy_a_lora_is_skipped_not_fatal(warp_pipe, lora_folder):
+    # The conftest runtime has no comfy.sd: patching is a no-op there.
+    model, _, _, _ = warp_pipe.WarpLoraPrompt().apply(
+        text="x <lora:detail tweaker:0.8>", model="a-model"
+    )
+
+    assert model == "a-model"
+
+
+def test_two_spellings_of_one_lora_apply_it_once(warp_pipe, lora_folder):
+    # Both tags resolve to the same file; applying both doubled its strength.
+    resolved, _ = warp_pipe.WarpLoraPrompt().plan(
+        "a portrait <lora:sdxl/detail tweaker:0.5>", loras="<lora:detail tweaker:0.8>"
+    )
+
+    assert [(entry["name"], entry["weight"]) for entry in resolved] == [(LORA_ON_DISK, 0.8)]
+
+
+class _RecordingRoutes:
+    def __init__(self):
+        self.handlers = {}
+
+    def _add(self, method, path):
+        def decorator(handler):
+            self.handlers[(method, path)] = handler
+            return handler
+
+        return decorator
+
+    def get(self, path):
+        return self._add("GET", path)
+
+    def post(self, path):
+        return self._add("POST", path)
+
+
+def test_library_routes_do_their_disk_work_off_the_event_loop(warp_pipe, monkeypatch, tmp_path):
+    from aiohttp.test_utils import make_mocked_request
+
+    weights = tmp_path / "loras" / "a.safetensors"
+    weights.parent.mkdir()
+    weights.write_bytes(b"w")
+    (tmp_path / "loras" / "a.preview.png").write_bytes(b"png")
+    routes = _RecordingRoutes()
+    server = types.ModuleType("server")
+    server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=routes))
+    monkeypatch.setitem(sys.modules, "server", server)
+    folder_paths = types.ModuleType("folder_paths")
+    folder_paths.get_filename_list = lambda kind: []
+    folder_paths.get_full_path = lambda kind, name: str(weights) if kind == "loras" else None
+    folder_paths.get_folder_paths = lambda kind: [str(tmp_path / kind)]
+    monkeypatch.setitem(sys.modules, "folder_paths", folder_paths)
+    # Only the library routes are wanted here.
+    monkeypatch.setattr(warp_pipe, "_register_prompt_writer_routes", lambda *args: None)
+
+    def thumbnail_for(preview):
+        return None
+
+    monkeypatch.setattr(warp_pipe, "thumbnail_for", thumbnail_for)
+
+    off_loop = []
+
+    async def to_thread(func, *args):
+        off_loop.append(func.__name__)
+        return func(*args)
+
+    monkeypatch.setattr(warp_pipe.asyncio, "to_thread", to_thread)
+    warp_pipe._register_routes()
+    panel = {"Host": "127.0.0.1:8188", "X-Civitai-Updater": "1"}
+    for path, query in (
+        ("/warp-studio/loras", ""),
+        ("/warp-studio/embeddings", ""),
+        ("/warp-studio/lora/thumbnail", "?name=a.safetensors&kind=loras"),
+    ):
+        request = make_mocked_request("GET", path + query, headers=panel)
+        asyncio.run(routes.handlers[("GET", path)](request))
+
+    assert off_loop == ["lora_index", "embedding_index", "thumbnail_for"]
+
+
+def test_a_reference_image_is_found_past_a_root_on_another_drive(warp_pipe, monkeypatch, tmp_path):
+    # commonpath raises across drives on Windows (--input-directory on D:, the
+    # output on C:). That must cost only the root on the other drive.
+    output = tmp_path / "output"
+    output.mkdir()
+    image = output / "ref.png"
+    image.write_bytes(b"png")
+    other_drive = os.path.realpath(str(tmp_path / "other-drive"))
+    real_commonpath = os.path.commonpath
+
+    def commonpath(paths):
+        if any(os.path.normcase(other_drive) in os.path.normcase(str(p)) for p in paths):
+            raise ValueError("Paths don't have the same drive")
+        return real_commonpath(paths)
+
+    folder_paths = types.ModuleType("folder_paths")
+    folder_paths.exists_annotated_filepath = lambda name: True
+    folder_paths.get_annotated_filepath = lambda name: str(image)
+    folder_paths.get_input_directory = lambda: other_drive
+    folder_paths.get_output_directory = lambda: str(output)
+    folder_paths.get_temp_directory = lambda: str(tmp_path / "temp")
+    folder_paths.get_user_directory = lambda: str(tmp_path)
+    monkeypatch.setitem(sys.modules, "folder_paths", folder_paths)
+    captured = {}
+    prompt_writer = types.ModuleType("prompt_writer")
+    prompt_writer.register = lambda routes, web, **kwargs: captured.update(kwargs)
+    monkeypatch.setitem(sys.modules, "prompt_writer", prompt_writer)
+    monkeypatch.setattr(os.path, "commonpath", commonpath)
+
+    warp_pipe._register_prompt_writer_routes(None, None, types.SimpleNamespace())
+
+    assert captured["image_path"]("ref.png") == os.path.realpath(image)

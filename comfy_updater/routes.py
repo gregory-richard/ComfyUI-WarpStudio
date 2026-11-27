@@ -26,6 +26,7 @@ from .archive import (
     overlaps_model_root,
     save_archive_results,
 )
+from .check_records import rewrite_saved_paths, save_last_check
 from .civitai_client import CivitaiClient
 from .comfy_queue import (
     ComfyTextGenerator,
@@ -85,6 +86,7 @@ from .naming_ai import SYSTEM_PROMPT
 from .naming_phase import NamingDeps, PhaseControl, naming_tasks, run_naming
 from .naming_check import base_named_by, base_vocabulary, name_check_flags, needs_review, users_own_words, xl_is_base
 from .naming_scheme import NameParts, assemble, format_part, parse_stem
+from .path_identity import path_key
 from .path_resolver import custom_path_problem, normalize_model_types, resolve_model_roots
 from .rename_apply import (
     apply_steps,
@@ -94,7 +96,6 @@ from .rename_apply import (
     rewrite_paths,
     send2trash_available,
     send_to_trash,
-    update_saved_paths,
 )
 from .renamer import (
     RENAME_TYPES,
@@ -194,6 +195,9 @@ def register_routes(
     async def start_scan_job(request):
         payload = await _read_json(request)
         payload = _normalize_job_payload(payload)
+        if interrupted_rename(journal, job_manager):
+            # Files are half renamed: a scan would record their temporary names.
+            return journal_pending_response(journal)
         job = job_manager.start(
             "scan",
             lambda progress, item, control: updater_service.run_scan(payload, progress, item, control),
@@ -211,7 +215,7 @@ def register_routes(
             journal=journal,
             release_names=release_names,
         )
-    _register_check_routes(routes, config_store, updater_service, job_manager, naming=naming)
+    _register_check_routes(routes, config_store, updater_service, job_manager, naming=naming, journal=journal)
 
     @routes.get("/warp-studio/updater/jobs/active")
     @_guarded
@@ -251,11 +255,13 @@ def register_routes(
         if mature not in MATURE_MODES:
             mature = str(config_store.get().get("matureMode") or "show")
 
-        result = job_manager.get_items(
+        # Regrouping every item is heavy on a big library: off the event loop (get_items takes its own lock).
+        result = await asyncio.to_thread(functools.partial(
+            job_manager.get_items,
             job_id, offset=offset, limit=limit, mode=mode,
             model_types=model_types, base_models=base_models, sort=sort, show_hidden=show_hidden,
             group_by=group_by, then_by=then_by, mature=mature, collapsed=collapsed,
-        )
+        ))
         if not result:
             return web.json_response({"error": "job not found"}, status=404)
 
@@ -458,12 +464,12 @@ def _drop_refused_custom_paths(incoming: dict, stored_paths=None) -> list[str]:
     if isinstance(stored_paths, dict):
         for entries in stored_paths.values():
             if isinstance(entries, list):
-                known.update(str(entry).strip().lower() for entry in entries)
+                known.update(path_key(str(entry).strip()) for entry in entries)
     warnings = []
     for model_type, entries in custom_paths.items():
         kept = []
         for entry in entries:
-            problem = None if entry.strip().lower() in known else custom_path_problem(entry)
+            problem = None if path_key(entry.strip()) in known else custom_path_problem(entry)
             if problem:
                 warnings.append(f"Custom {model_type} folder {entry} was not saved: {problem}")
             else:
@@ -553,7 +559,7 @@ def _seed_items_for_new_files(files: list[dict], known_paths: set[str]) -> list[
     """
     seeded: list[dict] = []
     for entry in files:
-        if str(entry["path"]).lower() in known_paths:
+        if path_key(str(entry["path"])) in known_paths:
             continue
         seed = sidecar_seed_item(entry)
         if seed:
@@ -734,7 +740,10 @@ def _run_naming_phase(
         job_summary["namingError"] = result["error"]
 
 
-def _register_check_routes(routes, config_store, updater_service, job_manager, naming=None) -> None:
+def _register_check_routes(routes, config_store, updater_service, job_manager, naming=None, journal=None) -> None:
+    if journal is None and naming is not None:
+        journal = naming.journal
+
     @routes.post("/warp-studio/updater/jobs/check-updates")
     @_guarded
     async def start_check_updates_job(request):
@@ -757,7 +766,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
         # type must not make the other types vanish from the panel.
         cache_data = await asyncio.to_thread(read_data_file, cache_path)
         seed_items = _seed_items_from_cache(cache_data)
-        seeded_paths = {str(item.get("modelPath") or "").lower() for item in seed_items}
+        seeded_paths = {path_key(str(item.get("modelPath") or "")) for item in seed_items}
         # The last archive results are seeded too, and are kept by a check that
         # doesn't look at the archive: they are saved apart, in their own file.
         saved_archive_items = [
@@ -767,6 +776,16 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
         ]
 
         def runner(progress, item_cb, control):
+            # progress.json goes with the run however it ends: done, stopped or failed.
+            try:
+                return run_check(progress, item_cb, control)
+            finally:
+                try:
+                    progress_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        def run_check(progress, item_cb, control):
             nonlocal item_count
             # One client for the D walk, the archive pass and the naming: what it has fetched
             # about a model on the drive is not asked for again.
@@ -776,7 +795,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
                 # Without a previous check there is nothing stale to correct.
                 if not seed_items:
                     return
-                current_paths = {str(entry["path"]).lower() for entry in files}
+                current_paths = {path_key(str(entry["path"])) for entry in files}
                 job_manager.sync_seeds_with_disk(
                     control.job_id,
                     payload["modelTypes"],
@@ -804,7 +823,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
             summary = job_manager.summarize_check_items(summary, items)
             summary["total"] = len(items)
             if not control.is_cancelled():
-                write_json(cache_path, {
+                save_last_check(data_dir, {
                     "schemaVersion": CACHE_SCHEMA_VERSION,
                     "checkedAt": datetime.now(timezone.utc).isoformat(),
                     "summary": summary,
@@ -854,7 +873,6 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
                     naming, config_store, updater_service, job_manager, client, control, progress,
                     items + list(archive_items), archive_folder, job_summary,
                 )
-            progress_path.unlink(missing_ok=True)
             return job_summary, items + list(archive_items)
 
         # A plain check never re-checks the archived rows: they join as they are, not as
@@ -864,6 +882,10 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
             if payload["includeArchive"]
             else [dict(item) for item in saved_archive_items]
         )
+        # Asked after the last await, so nothing can leave files half renamed before the start.
+        if interrupted_rename(journal, job_manager):
+            # The check would save the temporary names as the library.
+            return journal_pending_response(journal)
         job_ref = job_manager.start("check-updates", runner, seed_items=seed_items + archive_rows)
         if not job_ref:
             return web.json_response({"error": "A job is already running."}, status=409)
@@ -878,7 +900,14 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
         progress_data = read_data_file(progress_path)
 
         active = job_manager.get_active()
-        if progress_data and active:
+        # Only a running check is "in progress": a leftover progress.json must not
+        # make a download, scan or rename dry run look like one.
+        check_active = bool(
+            progress_data and active
+            and active.type == "check-updates"
+            and progress_data.get("jobId") == active.id
+        )
+        if check_active:
             return web.json_response({
                 "sidecarWarnings": active.summary.get("sidecarWarnings", []),
                 "data": {
@@ -890,7 +919,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
                 }
             })
 
-        if progress_data and not active:
+        if progress_data and not check_active:
             progress_path.unlink(missing_ok=True)
 
         cache_path = config_store.data_dir / "last_check.json"
@@ -916,7 +945,7 @@ def _register_check_routes(routes, config_store, updater_service, job_manager, n
 
         # Files on D only: the archive's rows are not in last_check.json.
         cached_paths = {
-            str(item.get("modelPath", "")).lower()
+            path_key(str(item.get("modelPath", "")))
             for item in data.get("items", [])
             if item.get("modelPath") and not item.get("deleted")
         }
@@ -967,7 +996,10 @@ JOURNAL_PENDING_ERROR = "An earlier rename was interrupted. Finish or undo it fi
 STALE_DRY_RUN_ERROR = "These rows were already applied. Run a new dry run."
 DRY_RUN_ACTIVE_ERROR = "Wait for the dry run to finish."
 JOB_RUNNING_ERROR = "A job is already running."
-RECOVERY_RUNNING_ERROR = "The interrupted rename is already being finished or undone."
+# What holds the job slot, for the short file-changing routes that are not jobs (JobManager.hold).
+RENAME_RECOVERY_HOLD = "rename-recovery"
+RENAME_DECISION_HOLD = "rename-decision"
+DELETE_HOLD = "delete"
 CHECK_JOB = "check-updates"
 DOWNLOAD_PAUSE_ERROR = "The naming model download cannot be paused. Stop it to cancel; it then starts over."
 ERROR_TEXT_LIMIT = 300
@@ -975,12 +1007,23 @@ _NAMED_STATUSES = ("change", "unchanged")
 _MB = 1024 * 1024
 
 
+def interrupted_rename(journal, job_manager) -> bool:
+    """An interrupted rename waits for Finish or Undo. A running apply or recovery
+    holds the journal too: that is the busy slot, which the job's start reports."""
+    if journal is None or journal.pending() is None:
+        return False
+    return job_manager.get_active() is None and job_manager.held_by() is None
+
+
+def journal_pending_response(journal):
+    return web.json_response({"error": JOURNAL_PENDING_ERROR, "journal": _journal_status(journal)}, status=409)
+
+
 def _register_rename_routes(
     routes, config_store, job_manager, decisions, base_codes, answer_cache, journal, dry_runs=None
 ) -> None:
     # Dry runs made before the last apply or recovery: their old stems may now name other files.
     applied_jobs: set = set()
-    recovery_slot = ExclusiveSlot()
     rename_log = RenameLog(config_store.data_dir)
     if dry_runs is not None:
         restore_last_dry_run(job_manager, dry_runs, applied_jobs)
@@ -1002,9 +1045,7 @@ def _register_rename_routes(
         return web.json_response({"error": message}, status=status)
 
     def journal_pending():
-        return web.json_response(
-            {"error": JOURNAL_PENDING_ERROR, "journal": _journal_status(journal)}, status=409
-        )
+        return journal_pending_response(journal)
 
     def dry_run_job(job_id: str):
         job = job_manager.get(job_id) if job_id else None
@@ -1023,7 +1064,7 @@ def _register_rename_routes(
     @routes.post("/warp-studio/updater/jobs/rename-dry-run")
     @_guarded
     async def start_rename_dry_run(request):  # noqa: ARG001
-        if job_manager.get_active():
+        if job_manager.get_active() or job_manager.held_by():
             return busy()
         if journal.pending() is not None:
             return journal_pending()
@@ -1096,7 +1137,17 @@ def _register_rename_routes(
         problem_text = _decision_problem(payload, model_rows)
         if problem_text:
             return web.json_response({"error": problem_text}, status=400)
+        # Held until the rows are saved: an Apply from another tab would otherwise lock
+        # rows this edit is still changing (it awaits the disk in between).
+        hold = job_manager.hold(RENAME_DECISION_HOLD)
+        if hold is None:
+            return busy()
+        try:
+            return await edit_rows(payload, job, rows, model_rows, model_id, hold)
+        finally:
+            hold.release()
 
+    async def edit_rows(payload, job, rows, model_rows, model_id, hold):
         asked_again = payload.get("askAgain") is True
         if asked_again:
             decisions.ask_again(
@@ -1121,7 +1172,9 @@ def _register_rename_routes(
             {str(row.get("folder") or "") for row in model_rows}
             | {str(row["newFolder"]) for row in model_rows if row.get("newFolder")}
         )
-        listing = await asyncio.to_thread(lambda: {folder.lower(): _disk_stems(Path(folder)) for folder in folders})
+        listing = await in_held_thread(
+            hold, lambda: {path_key(folder): _disk_stems(Path(folder)) for folder in folders}
+        )
         result = reassemble_rows(
             rows, decisions, base_codes, listing, model_id=model_id, asked_again=asked_again
         )
@@ -1129,7 +1182,7 @@ def _register_rename_routes(
             # Copied here, before the next request can edit the rows; written off the loop.
             write = dry_run_rows_writer(dry_runs, job.id, rows)
             try:
-                await asyncio.to_thread(write)
+                await in_held_thread(hold, write)
             except OSError as exc:
                 print(f"Civitai updater: could not save the dry run's edited rows ({exc}).")
         return web.json_response({"rows": result})
@@ -1157,6 +1210,9 @@ def _register_rename_routes(
         problem = rename_job_problem(job, active_job=job_manager.get_active(), applied=applied_jobs)
         if problem:
             return refused(problem)
+        if job_manager.held_by():
+            # A decision edit may be changing these rows, or a recovery moving files.
+            return busy()
         if journal.pending() is not None:
             return journal_pending()
         # A copy: later edits to the job's rows must not reach what this apply locks.
@@ -1193,26 +1249,32 @@ def _register_rename_routes(
         action = payload.get("action")
         if action not in ("finish", "undo"):
             return web.json_response({"error": 'action must be "finish" or "undo"'}, status=400)
-        if job_manager.get_active():
+        # The slot, not just a flag: no second tab's recovery, and no job (a check would
+        # record half-renamed files), delete or decision edit, until the files are settled.
+        hold = job_manager.hold(RENAME_RECOVERY_HOLD)
+        if hold is None:
             return busy()
-        # Two tabs must not finish or undo one run at the same time.
-        if not recovery_slot.acquire():
-            return web.json_response({"error": RECOVERY_RUNNING_ERROR}, status=409)
         try:
-            pending = journal.pending()
             mark_dry_runs_stale(job_manager, applied_jobs)
-            warning = await persist_stale()
-            try:
-                result = await asyncio.to_thread(functools.partial(recover, journal, action, log=rename_log))
+
+            def run():
+                # One thread for all of it: a client gone mid-way leaves the slot held to the end.
+                warning = dry_runs.mark_applied() if dry_runs is not None else None
+                pending = journal.pending()
+                result = recover(journal, action, log=rename_log)
                 mapping = recovered_path_mapping(pending, result, action)
-                await asyncio.to_thread(update_saved_paths, config_store.data_dir, mapping)
+                rewrite_saved_paths(config_store.data_dir, mapping)
                 update_check_job_paths(job_manager, mapping)
+                return warning, result
+
+            try:
+                warning, result = await in_held_thread(hold, run)
             except (OSError, ValueError) as exc:
                 return web.json_response(
                     {"error": _short_error(str(exc)), "journal": _journal_status(journal)}, status=500
                 )
         finally:
-            recovery_slot.release()
+            hold.release()
         response = {"done": result["done"], "skipped": result["skipped"], "journal": _journal_status(journal)}
         if warning:
             response["persistWarning"] = warning
@@ -1754,6 +1816,11 @@ def _register_model_action_routes(
         status, message = problem
         return web.json_response({"error": message}, status=status)
 
+    def hold_for_delete():
+        # Beside a download, as delete_problem allows (it refuses a file the queue is
+        # replacing or moving); no other job may start while files go to the Recycle Bin.
+        return job_manager.hold(DELETE_HOLD, beside=(MODEL_DOWNLOAD_JOB,))
+
     def archive_reference(item) -> Optional[Path]:
         """The D folder an archived row's archive folder mirrors, as a reference path there."""
         folder = _archive_folder(config_store)
@@ -1892,16 +1959,24 @@ def _register_model_action_routes(
         )
         if problem:
             return refused(problem)
+        hold = hold_for_delete()
+        if hold is None:
+            return refused((409, DOWNLOAD_BUSY_ERROR))
         try:
-            result = await asyncio.to_thread(
-                delete_model,
-                weights,
-                trash=send_to_trash,
-                job_manager=job_manager,
-                data_dir=config_store.data_dir,
+            result = await in_held_thread(
+                hold,
+                functools.partial(
+                    delete_model,
+                    weights,
+                    trash=send_to_trash,
+                    job_manager=job_manager,
+                    data_dir=config_store.data_dir,
+                ),
             )
         except DownloadError as exc:
             return web.json_response({"error": str(exc)}, status=500)
+        finally:
+            hold.release()
         return web.json_response(result)
 
     @routes.post("/warp-studio/updater/delete-file")
@@ -1939,17 +2014,25 @@ def _register_model_action_routes(
         )
         if problem:
             return refused(problem)
+        hold = hold_for_delete()
+        if hold is None:
+            return refused((409, DOWNLOAD_BUSY_ERROR))
         try:
-            result = await asyncio.to_thread(
-                delete_model,
-                weights,
-                trash=send_to_trash,
-                job_manager=job_manager,
-                data_dir=config_store.data_dir,
-                archive_folder=archive_folder,
+            result = await in_held_thread(
+                hold,
+                functools.partial(
+                    delete_model,
+                    weights,
+                    trash=send_to_trash,
+                    job_manager=job_manager,
+                    data_dir=config_store.data_dir,
+                    archive_folder=archive_folder,
+                ),
             )
         except DownloadError as exc:
             return web.json_response({"error": str(exc)}, status=500)
+        finally:
+            hold.release()
         version_id = str(item.get("localVersionId") or "")
         if version_id:
             # Its release is new again: its card offers Download, not "Downloaded".
@@ -2223,20 +2306,45 @@ async def reveal_response(request, get_job, *, launch=_launch_detached, platform
     return web.json_response({"ok": True})
 
 
-class ExclusiveSlot:
-    """One holder at a time. Used only on the event loop, so a flag is enough (no loop-bound lock)."""
+async def in_held_thread(hold, work: Callable[[], Any]) -> Any:
+    """Run ``work`` on a thread of its own while ``hold`` (a ``JobManager.hold``) stays taken.
 
-    def __init__(self) -> None:
-        self._held = False
+    A cancelled handler (the client went away) stops waiting, but the files are
+    still being changed: the hold frees only once ``work`` has returned. A thread
+    of its own, not the default pool, so the work can't sit queued (and the slot
+    held) behind other threads.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
 
-    def acquire(self) -> bool:
-        if self._held:
-            return False
-        self._held = True
-        return True
+    def settle(outcome) -> None:
+        if future.cancelled():
+            return
+        ok, value = outcome
+        if ok:
+            future.set_result(value)
+        else:
+            future.set_exception(value)
 
-    def release(self) -> None:
-        self._held = False
+    def run() -> None:
+        try:
+            outcome = (True, work())
+        except BaseException as exc:  # noqa: BLE001 - handed to the waiting handler
+            outcome = (False, exc)
+        finally:
+            hold.end_work()
+        try:
+            loop.call_soon_threadsafe(settle, outcome)
+        except RuntimeError:
+            pass  # The loop is gone: nobody waits for the answer.
+
+    hold.begin_work()
+    try:
+        threading.Thread(target=run, daemon=True, name=f"civitai-updater-hold-{hold.name}").start()
+    except BaseException:
+        hold.end_work()
+        raise
+    return await future
 
 
 def mark_dry_runs_stale(job_manager, applied: set) -> None:
@@ -2504,8 +2612,8 @@ def reassemble_rows(
     """
     model_id = str(model_id)
     mine = [row for row in rows if str(row.get("modelId")) == model_id]
-    folders = {str(row.get("folder") or "").lower() for row in mine}
-    folders |= {str(row["newFolder"]).lower() for row in mine if row.get("newFolder")}
+    folders = {path_key(str(row.get("folder") or "")) for row in mine}
+    folders |= {path_key(str(row["newFolder"])) for row in mine if row.get("newFolder")}
     before = {id(row): _row_state(row) for row in rows}
     model_decision = decisions.model(model_id)
     for row in mine:
@@ -2528,9 +2636,9 @@ def reassemble_rows(
     for row in mine:
         target = str(row.get("newFolder") or "")
         if target:
-            folders.add(target.lower())
-            if target.lower() not in folder_listing:
-                folder_listing[target.lower()] = _disk_stems(Path(target))
+            folders.add(path_key(target))
+            if path_key(target) not in folder_listing:
+                folder_listing[path_key(target)] = _disk_stems(Path(target))
     _recheck_title_clashes(rows, decisions)
     _recheck_folders(rows, folders, folder_listing)
     mine_ids = {id(row) for row in mine}
@@ -2697,7 +2805,7 @@ def apply_followups(
 
     # Only renames: a trash step's "to" is the survivor's path, not a new name.
     mapping = {step["from"]: step["to"] for step in rename_steps}
-    attempt("Saved check results were not updated", lambda: update_saved_paths(Path(data_dir), mapping))
+    attempt("Saved check results were not updated", lambda: rewrite_saved_paths(Path(data_dir), mapping))
     if check_jobs is not None:
         attempt("The check results shown were not updated", lambda: update_check_job_paths(check_jobs, mapping))
 
@@ -2768,8 +2876,11 @@ def recovered_path_mapping(pending: Optional[dict], result: dict, action: str) -
     for step in steps:
         by_entry.setdefault(step.get("entry"), []).append(step)
     for entry, entry_steps in by_entry.items():
-        # Entries done before the interruption never reached the saved records either.
-        if all(step.get("done") for step in entry_steps):
+        # Entries done before the interruption never reached the saved records either. "Done"
+        # alone also marks an entry given up and put back under its old names: only one whose
+        # renames carry ``applied`` really moved.
+        renames = [step for step in entry_steps if step.get("kind") == "rename"]
+        if all(step.get("done") for step in entry_steps) and all(step.get("applied") for step in renames):
             finished.add(entry)
     return {
         step["from"]: step["to"]

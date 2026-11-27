@@ -18,6 +18,7 @@ from .constants import INFO_SIDECAR_SUFFIX, PREVIEW_SIDECAR_SUFFIX, SUPPORTED_MO
 from .model_download import DownloadError, file_sha256
 from .naming_check import needs_review
 from .naming_scheme import FORBIDDEN_CHARS, RESERVED_STEMS, NameParts, assemble
+from .path_identity import path_key
 from .rename_folders import _norm, home_folders
 from .renamer import RENAME_TYPES, Entry, _sort_model, name_groups
 
@@ -50,13 +51,19 @@ def inside_roots(path: Path, roots: list[Path]) -> bool:
 
 
 def stem_taken(folder: Path, stem: str) -> bool:
-    """The folder holds a weights file, an info or a preview of that stem, in any case."""
+    """The folder holds a weights file, an info or a preview of that stem (``path_key``; the suffix in any case).
+
+    The drive is asked as well: a case-insensitive drive mounted on Linux has
+    ``Foo.civitai.info`` at ``foo.civitai.info``, and the info file is written there.
+    """
     try:
         names = os.listdir(folder)
     except (FileNotFoundError, NotADirectoryError):
         return False
-    wanted = {(stem + suffix).lower() for suffix in _TAKEN_SUFFIXES}
-    return any(name.lower() in wanted for name in names)
+    wanted = path_key(stem)
+    if any(path_key(name[: len(stem)]) == wanted and name[len(stem):].lower() in _TAKEN_SUFFIXES for name in names):
+        return True
+    return any(os.path.lexists(Path(folder) / (stem + suffix)) for suffix in _TAKEN_SUFFIXES)
 
 
 class AiName(NamedTuple):
@@ -93,7 +100,8 @@ def _homes(type_roots: list[Path]) -> dict:
                     stem = os.path.splitext(name)[0]
                 else:
                     continue
-                stems.setdefault(stem.lower(), stem)
+                stems.setdefault(path_key(stem), stem)
+
             rows.extend(
                 {"folder": folder, "oldStem": stem, "status": "kept"} for stem in stems.values()
             )
@@ -338,7 +346,10 @@ def choose_target(
     folder = reference_folder
     if code:
         homes = _homes(type_roots)
-        folder = _home_beside(homes, reference_folder, code) or _new_home(homes, reference_folder, code) or folder
+        new_home = _new_home(homes, reference_folder, code)
+        if new_home is not None and not inside_roots(new_home, type_roots):
+            new_home = None  # roots that are per-base folders: a sibling of one is outside them all
+        folder = _home_beside(homes, reference_folder, code) or new_home or folder
     if not inside_roots(folder, type_roots):
         raise DownloadError(OUTSIDE_ROOTS_MESSAGE)
     if named and _bare_name(named[0] + suffix) and not stem_taken(folder, named[0]):

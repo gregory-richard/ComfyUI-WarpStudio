@@ -1,8 +1,8 @@
 {
-  "name": "comfyui-warppipe-web",
+  "name": "warp-studio-web",
   "private": true,
   "type": "module",
-  "description": "Lint and format checks for the WarpPipe frontend. Not published; the node pack ships as a Python package.",
+  "description": "Lint and format checks for the Warp Studio frontend. Not published; the node pack ships as a Python package.",
   "scripts": {
     "lint": "eslint web standdown",
     "format": "prettier --write \"web/**/*.js\" \"standdown/**/*.js\"",
